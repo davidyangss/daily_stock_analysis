@@ -1829,6 +1829,48 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIn("多策略综合", markdown)
         self.assertIn("另有 3 个策略解析失败", markdown)
 
+    def test_history_markdown_shows_strategy_data_evidence(self) -> None:
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "证据不足"},
+                "intelligence": {},
+                "battle_plan": {},
+                "strategy_data_evidence": {
+                    "schema_version": "strategy-evidence-v1",
+                    "status": "insufficient",
+                    "items": [{
+                        "tool": "search_stock_news",
+                        "status": "missing",
+                        "sources": ["searxng"],
+                        "cached": False,
+                        "partial": False,
+                        "key_values": {},
+                        "missing_reason": "no results",
+                    }],
+                    "strategy_requirements": [{
+                        "skill_id": "volume_breakout",
+                        "status": "insufficient",
+                    }],
+                    "limitations": [],
+                },
+            },
+        )
+
+        markdown = HistoryService(self.db)._generate_single_stock_markdown(
+            result,
+            MagicMock(created_at=None),
+        )
+
+        self.assertIn("策略关键数据与来源", markdown)
+        self.assertIn("source=searxng", markdown)
+        self.assertIn("reason=no results", markdown)
+
     def test_history_markdown_returns_persisted_market_review_report(self) -> None:
         """Market review history should return the saved Markdown without rebuilding a stock report."""
         result = AnalysisResult(

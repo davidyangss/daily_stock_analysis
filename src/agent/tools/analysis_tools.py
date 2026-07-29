@@ -25,8 +25,7 @@ def _fetch_trend_data(stock_code: str):
     """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
     from src.services.history_loader import load_history_df
 
-    df, _ = load_history_df(stock_code, days=60)
-    return df
+    return load_history_df(stock_code, days=60)
 
 
 def _handle_analyze_trend(stock_code: str) -> dict:
@@ -36,7 +35,7 @@ def _handle_analyze_trend(stock_code: str) -> dict:
     if not (stock_code and str(stock_code).strip()):
         return {"error": "stock_code is required"}
 
-    df = _fetch_trend_data(stock_code)
+    df, source = _fetch_trend_data(stock_code)
     if df is None or df.empty:
         return {"error": f"No historical data available for trend analysis on {stock_code}"}
 
@@ -52,6 +51,7 @@ def _handle_analyze_trend(stock_code: str) -> dict:
 
     return {
         "code": result.code,
+        "source": source,
         "trend_status": result.trend_status.value,
         "ma_alignment": result.ma_alignment,
         "trend_strength": result.trend_strength,

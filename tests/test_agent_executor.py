@@ -1185,6 +1185,8 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(len(result.tool_calls_log), 1)
         self.assertEqual(result.tool_calls_log[0]["tool"], "echo")
         self.assertTrue(result.tool_calls_log[0]["success"])
+        self.assertEqual(result.tool_calls_log[0]["evidence"]["status"], "available")
+        self.assertEqual(result.tool_calls_log[0]["evidence"]["tool"], "echo")
 
     def test_run_agent_loop_replays_reasoning_and_provider_specific_fields_on_followup_call(self):
         registry = _make_registry_with_echo()

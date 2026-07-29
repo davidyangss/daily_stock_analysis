@@ -638,7 +638,19 @@ class TestAgentResultConversion(unittest.TestCase):
             success=True,
             content=json.dumps(dashboard),
             dashboard=dashboard,
-            tool_calls_log=[{"step": 1, "tool": "echo", "success": True}],
+            tool_calls_log=[{
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "success": True,
+                "evidence": {
+                    "tool": "get_realtime_quote",
+                    "status": "available",
+                    "sources": ["tushare"],
+                    "cached": False,
+                    "partial": False,
+                    "key_values": {"price": 1880.0},
+                },
+            }],
             total_steps=3,
             total_tokens=500,
             provider="gemini",
@@ -655,6 +667,7 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.sentiment_score, 80)
         self.assertEqual(result.trend_prediction, "看多")
         self.assertEqual(result.decision_type, "hold")
+        self.assertIn("tushare", result.data_sources)
         self.assertIn("agent:gemini", result.data_sources)
         self.assertIsNotNone(result.dashboard)
 

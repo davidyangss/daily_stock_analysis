@@ -353,12 +353,58 @@ export interface AnalysisContextPackOverview {
   metadata: AnalysisContextPackOverviewMetadata;
 }
 
+export type StrategyEvidenceStatus =
+  | 'verified'
+  | 'limited'
+  | 'insufficient'
+  | 'available'
+  | 'fallback'
+  | 'partial'
+  | 'estimated'
+  | 'stale'
+  | 'missing'
+  | 'fetch_failed'
+  | 'not_supported';
+
+export interface StrategyEvidenceItem {
+  tool: string;
+  status: StrategyEvidenceStatus;
+  sources: string[];
+  cached: boolean;
+  partial: boolean;
+  keyValues: Record<string, string | number | boolean | null>;
+  stage?: string;
+  asOf?: string;
+  recordCount?: number;
+  requestedRecords?: number;
+  missingReason?: string;
+  required?: boolean;
+  requiredBy?: string[];
+}
+
+export interface StrategyRequirementEvidence {
+  skillId: string;
+  status: 'verified' | 'limited' | 'insufficient' | 'unknown';
+  missingTools: string[];
+  limitedTools: string[];
+  evidence: StrategyEvidenceItem[];
+}
+
+export interface StrategyDataEvidence {
+  schemaVersion: 'strategy-evidence-v1';
+  status: 'verified' | 'limited' | 'insufficient';
+  items: StrategyEvidenceItem[];
+  strategyRequirements: StrategyRequirementEvidence[];
+  limitations: string[];
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown> & { marketReviewPayload?: MarketReviewPayload };
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
+  strategyDataEvidence?: StrategyDataEvidence | null;
   financialReport?: Record<string, unknown>;
   dividendMetrics?: Record<string, unknown>;
   belongBoards?: RelatedBoard[];

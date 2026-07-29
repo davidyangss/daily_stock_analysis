@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Dict, Iterable, Optional
@@ -21,8 +22,37 @@ _STOCK_INDEX_FILENAME = "stocks.index.json"
 _STOCK_INDEX_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_LOOKUP_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_CANDIDATES_CACHE: Dict[str, tuple[str, ...]] | None = None
+_STOCK_IDENTITIES_CACHE: tuple["StockIndexIdentity", ...] | None = None
 _REMOTE_INDEX_VALIDITY_CACHE: tuple[Path, float, int, bool] | None = None
 _STOCK_INDEX_CACHE_LOCK = RLock()
+
+
+@dataclass(frozen=True)
+class StockIndexIdentity:
+    """One active stock identity from the generated autocomplete index."""
+
+    canonical_code: str
+    display_code: str
+    name_zh: str
+    pinyin: str = ""
+    pinyin_abbr: str = ""
+    aliases: tuple[str, ...] = ()
+    market: str = ""
+    asset_type: str = "stock"
+    active: bool = True
+    popularity: float = 0.0
+    name_en: str = ""
+
+    def name_terms(self) -> tuple[str, ...]:
+        """Return de-duplicated human identity terms, excluding stock codes."""
+        values = (
+            self.name_zh,
+            self.name_en,
+            self.pinyin,
+            self.pinyin_abbr,
+            *self.aliases,
+        )
+        return tuple(dict.fromkeys(value.strip() for value in values if value and value.strip()))
 
 
 def get_stock_index_candidate_paths() -> tuple[Path, ...]:
@@ -100,6 +130,105 @@ def _build_stock_name_map(raw_items: list) -> Dict[str, str]:
             stock_name_map[key] = str(name_zh).strip()
 
     return stock_name_map
+
+
+def _stock_identity_from_item(item: object) -> StockIndexIdentity | None:
+    """Decode tuple/object index formats into one stable backend identity."""
+    if isinstance(item, list):
+        if len(item) < 3:
+            return None
+        canonical_code = str(item[0] or "").strip().upper()
+        display_code = str(item[1] or canonical_code).strip()
+        name_zh = str(item[2] or "").strip()
+        pinyin = str(item[3] or "").strip() if len(item) > 3 else ""
+        pinyin_abbr = str(item[4] or "").strip() if len(item) > 4 else ""
+        raw_aliases = item[5] if len(item) > 5 else []
+        market = str(item[6] or "").strip().upper() if len(item) > 6 else ""
+        asset_type = str(item[7] or "stock").strip().lower() if len(item) > 7 else "stock"
+        active = item[8] is not False if len(item) > 8 else True
+        popularity = item[9] if len(item) > 9 else 0
+        name_en = ""
+    elif isinstance(item, dict):
+        canonical_code = str(item.get("canonicalCode") or item.get("canonical_code") or "").strip().upper()
+        display_code = str(item.get("displayCode") or item.get("display_code") or canonical_code).strip()
+        name_zh = str(item.get("nameZh") or item.get("name_zh") or "").strip()
+        name_en = str(item.get("nameEn") or item.get("name_en") or "").strip()
+        pinyin = str(item.get("pinyin") or "").strip()
+        pinyin_abbr = str(item.get("pinyinAbbr") or item.get("pinyin_abbr") or "").strip()
+        raw_aliases = item.get("aliases") or []
+        market = str(item.get("market") or "").strip().upper()
+        asset_type = str(item.get("assetType") or item.get("asset_type") or "stock").strip().lower()
+        active = item.get("active") is not False
+        popularity = item.get("popularity") or 0
+    else:
+        return None
+
+    if not canonical_code or not active:
+        return None
+    aliases = tuple(
+        dict.fromkeys(
+            str(alias).strip()
+            for alias in (raw_aliases if isinstance(raw_aliases, list) else [])
+            if str(alias).strip()
+        )
+    )
+    try:
+        popularity_value = float(popularity)
+    except (TypeError, ValueError):
+        popularity_value = 0.0
+    return StockIndexIdentity(
+        canonical_code=canonical_code,
+        display_code=display_code or canonical_code,
+        name_zh=name_zh,
+        name_en=name_en,
+        pinyin=pinyin,
+        pinyin_abbr=pinyin_abbr,
+        aliases=aliases,
+        market=market,
+        asset_type=asset_type or "stock",
+        active=active,
+        popularity=popularity_value,
+    )
+
+
+def get_stock_index_identities() -> tuple[StockIndexIdentity, ...]:
+    """Load active identities for backend name/alias resolution.
+
+    The newest usable index wins for duplicate canonical codes, matching the
+    frontend's preference for the freshest remote or bundled index.
+    """
+    global _STOCK_IDENTITIES_CACHE
+    if _STOCK_IDENTITIES_CACHE is not None:
+        return _STOCK_IDENTITIES_CACHE
+
+    with _STOCK_INDEX_CACHE_LOCK:
+        if _STOCK_IDENTITIES_CACHE is not None:
+            return _STOCK_IDENTITIES_CACHE
+
+        identities: dict[str, StockIndexIdentity] = {}
+        remote_path = get_remote_stock_index_cache_path()
+        for index_path in _get_fresh_stock_index_candidates(
+            get_stock_index_candidate_paths(),
+            remote_path,
+        ):
+            try:
+                raw_items = _load_stock_index_payload(index_path)
+                if _same_path(index_path, remote_path):
+                    validate_stock_index_payload(raw_items)
+                for item in raw_items:
+                    identity = _stock_identity_from_item(item)
+                    if identity is not None:
+                        identities.setdefault(identity.canonical_code, identity)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("[股票索引] 解析名称候选失败 %s: %s", index_path, exc)
+
+        _STOCK_IDENTITIES_CACHE = tuple(
+            sorted(
+                identities.values(),
+                key=lambda item: (-item.popularity, item.canonical_code),
+            )
+        )
+        return _STOCK_IDENTITIES_CACHE
 
 
 def _add_code_lookup(
@@ -377,10 +506,12 @@ def clear_stock_index_cache() -> None:
     """Clear the in-process stock index lookup cache."""
     global _REMOTE_INDEX_VALIDITY_CACHE
     global _STOCK_CODE_CANDIDATES_CACHE, _STOCK_CODE_LOOKUP_CACHE, _STOCK_INDEX_CACHE
+    global _STOCK_IDENTITIES_CACHE
     with _STOCK_INDEX_CACHE_LOCK:
         _STOCK_INDEX_CACHE = None
         _STOCK_CODE_LOOKUP_CACHE = None
         _STOCK_CODE_CANDIDATES_CACHE = None
+        _STOCK_IDENTITIES_CACHE = None
         _REMOTE_INDEX_VALIDITY_CACHE = None
 
 

@@ -70,6 +70,7 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
+from src.agent.evidence import extract_strategy_evidence_manifest
 from src.market_phase_summary import (
     extract_market_phase_summary,
     rebuild_market_phase_summary_for_stock_code,
@@ -77,7 +78,7 @@ from src.market_phase_summary import (
 from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
-from src.services.name_to_code_resolver import resolve_name_to_code
+from src.services.name_to_code_resolver import resolve_name_candidates, resolve_name_to_code
 from src.services.task_queue import (
     get_task_queue,
     DuplicateTaskError,
@@ -208,7 +209,18 @@ def _extract_guardrail_reason(raw_result: Any) -> Optional[str]:
     return None
 
 
-def _invalid_analysis_input_error() -> HTTPException:
+def _invalid_analysis_input_error(*, candidates: Optional[list] = None) -> HTTPException:
+    if candidates:
+        labels = [
+            f"{item.get('name') or item.get('code')} ({item.get('code')}, {item.get('market') or '未知市场'})"
+            for item in candidates[:5]
+        ]
+        return api_error(
+            400,
+            "ambiguous_stock_name",
+            f"匹配到多个股票，请选择市场或直接输入代码：{'；'.join(labels)}",
+            detail={"candidates": candidates[:10]},
+        )
     return api_error(400, "validation_error", "请输入有效的股票代码或股票名称")
 
 
@@ -237,7 +249,21 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
     if not text:
         return ""
 
-    if is_code_like(text):
+    if is_code_like(text) and not text.isalpha():
+        return resolve_index_stock_code_for_analysis(text)
+
+    # A 1-5 letter token can be either a US ticker or a company name
+    # (for example AAPL vs Apple/Baidu). Resolve indexed identities first so
+    # human names are not silently converted into fake ticker symbols.
+    if is_code_like(text) and text.isalpha():
+        alpha_candidates = [
+            candidate.to_dict()
+            for candidate in resolve_name_candidates(text, limit=10)
+        ]
+        if len(alpha_candidates) == 1:
+            return canonical_stock_code(alpha_candidates[0]["code"])
+        if len(alpha_candidates) > 1:
+            raise _invalid_analysis_input_error(candidates=alpha_candidates)
         return resolve_index_stock_code_for_analysis(text)
 
     if text.isdigit() and len(text) == 4:
@@ -251,6 +277,10 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
     resolved = resolve_name_to_code(text)
     if resolved:
         return canonical_stock_code(resolved)
+
+    candidates = [candidate.to_dict() for candidate in resolve_name_candidates(text, limit=10)]
+    if len(candidates) > 1:
+        raise _invalid_analysis_input_error(candidates=candidates)
 
     raise _invalid_analysis_input_error()
 
@@ -1173,6 +1203,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 context_snapshot,
                 raw_result,
             )
+            strategy_data_evidence = extract_strategy_evidence_manifest(raw_result)
             has_board_details = (
                 bool(extracted_boards.get("belong_boards"))
                 or extracted_boards.get("sector_rankings") is not None
@@ -1185,12 +1216,14 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 or market_structure is not None
                 or context_snapshot is not None
                 or analysis_context_pack_overview is not None
+                or strategy_data_evidence is not None
             ):
                 details = ReportDetails(
                     news_content=getattr(record, "news_content", None),
                     raw_result=raw_result,
                     context_snapshot=api_context_snapshot,
                     analysis_context_pack_overview=analysis_context_pack_overview,
+                    strategy_data_evidence=strategy_data_evidence,
                     financial_report=extracted_fundamental.get("financial_report"),
                     dividend_metrics=extracted_fundamental.get("dividend_metrics"),
                     belong_boards=extracted_boards.get("belong_boards"),
@@ -1469,6 +1502,11 @@ def _build_analysis_report(
         if market_structure is not None:
             break
     analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
+    strategy_data_evidence = extract_strategy_evidence_manifest(
+        fallback_raw_result_payload,
+        raw_result_data,
+        details_data,
+    )
     api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
     details = None
     has_board_details = (
@@ -1483,12 +1521,14 @@ def _build_analysis_report(
         or market_structure is not None
         or context_snapshot is not None
         or analysis_context_pack_overview is not None
+        or strategy_data_evidence is not None
     ):
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
             raw_result=raw_result_data,
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
+            strategy_data_evidence=strategy_data_evidence,
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),

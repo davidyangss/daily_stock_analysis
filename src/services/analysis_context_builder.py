@@ -51,6 +51,10 @@ _AUX_LIMITATION_STATUSES = {
     ContextFieldStatus.FETCH_FAILED,
     ContextFieldStatus.FALLBACK,
     ContextFieldStatus.STALE,
+    ContextFieldStatus.MISSING,
+    ContextFieldStatus.NOT_SUPPORTED,
+    ContextFieldStatus.PARTIAL,
+    ContextFieldStatus.ESTIMATED,
 }
 
 

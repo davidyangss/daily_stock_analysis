@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
+from src.agent.evidence import format_strategy_evidence_markdown
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.report_language import (
     get_bias_status_emoji,
@@ -1227,6 +1228,14 @@ class HistoryService:
                 except (KeyError, IndexError):
                     invalid_text = f"{invalid_label_template}: {invalid_count}"
                 report_lines.append(f"- {invalid_text}")
+            report_lines.append("")
+
+        strategy_evidence_text = format_strategy_evidence_markdown(
+            dashboard.get("strategy_data_evidence") if dashboard else None,
+            report_language,
+        )
+        if strategy_evidence_text:
+            report_lines.extend(strategy_evidence_text.splitlines())
             report_lines.append("")
 
         # ========== 如果没有 dashboard，显示传统格式 ==========

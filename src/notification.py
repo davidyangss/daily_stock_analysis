@@ -177,6 +177,19 @@ def _append_strategy_synthesis_block(lines: List[str], strategy_synthesis: Any, 
             )
     lines.append("")
 
+
+def _append_strategy_data_evidence_block(
+    lines: List[str],
+    manifest: Any,
+    report_language: str,
+) -> None:
+    from src.agent.evidence import format_strategy_evidence_markdown
+
+    rendered = format_strategy_evidence_markdown(manifest, report_language)
+    if rendered:
+        lines.extend(rendered.splitlines())
+        lines.append("")
+
 if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
 
@@ -1526,6 +1539,11 @@ class NotificationService(
                     dashboard.get('strategy_synthesis') if dashboard else None
                 )
                 _append_strategy_synthesis_block(report_lines, strategy_synthesis, labels, report_language)
+                _append_strategy_data_evidence_block(
+                    report_lines,
+                    dashboard.get('strategy_data_evidence') if dashboard else None,
+                    report_language,
+                )
 
                 # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
                 self._append_fundamental_blocks(report_lines, result)

@@ -97,6 +97,44 @@ class TestStockIndexLoader(unittest.TestCase):
             self.assertIs(first, second)
             self.assertEqual(stock_index_loader.get_index_stock_name("000001"), "平安银行")
 
+    def test_get_stock_index_identities_decodes_names_aliases_and_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            index_path = Path(temp_dir) / "stocks.index.json"
+            index_path.write_text(
+                json.dumps(
+                    [[
+                        "00700.HK", "00700", "腾讯控股", "tengxunkonggu", "txkg",
+                        ["腾讯", "Tencent"], "HK", "stock", True, 321,
+                    ]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                stock_index_loader,
+                "get_stock_index_candidate_paths",
+                return_value=(index_path,),
+            ):
+                identities = stock_index_loader.get_stock_index_identities()
+
+            self.assertEqual(len(identities), 1)
+            identity = identities[0]
+            self.assertEqual(identity.canonical_code, "00700.HK")
+            self.assertEqual(identity.market, "HK")
+            self.assertEqual(identity.aliases, ("腾讯", "Tencent"))
+            self.assertIn("tengxunkonggu", identity.name_terms())
+            self.assertEqual(identity.popularity, 321.0)
+
+    def test_clear_stock_index_cache_also_clears_identity_cache(self):
+        stock_index_loader._STOCK_IDENTITIES_CACHE = (
+            stock_index_loader.StockIndexIdentity("AAPL", "AAPL", "苹果"),
+        )
+
+        stock_index_loader.clear_stock_index_cache()
+
+        self.assertIsNone(stock_index_loader._STOCK_IDENTITIES_CACHE)
+
     def test_get_index_stock_name_returns_none_when_index_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing_path = Path(temp_dir) / "stocks.index.json"

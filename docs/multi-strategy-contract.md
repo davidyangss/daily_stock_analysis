@@ -76,13 +76,34 @@ ctx.meta["invalid_opinions"] = [
         "agent_name": str,          # 原始 agent_name
         "raw_signal": str | None,   # 原始 signal 字面量（未归一化）
         "confidence": float,        # 原始 confidence，仅诊断，不参与任何计算
-        "reason": str,              # "missing_signal" | "unrecognized_signal" | "invalid_flag"
+        "reason": str,              # 包含 missing/unrecognized signal、调度失败或 insufficient_required_data
     },
     ...
 ]
 ```
 
 Baseline 只规定该结构，不规定分拣发生的**代码位置**——Phase 1 会把分拣落到 Orchestrator。
+
+### Required Data Evidence Contract
+
+Skill YAML 的 `required_tools` 是硬数据依赖。SkillAgent 必须调用全部必需工具，运行时从实际 `tool_calls_log` 构造证据并覆盖模型自报状态：
+
+| 工具证据状态 | 策略证据状态 | 聚合行为 |
+| --- | --- | --- |
+| 全部 `available` | `verified` | 正常进入 Evidence Chain |
+| 任一 `fallback` / `partial` / `estimated` / `stale`，且无硬缺失 | `limited` | 保留观点，但公开降级项 |
+| 任一未调用 / `missing` / `fetch_failed` / `not_supported` | `insufficient` | 以 `reason="insufficient_required_data"` 进入 Diagnostics，不参与投票 |
+
+分析任务本身保持 fail-open，策略观点采用 fail-closed：单个策略的硬依赖缺失不阻断其他策略、DecisionAgent 或报告生成，但不得让该策略用猜测结果参与共识计算。
+
+Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema_version="strategy-evidence-v1"`。该低敏清单包含：
+
+- `status`：本次策略依赖总体状态（`verified` / `limited` / `insufficient`）。
+- `strategy_requirements`：各策略的必需工具、缺失/降级工具及对应证据。
+- `items`：工具状态、来源、cache/partial 标记、as-of、请求/实际记录数和允许公开的关键标量。
+- `limitations`：必需数据不可用或降级的确定性说明。
+
+该清单由真实工具结果投影，禁止让 LLM 重写、删除或把空结果描述为成功。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；旧报告没有该字段时保持兼容隐藏。
 
 ### 动态二分阵营（Supporting / Opposing）
 

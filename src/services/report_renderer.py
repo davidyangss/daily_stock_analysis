@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
+from src.agent.evidence import format_strategy_evidence_markdown
 from src.config import get_config
 from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
 from src.report_language import (
@@ -241,6 +242,7 @@ def render(
         "localize_conflict_severity": localize_conflict_severity,
         "normalize_strategy_synthesis_payload": normalize_strategy_synthesis_payload,
         "strategy_invalid_opinion_count": strategy_invalid_opinion_count,
+        "format_strategy_evidence_markdown": format_strategy_evidence_markdown,
         "signal_attribution_has_content": signal_attribution_has_content,
         "signal_attribution_weight_items": signal_attribution_weight_items,
     }

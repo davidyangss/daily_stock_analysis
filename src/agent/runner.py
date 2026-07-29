@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
+from src.agent.evidence import summarize_tool_result
 from src.agent.protocols import StageFailureReason
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
@@ -661,6 +662,12 @@ def _execute_tools(
             "step": step, "tool": tc.name, "arguments": tc.arguments,
             "success": success, "duration": dur, "result_length": len(result_str),
             "cached": cached,
+            "evidence": summarize_tool_result(
+                tc.name,
+                result_str,
+                execution_success=success,
+                cached=cached,
+            ),
         }
         if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0 and not success:
             try:
@@ -699,6 +706,12 @@ def _execute_tools(
                     "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
                     "success": success, "duration": dur, "result_length": len(result_str),
                     "cached": cached,
+                    "evidence": summarize_tool_result(
+                        tc_item.name,
+                        result_str,
+                        execution_success=success,
+                        cached=cached,
+                    ),
                 }
                 if guard_result is not None:
                     log_entry.update({
@@ -741,6 +754,12 @@ def _execute_tools(
                         "result_length": len(result_str),
                         "cached": False,
                         "timeout": True,
+                        "evidence": summarize_tool_result(
+                            tc_item.name,
+                            result_str,
+                            execution_success=False,
+                            cached=False,
+                        ),
                     })
                     results.append({"tc": tc_item, "result_str": result_str})
         finally:

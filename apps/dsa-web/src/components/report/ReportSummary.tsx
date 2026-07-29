@@ -6,6 +6,7 @@ import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
 import { AnalysisContextSummary } from './AnalysisContextSummary';
+import { StrategyDataEvidence } from './StrategyDataEvidence';
 import { MarketReviewReportView } from './MarketReviewReportView';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
@@ -77,6 +78,12 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       {/* 输入数据块低敏摘要 */}
       <AnalysisContextSummary
         overview={details?.analysisContextPackOverview}
+        language={reportLanguage}
+      />
+
+      {/* 策略依赖的关键数据、来源与缺失状态 */}
+      <StrategyDataEvidence
+        evidence={details?.strategyDataEvidence}
         language={reportLanguage}
       />
 

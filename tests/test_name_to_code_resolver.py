@@ -14,6 +14,8 @@ import pytest
 from unittest.mock import patch
 
 from src.services.name_to_code_resolver import (
+    clear_name_resolution_cache,
+    resolve_name_candidates,
     resolve_name_to_code,
     _is_code_like,
     _normalize_code,
@@ -112,6 +114,12 @@ class TestBuildReverseMapNoDuplicates:
 # ---------------------------------------------------------------------------
 
 class TestResolveNameToCode:
+    def setup_method(self):
+        clear_name_resolution_cache()
+
+    def teardown_method(self):
+        clear_name_resolution_cache()
+
     def test_code_like_input_returned_normalized(self):
         assert resolve_name_to_code("600519") == "600519"
         assert resolve_name_to_code("600519.SH") == "600519"
@@ -131,14 +139,25 @@ class TestResolveNameToCode:
         # "阿里巴巴" maps to both BABA and 09988 in STOCK_NAME_MAP
         assert resolve_name_to_code("阿里巴巴") is None
 
+    def test_company_and_english_stock_names_resolve_before_ticker_heuristic(self):
+        assert resolve_name_to_code("贵州茅台酒股份有限公司") == "600519"
+        assert resolve_name_to_code("Apple") == "AAPL"
+        assert resolve_name_to_code("Apple Inc.") == "AAPL"
+        assert resolve_name_to_code("Tesla") == "TSLA"
+
+    def test_cross_market_company_name_returns_auditable_candidates(self):
+        candidates = resolve_name_candidates("Baidu")
+        assert {candidate.code for candidate in candidates} == {"BIDU", "09888"}
+        assert {candidate.market for candidate in candidates} == {"US", "HK"}
+        assert resolve_name_to_code("Baidu") is None
+
+    def test_lowercase_known_ticker_uses_index_identity(self):
+        assert resolve_name_to_code("aapl") == "AAPL"
+
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
     def test_akshare_fallback_when_not_in_local(self, mock_akshare):
-        mock_akshare.return_value = {"平安银行": "000001"}
-        # 000001 is in local map as 平安银行, so we use a name that's only in akshare
-        # Actually local has 000001 -> 平安银行. So "平安银行" would hit local first.
-        # Use a name not in STOCK_NAME_MAP - e.g. some A-share only in AkShare
-        mock_akshare.return_value = {"浦发银行": "600000"}
-        result = resolve_name_to_code("浦发银行")
+        mock_akshare.return_value = {"示例股份公司": "600000"}
+        result = resolve_name_to_code("示例股份公司")
         assert result == "600000"
         mock_akshare.assert_called()
 

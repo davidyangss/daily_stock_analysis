@@ -18,6 +18,10 @@ class _DummyManager:
         self._context = {
             "market": "cn",
             "status": "partial",
+            "source_chain": [
+                {"provider": "tushare", "result": "ok"},
+                {"provider": "fundamental_pipeline", "result": "partial"},
+            ],
             "coverage": {
                 "valuation": "ok",
                 "growth": "not_supported",
@@ -84,6 +88,10 @@ class TestGetStockInfoContract(unittest.TestCase):
         self.assertEqual(
             result["fundamental_context"]["boards"]["data"],
             result["sector_rankings"],
+        )
+        self.assertEqual(
+            result["fundamental_context"]["source_chain"],
+            manager._context["source_chain"],
         )
 
 

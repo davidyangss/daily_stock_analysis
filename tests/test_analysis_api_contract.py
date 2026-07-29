@@ -1996,6 +1996,48 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(report.summary.action, "watch")
         self.assertEqual(report.summary.action_label, "观望")
 
+    def test_build_analysis_report_exposes_strategy_data_evidence(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+        manifest = {
+            "schema_version": "strategy-evidence-v1",
+            "status": "insufficient",
+            "items": [{
+                "tool": "search_stock_news",
+                "status": "missing",
+                "sources": ["searxng"],
+                "cached": False,
+                "partial": False,
+                "key_values": {},
+                "missing_reason": "no results",
+            }],
+            "strategy_requirements": [{
+                "skill_id": "volume_breakout",
+                "status": "insufficient",
+                "missing_tools": ["search_stock_news"],
+                "limited_tools": [],
+                "evidence": [],
+            }],
+            "limitations": [
+                "volume_breakout: required data unavailable (search_stock_news)"
+            ],
+        }
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {"report_type": "detailed", "report_language": "zh"},
+                "summary": {"analysis_summary": "证据不足", "operation_advice": "观望"},
+                "strategy": {},
+                "details": {"raw_result": {"dashboard": {"strategy_data_evidence": manifest}}},
+            },
+            query_id="q-evidence",
+            stock_code="600519",
+            stock_name="贵州茅台",
+        )
+
+        self.assertIsNotNone(report.details)
+        self.assertEqual(report.details.strategy_data_evidence, manifest)
+
     def test_build_analysis_report_stringifies_strategy_price_fields(self) -> None:
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -2997,6 +3039,48 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail["message"], "请输入有效的股票代码或股票名称")
         queue_mock.assert_not_called()
+
+    def test_name_resolution_returns_candidates_for_ambiguous_company(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+        candidates = [
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "code": "BIDU",
+                    "display_code": "BIDU",
+                    "name": "百度",
+                    "market": "US",
+                    "asset_type": "stock",
+                    "matched_term": "Baidu",
+                    "match_type": "exact_name",
+                }
+            ),
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "code": "09888",
+                    "display_code": "09888",
+                    "name": "百度集团-SW",
+                    "market": "HK",
+                    "asset_type": "stock",
+                    "matched_term": "Baidu",
+                    "match_type": "exact_name",
+                }
+            ),
+        ]
+        with patch.object(
+            analysis_endpoint_module,
+            "resolve_name_candidates",
+            return_value=tuple(candidates),
+        ):
+            with self.assertRaises(Exception) as ctx:
+                analysis_endpoint_module._resolve_and_normalize_input("Baidu")
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["error"], "ambiguous_stock_name")
+        self.assertEqual(
+            [item["code"] for item in ctx.exception.detail["detail"]["candidates"]],
+            ["BIDU", "09888"],
+        )
 
     def test_trigger_analysis_accepts_us_suffix_code(self) -> None:
         if trigger_analysis is None:

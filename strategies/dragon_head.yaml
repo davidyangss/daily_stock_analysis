@@ -10,6 +10,8 @@ required_tools:
   - get_realtime_quote
   - get_sector_rankings
   - search_stock_news
+  - get_stock_info
+  - analyze_trend
 aliases: [龙头, 龙头战法]
 default_priority: 90
 market_regimes: [sector_hot]

@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 import time
+from dataclasses import asdict, dataclass
+from functools import lru_cache
 from typing import Dict, Optional, Set, Tuple
 
-from src.data.stock_mapping import STOCK_NAME_MAP
+from src.data.stock_index_loader import StockIndexIdentity, get_stock_index_identities
+from src.data.stock_mapping import STOCK_ENGLISH_NAME_MAP, STOCK_NAME_MAP
 from src.services.stock_code_utils import is_code_like, normalize_code
 
 logger = logging.getLogger(__name__)
@@ -24,9 +28,162 @@ _akshare_cache: Optional[tuple[float, Dict[str, str]]] = None
 _AKSHARE_CACHE_TTL = 1800  # 30 MIN
 
 
+@dataclass(frozen=True)
+class NameResolutionCandidate:
+    """One auditable name-to-code candidate returned to API/Bot callers."""
+
+    code: str
+    display_code: str
+    name: str
+    market: str = ""
+    asset_type: str = "stock"
+    matched_term: str = ""
+    match_type: str = "exact_name"
+
+    def to_dict(self) -> Dict[str, str]:
+        return asdict(self)
+
+
 def _contains_cjk(text: str) -> bool:
     """Return True when text contains CJK characters."""
     return any("\u3400" <= ch <= "\u9fff" for ch in text)
+
+
+def _normalize_name_term(value: str) -> str:
+    """Normalize display-name text without collapsing meaningful CJK content."""
+    return re.sub(r"[\s\-_.·,，()（）]+", "", str(value or "").strip()).casefold()
+
+
+def _identity_terms(identity: StockIndexIdentity) -> tuple[str, ...]:
+    canonical = normalize_code(identity.canonical_code) or identity.canonical_code
+    english_aliases = STOCK_ENGLISH_NAME_MAP.get(canonical, ())
+    return tuple(dict.fromkeys((*identity.name_terms(), *english_aliases)))
+
+
+def _candidate_from_identity(
+    identity: StockIndexIdentity,
+    *,
+    matched_term: str,
+    match_type: str,
+) -> NameResolutionCandidate:
+    return NameResolutionCandidate(
+        code=normalize_code(identity.canonical_code) or identity.canonical_code,
+        display_code=identity.display_code or identity.canonical_code,
+        name=identity.name_zh or identity.name_en or identity.display_code,
+        market=identity.market,
+        asset_type=identity.asset_type,
+        matched_term=matched_term,
+        match_type=match_type,
+    )
+
+
+def _dedupe_candidates(
+    candidates: list[NameResolutionCandidate],
+    *,
+    limit: int,
+) -> tuple[NameResolutionCandidate, ...]:
+    result: list[NameResolutionCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.code.upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+        if len(result) >= limit:
+            break
+    return tuple(result)
+
+
+@lru_cache(maxsize=1)
+def _index_lookup_snapshot() -> tuple[
+    Dict[str, tuple[tuple[StockIndexIdentity, str], ...]],
+    Dict[str, StockIndexIdentity],
+    tuple[tuple[str, str, StockIndexIdentity], ...],
+]:
+    """Build immutable exact-name/code indexes and one partial-search term list."""
+    exact_names: Dict[str, list[tuple[StockIndexIdentity, str]]] = {}
+    exact_codes: Dict[str, StockIndexIdentity] = {}
+    partial_terms: list[tuple[str, str, StockIndexIdentity]] = []
+    for identity in get_stock_index_identities():
+        identity_code = normalize_code(identity.canonical_code) or identity.canonical_code
+        exact_codes.setdefault(identity_code.upper(), identity)
+        exact_codes.setdefault(str(identity.display_code or "").strip().upper(), identity)
+        for term in _identity_terms(identity):
+            normalized_term = _normalize_name_term(term)
+            if not normalized_term:
+                continue
+            exact_names.setdefault(normalized_term, []).append((identity, term))
+            partial_terms.append((normalized_term, term, identity))
+    return (
+        {key: tuple(values) for key, values in exact_names.items()},
+        exact_codes,
+        tuple(partial_terms),
+    )
+
+
+def _index_name_candidates(
+    query: str,
+    *,
+    limit: int,
+    allow_partial: bool,
+) -> tuple[NameResolutionCandidate, ...]:
+    normalized_query = _normalize_name_term(query)
+    if not normalized_query:
+        return ()
+
+    exact_names, _exact_codes, partial_terms = _index_lookup_snapshot()
+    exact_entries = exact_names.get(normalized_query, ())
+    if exact_entries:
+        return _dedupe_candidates(
+            [
+                _candidate_from_identity(
+                    identity,
+                    matched_term=term,
+                    match_type="exact_name",
+                )
+                for identity, term in exact_entries
+            ],
+            limit=limit,
+        )
+    if not allow_partial:
+        return ()
+
+    partial: list[tuple[int, float, NameResolutionCandidate]] = []
+    for normalized_term, term, identity in partial_terms:
+        min_length = 2 if (_contains_cjk(term) or _contains_cjk(query)) else 3
+        if len(normalized_query) < min_length or len(normalized_term) < min_length:
+            continue
+        if normalized_query in normalized_term or normalized_term in normalized_query:
+            partial.append((
+                min(len(normalized_query), len(normalized_term)),
+                identity.popularity,
+                _candidate_from_identity(
+                    identity,
+                    matched_term=term,
+                    match_type="partial_name",
+                ),
+            ))
+
+    partial.sort(key=lambda item: (-item[0], -item[1], item[2].code))
+    return _dedupe_candidates([item[2] for item in partial], limit=limit)
+
+
+def _index_code_candidate(query: str) -> tuple[NameResolutionCandidate, ...]:
+    normalized = normalize_code(query)
+    if not normalized:
+        return ()
+    _exact_names, exact_codes, _partial_terms = _index_lookup_snapshot()
+    identity = exact_codes.get(normalized.upper()) or exact_codes.get(query.strip().upper())
+    if identity is not None:
+        return (
+            _candidate_from_identity(
+                identity,
+                matched_term=query,
+                match_type="exact_code",
+            ),
+        )
+    return ()
 
 
 def _is_code_like(s: str) -> bool:
@@ -85,7 +242,7 @@ def _build_local_name_indexes(code_to_name: Dict[str, str]) -> Tuple[Dict[str, s
     return unique_names, ambiguous_names
 
 
-_LOCAL_REVERSE_MAP, _LOCAL_AMBIGUOUS_NAMES = _build_local_name_indexes(STOCK_NAME_MAP)
+_LOCAL_REVERSE_MAP, _ = _build_local_name_indexes(STOCK_NAME_MAP)
 
 
 def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
@@ -135,89 +292,210 @@ def _is_single_char_typo(input_name: str, candidate_name: str) -> bool:
     return diff == 1
 
 
-def resolve_name_to_code(name: str) -> Optional[str]:
-    """
-    Resolve stock name to code.
+def _market_for_legacy_code(code: str) -> str:
+    normalized = str(code or "").strip().upper()
+    if normalized.isalpha():
+        return "US"
+    if normalized.isdigit() and len(normalized) == 5:
+        return "HK"
+    if normalized.isdigit() and len(normalized) == 6:
+        return "CN"
+    return ""
 
-    Strategy (in order):
-    1. If input looks like a code (5-6 digits or 1-5 letters), return it normalized.
-    2. Local STOCK_NAME_MAP reverse (exclude ambiguous names).
-    3. Pinyin match against local names.
-    4. AkShare online fallback (A-shares).
-    5. Fuzzy match (difflib).
-    6. Return None.
 
-    Args:
-        name: Stock name or code string.
+def _local_exact_candidates(name: str, *, limit: int) -> tuple[NameResolutionCandidate, ...]:
+    normalized_name = _normalize_name_term(name)
+    local_matches = [
+        NameResolutionCandidate(
+            code=code,
+            display_code=code,
+            name=stock_name,
+            market=_market_for_legacy_code(code),
+            matched_term=stock_name,
+            match_type="exact_name",
+        )
+        for code, stock_name in STOCK_NAME_MAP.items()
+        if _normalize_name_term(stock_name) == normalized_name
+    ]
+    if local_matches:
+        return _dedupe_candidates(local_matches, limit=limit)
+    return ()
 
-    Returns:
-        Resolved stock code, or None if ambiguous/failed.
-    """
-    if not name or not isinstance(name, str):
-        return None
+
+def _static_english_exact_candidates(
+    name: str,
+    *,
+    limit: int,
+) -> tuple[NameResolutionCandidate, ...]:
+    normalized_name = _normalize_name_term(name)
+    matches = [
+        NameResolutionCandidate(
+            code=code,
+            display_code=code,
+            name=STOCK_NAME_MAP.get(code, ""),
+            market=_market_for_legacy_code(code),
+            matched_term=alias,
+            match_type="exact_name",
+        )
+        for code, aliases in STOCK_ENGLISH_NAME_MAP.items()
+        for alias in aliases
+        if _normalize_name_term(alias) == normalized_name
+    ]
+    return _dedupe_candidates(matches, limit=limit)
+
+
+def _static_code_candidate(name: str) -> tuple[NameResolutionCandidate, ...]:
+    normalized_code = normalize_code(name)
+    if not normalized_code or normalized_code not in STOCK_NAME_MAP:
+        return ()
+    return (
+        NameResolutionCandidate(
+            code=normalized_code,
+            display_code=normalized_code,
+            name=STOCK_NAME_MAP[normalized_code],
+            market=_market_for_legacy_code(normalized_code),
+            matched_term=name,
+            match_type="exact_code",
+        ),
+    )
+
+
+def _fallback_name_candidates(name: str, *, limit: int) -> tuple[NameResolutionCandidate, ...]:
+    """Resolve names not covered by the generated index using legacy sources."""
+
+    if not _contains_cjk(name):
+        return ()
+
+    akshare_map = _get_akshare_name_to_code() or {}
+    exact_code = akshare_map.get(name)
+    if exact_code:
+        return (
+            NameResolutionCandidate(
+                code=exact_code,
+                display_code=exact_code,
+                name=name,
+                market="CN",
+                matched_term=name,
+                match_type="exact_name",
+            ),
+        )
+
+    all_name_to_code = dict(_LOCAL_REVERSE_MAP)
+    all_name_to_code.update(akshare_map)
+    if len(name) <= 2:
+        return ()
+    names = list(all_name_to_code)
+    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.8)
+    if not matches:
+        typo_matches = difflib.get_close_matches(name, names, n=1, cutoff=0.7)
+        if typo_matches and _is_single_char_typo(name, typo_matches[0]):
+            matches = typo_matches
+    if not matches:
+        return ()
+    matched_name = matches[0]
+    return (
+        NameResolutionCandidate(
+            code=all_name_to_code[matched_name],
+            display_code=all_name_to_code[matched_name],
+            name=matched_name,
+            market="CN",
+            matched_term=matched_name,
+            match_type="fuzzy_name",
+        ),
+    )
+
+
+@lru_cache(maxsize=2048)
+def _resolve_name_candidates_cached(
+    name: str,
+    limit: int,
+) -> tuple[NameResolutionCandidate, ...]:
     s = name.strip()
     if not s:
-        return None
+        return ()
 
-    # 1. Input looks like code
-    if _is_code_like(s):
-        return _normalize_code(s)
+    # Human identity terms win before the broad 1-5 letter ticker heuristic.
+    # This prevents inputs such as Apple/Tesla/Baidu from becoming fake tickers.
+    static_name_matches = _dedupe_candidates(
+        [
+            *_local_exact_candidates(s, limit=limit),
+            *_static_english_exact_candidates(s, limit=limit),
+        ],
+        limit=limit,
+    )
+    if static_name_matches:
+        return static_name_matches
 
-    # 2. Local reverse map (no duplicates)
-    local_reverse = _LOCAL_REVERSE_MAP
-    if s in local_reverse:
-        return local_reverse[s]
-    if s in _LOCAL_AMBIGUOUS_NAMES:
-        logger.debug(f"[NameResolver] 命中本地歧义名称，快速返回 None: {s}")
-        return None
+    static_code_matches = _static_code_candidate(s)
+    if static_code_matches:
+        return static_code_matches
 
-    # 3. Pinyin match (exact)
-    try:
-        from pypinyin import lazy_pinyin
+    exact_name_matches = _index_name_candidates(s, limit=limit, allow_partial=False)
+    if exact_name_matches:
+        return exact_name_matches
 
-        input_pinyin = "".join(lazy_pinyin(s)).lower()
-        for local_name, code in local_reverse.items():
-            local_pinyin = "".join(lazy_pinyin(local_name)).lower()
-            if input_pinyin == local_pinyin:
-                return code
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug(f"[NameResolver] Pinyin match failed: {e}")
+    code_matches = _index_code_candidate(s)
+    if code_matches:
+        return code_matches
 
-    # Skip AkShare/fuzzy fallback for non-CJK free text such as random Latin noise.
-    # These paths are expensive and only meaningfully help Chinese stock names.
-    if not _contains_cjk(s):
-        logger.debug(f"[NameResolver] Skip CJK-only fallbacks for non-CJK input: {s}")
-        return None
+    partial_name_matches = _index_name_candidates(s, limit=limit, allow_partial=True)
+    if partial_name_matches:
+        return partial_name_matches
 
-    # 4. AkShare fallback
-    akshare_map = _get_akshare_name_to_code()
-    if akshare_map and s in akshare_map:
-        logger.debug(f"[NameResolver] 命中 AkShare 映射: {s} -> {akshare_map[s]}")
-        return akshare_map[s]
+    fallback_matches = _fallback_name_candidates(s, limit=limit)
+    if fallback_matches:
+        return fallback_matches
 
-    # 5. Fuzzy match (local + akshare, local takes precedence)
-    all_name_to_code = dict(local_reverse)
-    if akshare_map:
-        all_name_to_code.update(akshare_map)
-    # Skip fuzzy matching for very short inputs (<=2 chars) to avoid false positives,
-    # e.g. '中国' matching arbitrary company names in a pool of 5000+ stocks.
-    # Use a higher cutoff (0.8) to reduce mis-hits on longer inputs as well.
-    if len(s) > 2:
-        names = list(all_name_to_code.keys())
-        matches = difflib.get_close_matches(s, names, n=1, cutoff=0.8)
-        if matches:
-            logger.debug(f"[NameResolver] 命中模糊匹配: input={s}, matched={matches[0]}")
-            return all_name_to_code[matches[0]]
+    # Preserve explicit/manual support for symbols not yet present in the index.
+    # Mixed-case words are treated as company names, not unknown ticker symbols.
+    if _is_code_like(s) and (
+        not s.isalpha()
+        or s.isupper()
+        or "." in s
+    ):
+        normalized = _normalize_code(s)
+        if normalized:
+            return (
+                NameResolutionCandidate(
+                    code=normalized,
+                    display_code=s.upper(),
+                    name="",
+                    matched_term=s,
+                    match_type="unverified_code",
+                ),
+            )
+    return ()
 
-        # Conservative fallback for one-character typo in medium/long names.
-        # This keeps the strict default threshold while fixing obvious misspellings
-        # such as "贵州茅苔" -> "贵州茅台".
-        typo_matches = difflib.get_close_matches(s, names, n=1, cutoff=0.7)
-        if typo_matches and _is_single_char_typo(s, typo_matches[0]):
-            logger.debug(f"[NameResolver] 命中单字误写兜底: input={s}, matched={typo_matches[0]}")
-            return all_name_to_code[typo_matches[0]]
 
-    logger.debug(f"[NameResolver] 解析失败: {s}")
+def resolve_name_candidates(
+    name: str,
+    *,
+    limit: int = 10,
+) -> tuple[NameResolutionCandidate, ...]:
+    """Return auditable candidates for a company name, alias, pinyin, or code."""
+    if not name or not isinstance(name, str):
+        return ()
+    safe_limit = max(1, min(int(limit or 10), 20))
+    return _resolve_name_candidates_cached(name.strip(), safe_limit)
+
+
+def clear_name_resolution_cache() -> None:
+    """Clear query results after a stock-index refresh."""
+    _resolve_name_candidates_cached.cache_clear()
+    _index_lookup_snapshot.cache_clear()
+
+
+def resolve_name_to_code(name: str) -> Optional[str]:
+    """Resolve one unambiguous stock name/code, returning ``None`` on ambiguity."""
+    candidates = resolve_name_candidates(name, limit=10)
+    if len(candidates) == 1:
+        return candidates[0].code
+    if candidates:
+        logger.debug(
+            "[NameResolver] 名称存在多个候选: input=%s candidates=%s",
+            name,
+            [candidate.code for candidate in candidates],
+        )
+    else:
+        logger.debug("[NameResolver] 解析失败: %s", name)
     return None

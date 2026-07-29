@@ -940,6 +940,16 @@ P5 在不修改 `PACK_VERSION = "1.0"`、不新增数据源和不改变报告 JS
 
 历史详情、同步分析响应和 completed 任务状态继续只通过 `report.details.analysis_context_pack_overview` 暴露低敏字段；P5 只在该 overview 下新增 `data_quality`，包含 score、level、block_scores 和 limitations，不重复公开 `warnings`。Web 报告页仍默认折叠展示数据块摘要，折叠头部新增质量分/等级，展开后展示限制说明和 `fetch_failed` 状态；`details.context_snapshot` 继续剥离顶层 `analysis_context_pack_overview`。
 
+#### 策略关键数据与来源
+
+Specialist 策略会把 YAML 中的 `required_tools` 作为硬数据依赖。运行时基于真实工具结果生成 `dashboard.strategy_data_evidence`（`strategy-evidence-v1`）：全部必需数据可用为 `verified`，fallback/partial/estimated/stale 为 `limited`，未调用或 missing/fetch_failed/not_supported 为 `insufficient`。证据不足的策略观点不会参与多策略投票，但单个策略缺失不会中断整个分析任务。
+
+同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；Web 报告与通知详细报告会展示策略依赖、工具状态、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。清单来自工具执行日志的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告或非 Specialist 路径没有该字段时继续隐藏，不影响既有客户端。
+
+`AnalysisContextPack.data_quality.limitations` 现在也会保留辅助块的 missing/not_supported/partial/estimated 状态，避免报告只显示分数而隐藏新闻、基本面或筹码缺失；这不改变既有固定权重评分公式。
+
+股票输入解析会复用 Web 的完整股票索引，支持中文/英文名称、企业全称、拼音、拼音缩写和别名。跨市场同名企业不会自动猜测：API 返回 `ambiguous_stock_name` 和候选代码/市场，调用方应让用户选择市场或直接输入代码。1–5 个字母的输入会先检查已知企业身份，避免把 `Apple`、`Baidu` 一类名称直接当成 ticker；明确代码仍保持兼容。
+
 #### AnalysisContextPack 文档、迁移与回滚（Issue #1389 P6）
 
 P6 只做文档与配置可见性收口，不新增 pack runtime、不新增 pack enable/disable feature flag、不修改 `PACK_VERSION = "1.0"`、不新增 API 参数、不改变报告 JSON schema，也不做数据库迁移。完整契约、字段状态、低敏摘要可见性、脱敏边界、迁移和回滚说明见 [AnalysisContextPack 专题文档](analysis-context-pack.md)。

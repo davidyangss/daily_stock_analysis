@@ -346,6 +346,7 @@ class Dashboard(BaseModel):
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
     agent_disagreement_explanation: Optional[AgentDisagreementExplanation] = None
+    strategy_data_evidence: Optional[Dict[str, Any]] = None
 
 
 class AnalysisReportSchema(BaseModel):

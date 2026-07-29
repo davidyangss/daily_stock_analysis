@@ -1,0 +1,533 @@
+# -*- coding: utf-8 -*-
+"""Deterministic, low-sensitivity evidence summaries for Agent tool calls."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from typing import Any, Dict, Iterable, List, Optional
+
+
+_KEY_VALUE_FIELDS = {
+    "price",
+    "change_pct",
+    "volume",
+    "amount",
+    "volume_ratio",
+    "turnover_rate",
+    "amplitude",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "pe_ratio",
+    "pb_ratio",
+    "total_mv",
+    "circ_mv",
+    "current_price",
+    "ma5",
+    "ma10",
+    "ma20",
+    "ma30",
+    "ma60",
+    "bias_ma5",
+    "trend",
+    "trend_status",
+    "trend_strength",
+    "ma_alignment",
+    "volume_status",
+    "volume_ratio_5d",
+    "volume_ratio_vs_5d",
+    "volume_ratio_vs_20d",
+    "macd_dif",
+    "macd_dea",
+    "macd_bar",
+    "rsi",
+    "rsi_6",
+    "rsi_12",
+    "rsi_24",
+    "buy_signal",
+    "signal_score",
+    "profit_ratio",
+    "avg_cost",
+    "concentration",
+    "concentration_90",
+    "industry",
+    "sector",
+    "market",
+}
+_SOURCE_FIELDS = ("source", "provider", "data_source", "source_name")
+_DATE_FIELDS = ("as_of", "timestamp", "updated_at", "trade_date", "date")
+_COUNT_FIELDS = (
+    "actual_records",
+    "total_records",
+    "data_points",
+    "result_count",
+    "results_count",
+    "count",
+)
+
+
+def canonical_tool_name(value: Any) -> str:
+    """Normalize optional MCP/provider prefixes for dependency matching."""
+    text = str(value or "").strip()
+    return text.rsplit(":", 1)[-1] if ":" in text else text
+
+
+def _parse_result(result_text: Any) -> Any:
+    if isinstance(result_text, (dict, list)):
+        return result_text
+    if not isinstance(result_text, str):
+        return None
+    try:
+        return json.loads(result_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _safe_text(value: Any, limit: int = 200) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _first_text(mapping: Mapping[str, Any], keys: Iterable[str]) -> Optional[str]:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return _safe_text(value)
+    return None
+
+
+def _safe_scalar(value: Any) -> Any:
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _safe_text(value)
+
+
+def _result_sources(payload: Any) -> List[str]:
+    sources: List[str] = []
+
+    def add(value: Any) -> None:
+        text = _safe_text(value, 120)
+        if text and text not in sources:
+            sources.append(text)
+
+    if isinstance(payload, Mapping):
+        for key in _SOURCE_FIELDS:
+            add(payload.get(key))
+        raw_sources = payload.get("sources")
+        if isinstance(raw_sources, list):
+            for source in raw_sources[:20]:
+                add(source)
+        source_chain = payload.get("source_chain")
+        if isinstance(source_chain, list):
+            for item in source_chain[:20]:
+                if isinstance(item, Mapping):
+                    add(item.get("provider") or item.get("source"))
+        raw_results = payload.get("results")
+        if isinstance(raw_results, list):
+            for item in raw_results[:20]:
+                if isinstance(item, Mapping):
+                    for key in _SOURCE_FIELDS:
+                        add(item.get(key))
+        for key in ("fundamental_context", "valuation", "growth", "earnings"):
+            nested = payload.get(key)
+            if isinstance(nested, Mapping):
+                for source in _result_sources(nested):
+                    add(source)
+    return sources[:10]
+
+
+def _result_count(payload: Any) -> Optional[int]:
+    if isinstance(payload, Mapping):
+        for key in _COUNT_FIELDS:
+            value = payload.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        for key in ("data", "results", "items", "top"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+    if isinstance(payload, list):
+        return len(payload)
+    return None
+
+
+def _evidence_status(payload: Any, execution_success: bool) -> str:
+    if not execution_success:
+        return "fetch_failed"
+    if payload is None:
+        return "available"
+    if isinstance(payload, Mapping):
+        if not payload:
+            return "missing"
+        raw_status = str(payload.get("status") or "").strip().lower()
+        error = payload.get("error")
+        if raw_status in {"not_supported", "unsupported"}:
+            return "not_supported"
+        if raw_status in {"failed", "error", "fetch_failed"}:
+            return "fetch_failed"
+        if raw_status in {"missing", "no_data", "empty"}:
+            return "missing"
+        if raw_status == "stale":
+            return "stale"
+        if raw_status == "estimated":
+            return "estimated"
+        if raw_status == "partial":
+            return "partial"
+        if raw_status == "fallback":
+            return "fallback"
+        if error:
+            error_text = str(error).lower()
+            if "not supported" in error_text or "not_supported" in error_text:
+                return "not_supported"
+            if "no " in error_text and ("available" in error_text or "data" in error_text):
+                return "missing"
+            return "fetch_failed"
+        if payload.get("success") is False:
+            return "fetch_failed"
+        if payload.get("stale") is True or payload.get("is_stale") is True:
+            return "stale"
+        if payload.get("partial") is True or payload.get("partial_cache") is True:
+            return "partial"
+        source = str(payload.get("source") or "").lower()
+        if payload.get("fallback") is True or "fallback" in source:
+            return "fallback"
+        nested_context = payload.get("fundamental_context")
+        if isinstance(nested_context, Mapping):
+            nested_status = _evidence_status(nested_context, True)
+            if nested_status != "available":
+                return nested_status
+        collection_keys = (
+            "data",
+            "results",
+            "items",
+            "indices",
+            "sectors",
+            "top_sectors",
+            "bottom_sectors",
+            "dimensions",
+        )
+        present_collections = [
+            payload.get(key) for key in collection_keys if key in payload
+        ]
+        if present_collections and all(not value for value in present_collections):
+            return "missing"
+        for count_key in _COUNT_FIELDS:
+            if payload.get(count_key) == 0:
+                return "missing"
+        if "result" in payload and payload.get("result") is None:
+            return "missing"
+    return "available"
+
+
+def summarize_tool_result(
+    tool_name: str,
+    result_text: Any,
+    *,
+    execution_success: bool,
+    cached: bool = False,
+) -> Dict[str, Any]:
+    """Project one raw result into a report-safe evidence manifest item."""
+    payload = _parse_result(result_text)
+    mapping = payload if isinstance(payload, Mapping) else {}
+    status = _evidence_status(payload, execution_success)
+    requested_records = mapping.get("requested_days")
+    if requested_records is None:
+        requested_records = mapping.get("effective_days")
+    key_values = {
+        key: _safe_scalar(value)
+        for key, value in mapping.items()
+        if key in _KEY_VALUE_FIELDS and value is not None
+    }
+    raw_data = mapping.get("data")
+    latest_record = raw_data[-1] if isinstance(raw_data, list) and raw_data else None
+    if isinstance(latest_record, Mapping):
+        for key in ("open", "high", "low", "close", "volume", "amount"):
+            value = latest_record.get(key)
+            if value is not None:
+                key_values[f"latest_{key}"] = _safe_scalar(value)
+    top_sectors = mapping.get("top_sectors")
+    top_sector = top_sectors[0] if isinstance(top_sectors, list) and top_sectors else None
+    if isinstance(top_sector, Mapping):
+        sector_name = top_sector.get("name") or top_sector.get("sector")
+        if sector_name:
+            key_values["top_sector"] = _safe_scalar(sector_name)
+        if top_sector.get("change_pct") is not None:
+            key_values["top_sector_change_pct"] = _safe_scalar(
+                top_sector.get("change_pct")
+            )
+    evidence: Dict[str, Any] = {
+        "tool": str(tool_name or "").strip(),
+        "status": status,
+        "sources": _result_sources(payload),
+        "cached": bool(cached or mapping.get("cache_hit")),
+        "partial": status == "partial",
+        "key_values": key_values,
+    }
+    as_of = _first_text(mapping, _DATE_FIELDS)
+    if not as_of and isinstance(latest_record, Mapping):
+        as_of = _first_text(latest_record, _DATE_FIELDS)
+    if as_of:
+        evidence["as_of"] = as_of
+    record_count = _result_count(payload)
+    if record_count is not None:
+        evidence["record_count"] = record_count
+    if isinstance(requested_records, int):
+        evidence["requested_records"] = requested_records
+    if status not in {"available", "fallback", "stale", "partial", "estimated"}:
+        reason = mapping.get("error") or mapping.get("missing_reason") or mapping.get("note")
+        evidence["missing_reason"] = _safe_text(reason or status, 300)
+    return evidence
+
+
+def collect_tool_evidence(tool_calls: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Return de-duplicated evidence entries from execution logs."""
+    result: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for call in tool_calls or []:
+        evidence = call.get("evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        item = dict(evidence)
+        key = (
+            str(item.get("tool") or ""),
+            json.dumps(call.get("arguments") or {}, sort_keys=True, default=str),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def build_strategy_evidence_manifest(
+    *,
+    tool_evidence: Iterable[Mapping[str, Any]],
+    opinions: Iterable[Any],
+    invalid_records: Iterable[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build the deterministic dashboard/report projection for data dependencies."""
+    observed_items = [
+        dict(item) for item in tool_evidence or [] if isinstance(item, Mapping)
+    ]
+    strategy_requirements: List[Dict[str, Any]] = []
+    seen_skills: set[str] = set()
+
+    def skill_id_from_agent(value: Any) -> str:
+        agent_name = str(value or "")
+        for prefix in ("skill_", "skill:", "strategy_"):
+            if agent_name.startswith(prefix):
+                return agent_name[len(prefix):]
+        return agent_name
+
+    for opinion in opinions or []:
+        raw_data = getattr(opinion, "raw_data", None)
+        if not isinstance(raw_data, Mapping) or "evidence_status" not in raw_data:
+            continue
+        skill_id = skill_id_from_agent(getattr(opinion, "agent_name", ""))
+        if not skill_id or skill_id in seen_skills:
+            continue
+        seen_skills.add(skill_id)
+        strategy_requirements.append({
+            "skill_id": skill_id,
+            "status": str(raw_data.get("evidence_status") or "unknown"),
+            "missing_tools": list(raw_data.get("missing_required_tools") or []),
+            "limited_tools": list(raw_data.get("limited_required_tools") or []),
+            "evidence": list(raw_data.get("required_tool_evidence") or []),
+        })
+
+    for record in invalid_records or []:
+        if not isinstance(record, Mapping) or record.get("reason") != "insufficient_required_data":
+            continue
+        skill_id = skill_id_from_agent(record.get("agent_name"))
+        if not skill_id or skill_id in seen_skills:
+            continue
+        seen_skills.add(skill_id)
+        strategy_requirements.append({
+            "skill_id": skill_id,
+            "status": "insufficient",
+            "missing_tools": list(record.get("missing_required_tools") or []),
+            "limited_tools": list(record.get("limited_required_tools") or []),
+            "evidence": list(record.get("required_tool_evidence") or []),
+        })
+
+    required_items: List[Dict[str, Any]] = []
+    required_item_positions: Dict[str, int] = {}
+    required_tool_names: set[str] = set()
+    for requirement in strategy_requirements:
+        skill_id = str(requirement.get("skill_id") or "")
+        for evidence in requirement.get("evidence") or []:
+            if not isinstance(evidence, Mapping):
+                continue
+            tool_name = canonical_tool_name(evidence.get("tool"))
+            if not tool_name:
+                continue
+            required_tool_names.add(tool_name)
+            required_item = dict(evidence)
+            required_item["tool"] = tool_name
+            required_item["required"] = True
+            required_item["required_by"] = [skill_id] if skill_id else []
+            fingerprint_payload = {
+                key: value
+                for key, value in required_item.items()
+                if key not in {"required", "required_by", "stage"}
+            }
+            fingerprint = json.dumps(
+                fingerprint_payload,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+            existing_position = required_item_positions.get(fingerprint)
+            if existing_position is None:
+                required_item_positions[fingerprint] = len(required_items)
+                required_items.append(required_item)
+                continue
+            required_by = required_items[existing_position]["required_by"]
+            if skill_id and skill_id not in required_by:
+                required_by.append(skill_id)
+
+    # Required evidence must come from each strategy's own execution record.
+    # A same-named tool called by another Agent cannot satisfy or visually mask
+    # a missing dependency. Keep unrelated observed tools as auxiliary context.
+    auxiliary_items = [
+        item
+        for item in observed_items
+        if canonical_tool_name(item.get("tool")) not in required_tool_names
+    ]
+    items = [*required_items, *auxiliary_items]
+
+    if not items and not strategy_requirements:
+        return None
+
+    limitations: List[str] = []
+    for requirement in strategy_requirements:
+        skill_id = requirement["skill_id"]
+        for tool in requirement.get("missing_tools") or []:
+            limitations.append(f"{skill_id}: required data unavailable ({tool})")
+        for tool in requirement.get("limited_tools") or []:
+            limitations.append(f"{skill_id}: required data degraded ({tool})")
+
+    statuses = {item.get("status") for item in strategy_requirements}
+    if not statuses:
+        item_statuses = {item.get("status") for item in items}
+        if item_statuses & {"missing", "fetch_failed", "not_supported"}:
+            statuses.add("insufficient")
+        elif item_statuses & {"fallback", "partial", "estimated", "stale"}:
+            statuses.add("limited")
+        elif item_statuses:
+            statuses.add("verified")
+    status = (
+        "insufficient"
+        if "insufficient" in statuses
+        else ("limited" if "limited" in statuses else "verified")
+    )
+    return {
+        "schema_version": "strategy-evidence-v1",
+        "status": status,
+        "items": items[:60],
+        "strategy_requirements": strategy_requirements,
+        "limitations": list(dict.fromkeys(limitations))[:20],
+    }
+
+
+def extract_strategy_evidence_manifest(*values: Any) -> Optional[Dict[str, Any]]:
+    """Extract the deterministic manifest from persisted/current report payloads."""
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        candidates = [value]
+        dashboard = value.get("dashboard")
+        if isinstance(dashboard, Mapping):
+            candidates.append(dashboard)
+        raw_result = value.get("raw_result")
+        if isinstance(raw_result, Mapping):
+            candidates.append(raw_result)
+            nested_dashboard = raw_result.get("dashboard")
+            if isinstance(nested_dashboard, Mapping):
+                candidates.append(nested_dashboard)
+        for candidate in candidates:
+            manifest = candidate.get("strategy_data_evidence")
+            if isinstance(manifest, Mapping) and manifest.get("schema_version") == "strategy-evidence-v1":
+                return dict(manifest)
+    return None
+
+
+def format_strategy_evidence_markdown(
+    manifest: Any,
+    report_language: str = "zh",
+    *,
+    compact: bool = False,
+) -> str:
+    """Render one low-sensitivity evidence manifest for text report surfaces."""
+    if not isinstance(manifest, Mapping) or manifest.get("schema_version") != "strategy-evidence-v1":
+        return ""
+    language = str(report_language or "zh").strip().lower()
+    if language.startswith("en"):
+        heading = "Critical strategy data and sources"
+        overall_label = "Overall evidence"
+    elif language.startswith("ko"):
+        heading = "전략 핵심 데이터 및 출처"
+        overall_label = "전체 근거"
+    else:
+        heading = "策略关键数据与来源"
+        overall_label = "总体证据"
+
+    lines = [f"### 🔎 {heading}", "", f"- {overall_label}: {manifest.get('status') or 'unknown'}"]
+    for requirement in (manifest.get("strategy_requirements") or [])[:10]:
+        if not isinstance(requirement, Mapping):
+            continue
+        skill_id = str(requirement.get("skill_id") or "").strip()
+        if skill_id:
+            lines.append(f"- {skill_id}: {requirement.get('status') or 'unknown'}")
+
+    item_limit = 8 if compact else 20
+    for item in (manifest.get("items") or [])[:item_limit]:
+        if not isinstance(item, Mapping):
+            continue
+        sources = ", ".join(
+            str(value) for value in (item.get("sources") or []) if value
+        ) or "N/A"
+        values = item.get("key_values") if isinstance(item.get("key_values"), Mapping) else {}
+        value_text = ", ".join(
+            f"{key}={value}" for key, value in list(values.items())[:6]
+        ) or "N/A"
+        coverage: List[str] = []
+        if item.get("as_of"):
+            coverage.append(f"as-of={item['as_of']}")
+        if isinstance(item.get("record_count"), int):
+            coverage.append(f"records={item['record_count']}")
+        if isinstance(item.get("requested_records"), int):
+            coverage.append(f"requested={item['requested_records']}")
+        if item.get("cached"):
+            coverage.append("cache")
+        if item.get("partial"):
+            coverage.append("partial")
+        required_by = ", ".join(
+            str(value) for value in (item.get("required_by") or []) if value
+        )
+        if required_by:
+            coverage.append(f"required_by={required_by}")
+        if item.get("missing_reason"):
+            coverage.append(f"reason={item['missing_reason']}")
+        suffix = f" | {'; '.join(coverage)}" if coverage else ""
+        lines.append(
+            f"- `{item.get('tool') or 'unknown'}`: {item.get('status') or 'unknown'} | "
+            f"source={sources} | {value_text}{suffix}"
+        )
+    for limitation in (manifest.get("limitations") or [])[:10]:
+        lines.append(f"- ⚠️ {limitation}")
+    return "\n".join(lines)
+
+
+__all__ = [
+    "build_strategy_evidence_manifest",
+    "canonical_tool_name",
+    "collect_tool_evidence",
+    "extract_strategy_evidence_manifest",
+    "format_strategy_evidence_markdown",
+    "summarize_tool_result",
+]

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
 from src.agent.disagreement import build_agent_disagreement_summary
+from src.agent.evidence import build_strategy_evidence_manifest, collect_tool_evidence
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -601,6 +602,11 @@ class AgentOrchestrator:
                             tc for tc in (stage_result.meta.get("tool_calls_log") or [])
                         )
                         models_used.extend(stage_result.meta.get("models_used", []))
+                        self._record_tool_evidence(
+                            ctx,
+                            stage_result.stage_name,
+                            stage_result.meta.get("tool_calls_log") or [],
+                        )
                         if stage_result.status == StageStatus.FAILED:
                             self._record_degraded_stage(ctx, stage_result.stage_name, stage_result)
                     ctx.opinions.extend(batch.opinions)
@@ -648,6 +654,11 @@ class AgentOrchestrator:
                 tc for tc in (result.meta.get("tool_calls_log") or [])
             )
             models_used.extend(result.meta.get("models_used", []))
+            self._record_tool_evidence(
+                ctx,
+                result.stage_name,
+                result.meta.get("tool_calls_log") or [],
+            )
 
             elapsed_s = time.time() - t0
             if progress_callback:
@@ -757,6 +768,22 @@ class AgentOrchestrator:
             stats=stats,
             runtime_facts=build_agent_runtime_facts(ctx),
         )
+
+    @staticmethod
+    def _record_tool_evidence(
+        ctx: AgentContext,
+        stage_name: str,
+        tool_calls_log: List[Dict[str, Any]],
+    ) -> None:
+        """Persist only low-sensitivity tool evidence in shared Agent context."""
+        collected = ctx.meta.get("tool_evidence")
+        if not isinstance(collected, list):
+            collected = []
+        for item in collect_tool_evidence(tool_calls_log):
+            evidence = dict(item)
+            evidence["stage"] = stage_name
+            collected.append(evidence)
+        ctx.meta["tool_evidence"] = collected
 
     # -----------------------------------------------------------------
     # Agent chain construction
@@ -1533,6 +1560,22 @@ class AgentOrchestrator:
         strategy_synthesis = self._collect_strategy_synthesis(ctx, dashboard_block)
         if strategy_synthesis:
             dashboard_block["strategy_synthesis"] = strategy_synthesis
+
+        strategy_data_evidence = build_strategy_evidence_manifest(
+            tool_evidence=(
+                ctx.meta.get("tool_evidence")
+                if isinstance(ctx.meta.get("tool_evidence"), list)
+                else []
+            ),
+            opinions=ctx.opinions,
+            invalid_records=(
+                ctx.meta.get("invalid_opinions")
+                if isinstance(ctx.meta.get("invalid_opinions"), list)
+                else []
+            ),
+        )
+        if strategy_data_evidence:
+            dashboard_block["strategy_data_evidence"] = strategy_data_evidence
 
         dashboard_block["core_conclusion"] = core
         dashboard_block["intelligence"] = intelligence

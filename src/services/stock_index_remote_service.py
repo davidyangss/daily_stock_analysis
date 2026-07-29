@@ -174,8 +174,10 @@ def _atomic_write(cache_path: Path, content: bytes) -> None:
 def _clear_backend_stock_index_cache() -> None:
     try:
         from src.data.stock_index_loader import clear_stock_index_cache
+        from src.services.name_to_code_resolver import clear_name_resolution_cache
 
         clear_stock_index_cache()
+        clear_name_resolution_cache()
     except Exception as exc:  # noqa: BLE001 - cache clearing must not break refresh.
         logger.warning("[stock-index] remote index refreshed but backend cache clear failed: %s", exc)
 

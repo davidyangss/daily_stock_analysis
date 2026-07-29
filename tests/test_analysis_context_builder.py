@@ -453,7 +453,7 @@ def test_data_quality_scores_fixed_blocks_and_limits_auxiliary_missing() -> None
     )
     assert blank_news.blocks["news"].status == ContextFieldStatus.MISSING
     assert blank_news.data_quality.block_scores["news"] == 35
-    assert "news: missing" not in blank_news.data_quality.limitations
+    assert "news: missing" in blank_news.data_quality.limitations
 
 
 def test_portfolio_block_is_auxiliary_and_does_not_change_quality_score() -> None:

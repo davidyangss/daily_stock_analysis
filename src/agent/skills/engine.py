@@ -75,6 +75,23 @@ class StrategyEngine:
             raw_signal = opinion.signal if opinion.signal else raw_data.get("signal")
             canonical, invalid_signal, original_signal = normalize_strategy_signal(raw_signal)
 
+            if raw_data.get("evidence_status") == "insufficient":
+                invalid_records.append({
+                    "agent_name": opinion.agent_name,
+                    "raw_signal": original_signal or raw_signal,
+                    "confidence": opinion.confidence,
+                    "reason": "insufficient_required_data",
+                    "missing_required_tools": list(raw_data.get("missing_required_tools") or []),
+                    "limited_required_tools": list(raw_data.get("limited_required_tools") or []),
+                    "required_tool_evidence": list(raw_data.get("required_tool_evidence") or []),
+                })
+                logger.info(
+                    "[StrategyEngine] skill opinion excluded for missing required data: agent=%s tools=%s",
+                    opinion.agent_name,
+                    raw_data.get("missing_required_tools") or [],
+                )
+                continue
+
             if raw_signal is None or (isinstance(raw_signal, str) and not raw_signal.strip()):
                 invalid_records.append({
                     "agent_name": opinion.agent_name,

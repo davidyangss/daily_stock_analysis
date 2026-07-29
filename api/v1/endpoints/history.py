@@ -55,6 +55,7 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
+from src.agent.evidence import extract_strategy_evidence_manifest
 from src.market_phase_summary import extract_market_phase_summary
 
 logger = logging.getLogger(__name__)
@@ -574,6 +575,7 @@ def get_history_detail(
             raw_result=result.get("raw_result"),
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
+            strategy_data_evidence=extract_strategy_evidence_manifest(result.get("raw_result")),
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),

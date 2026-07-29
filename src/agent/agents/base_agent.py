@@ -15,6 +15,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
+from src.agent.evidence import collect_tool_evidence
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.memory import AgentMemory
 from src.agent.protocols import (
@@ -92,6 +93,19 @@ class BaseAgent(ABC):
         """
         return None
 
+    def attach_execution_evidence(
+        self,
+        opinion: AgentOpinion,
+        tool_calls_log: List[Dict[str, Any]],
+    ) -> AgentOpinion:
+        """Attach deterministic tool evidence without trusting model-authored fields."""
+        raw_data = dict(opinion.raw_data or {})
+        evidence = collect_tool_evidence(tool_calls_log)
+        # Always overwrite the model-authored key, including when no tool ran.
+        raw_data["tool_evidence"] = evidence
+        opinion.raw_data = raw_data
+        return opinion
+
     # -----------------------------------------------------------------
     # Execution
     # -----------------------------------------------------------------
@@ -149,6 +163,10 @@ class BaseAgent(ABC):
             opinion = self.post_process(ctx, loop_result.content)
             if opinion is not None:
                 opinion.agent_name = self.agent_name
+                opinion = self.attach_execution_evidence(
+                    opinion,
+                    loop_result.tool_calls_log,
+                )
                 self._apply_memory_calibration(ctx, opinion, result)
                 ctx.add_opinion(opinion)
                 result.opinion = opinion

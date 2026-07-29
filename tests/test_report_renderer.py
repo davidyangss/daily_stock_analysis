@@ -423,6 +423,45 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("热点题材/卖出/75%", out)
         self.assertNotIn("bull_trend/买入", out)
 
+    def test_render_templates_show_strategy_data_evidence(self) -> None:
+        manifest = {
+            "schema_version": "strategy-evidence-v1",
+            "status": "insufficient",
+            "items": [{
+                "tool": "search_stock_news",
+                "status": "missing",
+                "sources": ["searxng"],
+                "cached": False,
+                "partial": False,
+                "key_values": {},
+                "missing_reason": "no results",
+                "required_by": ["volume_breakout"],
+            }],
+            "strategy_requirements": [{
+                "skill_id": "volume_breakout",
+                "status": "insufficient",
+            }],
+            "limitations": [
+                "volume_breakout: required data unavailable (search_stock_news)"
+            ],
+        }
+        result = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "证据不足"},
+                "intelligence": {},
+                "battle_plan": {},
+                "strategy_data_evidence": manifest,
+            }
+        )
+
+        for platform in ("markdown", "wechat"):
+            out = render(platform, [result], summary_only=False)
+
+            self.assertIsNotNone(out)
+            self.assertIn("策略关键数据与来源", out)
+            self.assertIn("source=searxng", out)
+            self.assertIn("reason=no results", out)
+
     def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
         for platform in ("markdown", "wechat"):
             for malformed in ("bad-shape", ["bad-shape"], 42, True):

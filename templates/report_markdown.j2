@@ -184,6 +184,11 @@
 
 {% endif %}
 
+{% set strategy_evidence = format_strategy_evidence_markdown(dashboard.get('strategy_data_evidence'), report_language) %}
+{% if strategy_evidence %}{{ strategy_evidence }}
+
+{% endif %}
+
 {% if battle %}
 ### 🎯 {{ labels.battle_plan_heading }}
 

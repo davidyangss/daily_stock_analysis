@@ -260,6 +260,10 @@ class ReportDetails(BaseModel):
         None,
         description="本次分析输入上下文包低敏摘要",
     )
+    strategy_data_evidence: Optional[Any] = Field(
+        None,
+        description="策略关键数据、来源、缺失状态与策略依赖关系",
+    )
     financial_report: Optional[Any] = Field(None, description="结构化财报摘要（来自 fundamental_context）")
     dividend_metrics: Optional[Any] = Field(None, description="结构化分红指标（含 TTM 口径）")
     belong_boards: Optional[Any] = Field(None, description="关联板块列表")

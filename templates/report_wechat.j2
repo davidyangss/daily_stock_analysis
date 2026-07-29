@@ -79,6 +79,10 @@
 {% endif %}
 {% endif %}
 
+{% set strategy_evidence = format_strategy_evidence_markdown(dashboard.get('strategy_data_evidence'), report_language, compact=True) %}
+{% if strategy_evidence %}{{ strategy_evidence }}
+{% endif %}
+
 {% set checklist = battle.get('action_checklist', []) if battle else [] %}
 {% set fc = failed_checks(checklist) %}
 {% if fc %}

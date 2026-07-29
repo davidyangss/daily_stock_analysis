@@ -57,6 +57,7 @@ from src.agent.final_explanation import (
     build_pipeline_final_explanation,
     capture_pipeline_action_adjustment,
 )
+from src.agent.evidence import collect_tool_evidence
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
     DailyMarketContext,
@@ -1891,6 +1892,22 @@ class StockAnalysisPipeline:
         target_context["daily_market_context"] = safe_context
         target_context["daily_market_context_summary"] = prompt_section
 
+    @staticmethod
+    def _agent_data_sources(agent_result: Any) -> str:
+        """Render real data providers from Agent tool evidence, plus the LLM backend."""
+        labels: List[str] = []
+        for evidence in collect_tool_evidence(getattr(agent_result, "tool_calls_log", []) or []):
+            for source in evidence.get("sources") or []:
+                label = str(source or "").strip()
+                if label and label not in labels:
+                    labels.append(label)
+        provider = str(getattr(agent_result, "provider", "") or "").strip()
+        if provider:
+            llm_label = f"agent:{provider}"
+            if llm_label not in labels:
+                labels.append(llm_label)
+        return ",".join(labels)
+
     def _agent_result_to_analysis_result(
         self,
         agent_result,
@@ -1915,7 +1932,7 @@ class StockAnalysisPipeline:
             report_language=report_language,
             success=agent_result.success,
             error_message=agent_result.error or None,
-            data_sources=f"agent:{agent_result.provider}",
+            data_sources=self._agent_data_sources(agent_result),
             model_used=agent_result.model or None,
         )
 

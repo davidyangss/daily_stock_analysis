@@ -36,7 +36,8 @@ core_rules: [1, 2]
 
 # 策略需要使用的工具列表，可选
 # 可用工具：get_daily_history, analyze_trend, get_realtime_quote,
-#           get_sector_rankings, search_stock_news, get_stock_info
+#           get_sector_rankings, search_stock_news, get_stock_info,
+#           get_chip_distribution
 required_tools:
   - get_daily_history
   - analyze_trend
@@ -71,6 +72,18 @@ instructions: |
   - 满足条件时建议的 sentiment_score 调整
   - 在 `buy_reason` 中注明策略名称
 ```
+
+### `required_tools` 数据契约
+
+`required_tools` 是策略的硬数据依赖，不只是给模型的工具建议。Specialist 运行时会校验每个必需工具的真实执行证据：
+
+- 全部数据可用时，策略证据状态为 `verified`。
+- 返回 fallback、partial、estimated 或 stale 数据时，状态为 `limited`；策略可以继续参与综合，但报告会显示降级项。
+- 工具未调用，或返回 missing、fetch_failed、not_supported 时，状态为 `insufficient`；该策略观点进入诊断面，不参与 `strategy_synthesis` 投票。
+
+整次分析仍采用 fail-open：单一策略证据不足不会中断其他 Agent 或报告生成。报告中的 `strategy_data_evidence` 会确定性展示必需工具、状态、可安全公开的关键值、来源、数据时间/记录覆盖和缺失原因；这些字段来自工具执行结果，不采信模型自行声明的数据来源。
+
+编写策略时，应把判断条件实际依赖的数据工具完整列入 `required_tools`，并确保这些工具也在该策略可用工具范围内。不要依赖 Prompt 中提到、但未声明为必需工具的数据来形成方向性结论。
 
 ### 核心交易理念参考
 

@@ -149,6 +149,7 @@ def _compact_fundamental_context(fundamental_context: dict) -> dict:
         "market": fundamental_context.get("market"),
         "status": fundamental_context.get("status"),
         "coverage": fundamental_context.get("coverage", {}),
+        "source_chain": fundamental_context.get("source_chain", []),
     }
     for block in blocks:
         payload = fundamental_context.get(block, {})
