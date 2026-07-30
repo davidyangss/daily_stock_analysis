@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Agent 后置新闻搜索成功时同步更新最终输入数据块；策略证据以中文指标、值、单位和含义展示预取筹码等实际报告输入，并列出基本面、资金流等缺失字段及真实失败原因。
 - [文档] 新增通达信 TdxQuant A 股数据源 Feature 设计，明确 Windows Bridge、只读 provider、数据质量、fallback、安全边界与分阶段验收方案。
 - [修复] 报告诊断优先采用本次运行的新闻搜索 provider 证据，避免 Agent 模式新闻搜索成功时仍显示为未获取
 

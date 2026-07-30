@@ -315,6 +315,8 @@ export interface AnalysisContextPackOverviewBlock {
   source?: string | null;
   warnings: string[];
   missingReasons: string[];
+  availableItems?: string[];
+  unavailableItems?: string[];
 }
 
 export interface AnalysisContextPackOverviewCounts {
@@ -373,6 +375,18 @@ export interface StrategyEvidenceItem {
   cached: boolean;
   partial: boolean;
   keyValues: Record<string, string | number | boolean | null>;
+  metricDetails?: Array<{
+    key: string;
+    label: string;
+    status: 'available' | 'missing';
+    value?: string | number | boolean | null;
+    displayValue?: string | null;
+    unit?: string;
+    description?: string;
+    missingReason?: string | null;
+  }>;
+  missingFields?: string[];
+  prefetched?: boolean;
   stage?: string;
   asOf?: string;
   recordCount?: number;

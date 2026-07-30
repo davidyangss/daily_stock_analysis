@@ -100,10 +100,10 @@ Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema
 
 - `status`：本次策略依赖总体状态（`verified` / `limited` / `insufficient`）。
 - `strategy_requirements`：各策略的必需工具、缺失/降级工具及对应证据。
-- `items`：工具状态、来源、cache/partial 标记、as-of、请求/实际记录数和允许公开的关键标量。
+- `items`：工具状态、来源、cache/partial/prefetched 标记、as-of、请求/实际记录数和允许公开的关键标量；常用行情、估值、资金流和筹码字段同时提供中文指标名、格式化值、单位、含义、可用/缺失状态与缺失字段清单。
 - `limitations`：必需数据不可用或降级的确定性说明。
 
-该清单由真实工具结果投影，禁止让 LLM 重写、删除或把空结果描述为成功。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；旧报告没有该字段时保持兼容隐藏。
+该清单由真实工具结果和 pipeline 已预取、且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；旧报告没有该字段时保持兼容隐藏。
 
 ### 动态二分阵营（Supporting / Opposing）
 

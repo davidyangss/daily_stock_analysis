@@ -416,6 +416,29 @@ def test_news_block_treats_blank_as_missing_and_records_pack_metadata() -> None:
     assert available.metadata["news_result_count"] == 5
 
 
+def test_fundamental_partial_block_exposes_available_and_unavailable_items() -> None:
+    pack = AnalysisContextBuilder.build(
+        _artifacts(fundamental_context={
+            "status": "partial",
+            "coverage": {"valuation": "ok", "growth": "partial"},
+            "source_chain": [{"provider": "realtime_quote", "result": "ok"}],
+            "valuation": {"status": "ok", "data": {"pe_ratio": 20, "pb_ratio": 3}},
+            "growth": {"status": "partial", "data": {"revenue_yoy": None}},
+            "earnings": {"status": "partial", "data": {}},
+            "institution": {"status": "partial", "data": {}},
+            "capital_flow": {"status": "failed", "data": {}, "errors": ["capital_flow timeout"]},
+            "dragon_tiger": {"status": "failed", "data": {}, "errors": ["fundamental stage timeout"]},
+            "boards": {"status": "failed", "data": {}, "errors": ["fundamental stage timeout"]},
+        })
+    )
+
+    metadata = pack.blocks["fundamentals"].metadata
+    assert "valuation.pe_ratio" in metadata["available_items"]
+    assert "valuation.pb_ratio" in metadata["available_items"]
+    assert "growth.revenue_yoy" in metadata["unavailable_items"]
+    assert "capital_flow: capital_flow timeout" in metadata["unavailable_items"]
+
+
 def test_data_quality_scores_fixed_blocks_and_limits_auxiliary_missing() -> None:
     pack = AnalysisContextBuilder.build(_artifacts())
 

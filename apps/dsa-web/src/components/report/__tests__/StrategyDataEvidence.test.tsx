@@ -80,4 +80,58 @@ describe('StrategyDataEvidence', () => {
 
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('shows prefetched chip metrics and missing fields in readable form', () => {
+    render(
+      <StrategyDataEvidence
+        evidence={{
+          schemaVersion: 'strategy-evidence-v1',
+          status: 'verified',
+          strategyRequirements: [],
+          limitations: [],
+          items: [{
+            tool: 'get_chip_distribution',
+            toolDisplayName: '筹码分布分析',
+            dataDescription: '筹码分布数据',
+            status: 'available',
+            sources: ['akshare_sina_calculated'],
+            cached: false,
+            partial: false,
+            prefetched: true,
+            keyValues: { avg_cost: 470.14 },
+            metricDetails: [
+              {
+                key: 'profit_ratio',
+                label: '获利盘比例',
+                status: 'available',
+                value: 0.0758,
+                displayValue: '7.58%',
+                unit: '%',
+                description: '当前价格以下的获利筹码占比',
+              },
+              {
+                key: 'concentration_70',
+                label: '70%筹码集中度',
+                status: 'missing',
+                value: null,
+                displayValue: null,
+                unit: '%',
+                description: '核心筹码区间的集中程度',
+                missingReason: 'source_field_missing',
+              },
+            ],
+            missingFields: ['concentration_70'],
+          }],
+        }}
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByText('筹码分布分析')).toBeInTheDocument();
+    expect(screen.getByText('分析前已获取')).toBeInTheDocument();
+    expect(screen.getByText('获利盘比例')).toBeInTheDocument();
+    expect(screen.getByText('可用: 7.58%')).toBeInTheDocument();
+    expect(screen.getByText('70%筹码集中度')).toBeInTheDocument();
+    expect(screen.getByText('缺失')).toBeInTheDocument();
+  });
 });

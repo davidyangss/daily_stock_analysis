@@ -53,6 +53,16 @@ _KEY_VALUE_FIELDS = {
     "avg_cost",
     "concentration",
     "concentration_90",
+    "concentration_70",
+    "cost_90_low",
+    "cost_90_high",
+    "main_net_inflow",
+    "inflow_5d",
+    "inflow_10d",
+    "revenue_yoy",
+    "net_profit_yoy",
+    "roe",
+    "gross_margin",
     "industry",
     "sector",
     "market",
@@ -130,6 +140,65 @@ _ZH_EVIDENCE_STATUS_LABELS = {
     "not_supported": "不支持",
 }
 
+_METRIC_SPECS: Dict[str, Dict[str, tuple[str, str, str]]] = {
+    "get_daily_history": {
+        "latest_open": ("最近交易日开盘价", "元", "最近一根日K线的开盘价"),
+        "latest_high": ("最近交易日最高价", "元", "最近一根日K线的最高价"),
+        "latest_low": ("最近交易日最低价", "元", "最近一根日K线的最低价"),
+        "latest_close": ("最近交易日收盘价", "元", "最近一根已完成日K线的收盘价"),
+        "latest_volume": ("最近交易日成交量", "股", "最近一根日K线的成交股数"),
+        "latest_amount": ("最近交易日成交额", "元", "最近一根日K线的成交金额"),
+    },
+    "get_volume_analysis": {
+        "volume_ratio_vs_5d": ("成交量/近5日均量", "倍", "当前成交量相对近5日平均成交量"),
+        "volume_ratio_vs_20d": ("成交量/近20日均量", "倍", "当前成交量相对近20日平均成交量"),
+    },
+    "analyze_trend": {
+        "current_price": ("分析价格", "元", "技术指标计算使用的价格"),
+        "ma5": ("5日均线", "元", "最近5个交易日收盘价均值"),
+        "ma10": ("10日均线", "元", "最近10个交易日收盘价均值"),
+        "ma20": ("20日均线", "元", "最近20个交易日收盘价均值"),
+        "ma60": ("60日均线", "元", "最近60个交易日收盘价均值"),
+        "bias_ma5": ("相对5日均线乖离率", "%", "价格偏离5日均线的幅度"),
+        "macd_dif": ("MACD DIF", "", "短期与长期指数均线差"),
+        "macd_dea": ("MACD DEA", "", "DIF的平滑信号线"),
+        "macd_bar": ("MACD柱", "", "DIF与DEA差值的动量柱"),
+        "rsi_6": ("RSI(6)", "", "6周期相对强弱指标"),
+        "rsi_12": ("RSI(12)", "", "12周期相对强弱指标"),
+        "rsi_24": ("RSI(24)", "", "24周期相对强弱指标"),
+        "signal_score": ("技术信号分", "分", "技术规则汇总后的方向强度评分"),
+    },
+    "get_chip_distribution": {
+        "profit_ratio": ("获利盘比例", "%", "当前价格以下的获利筹码占比"),
+        "avg_cost": ("市场平均持仓成本", "元", "筹码分布估算的平均成本"),
+        "cost_90_low": ("90%筹码成本下沿", "元", "覆盖90%筹码的成本区间下界"),
+        "cost_90_high": ("90%筹码成本上沿", "元", "覆盖90%筹码的成本区间上界"),
+        "concentration_90": ("90%筹码集中度", "%", "数值越低通常表示筹码越集中"),
+        "concentration_70": ("70%筹码集中度", "%", "核心筹码区间的集中程度"),
+    },
+    "get_capital_flow": {
+        "main_net_inflow": ("当日主力净流入", "元", "主力资金流入减流出的净额"),
+        "inflow_5d": ("近5日主力累计净流入", "元", "最近5个交易日主力净流入合计"),
+        "inflow_10d": ("近10日主力累计净流入", "元", "最近10个交易日主力净流入合计"),
+    },
+    "get_realtime_quote": {
+        "price": ("最新价", "元", "本次分析使用的最新成交价格"),
+        "change_pct": ("涨跌幅", "%", "相对上一交易日收盘价的变化"),
+        "volume_ratio": ("量比", "倍", "当前成交速度相对近期平均水平"),
+        "turnover_rate": ("换手率", "%", "成交股数占流通股本比例"),
+        "pe_ratio": ("市盈率（PE）", "倍", "价格相对盈利水平的估值指标"),
+        "pb_ratio": ("市净率（PB）", "倍", "价格相对净资产的估值指标"),
+    },
+    "get_stock_info": {
+        "pe_ratio": ("市盈率（PE）", "倍", "价格相对盈利水平的估值指标"),
+        "pb_ratio": ("市净率（PB）", "倍", "价格相对净资产的估值指标"),
+        "revenue_yoy": ("营收同比增长率", "%", "营业收入相对上年同期的变化"),
+        "net_profit_yoy": ("净利润同比增长率", "%", "归母净利润相对上年同期的变化"),
+        "roe": ("净资产收益率（ROE）", "%", "净利润相对股东权益的回报水平"),
+        "gross_margin": ("毛利率", "%", "营业收入扣除营业成本后的利润比例"),
+    },
+}
+
 
 def canonical_tool_name(value: Any) -> str:
     """Normalize optional MCP/provider prefixes for dependency matching."""
@@ -166,6 +235,36 @@ def _safe_scalar(value: Any) -> Any:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return _safe_text(value)
+
+
+def _metric_details(tool_name: str, mapping: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    specs = _METRIC_SPECS.get(canonical_tool_name(tool_name), {})
+    details: List[Dict[str, Any]] = []
+    for key, (label, unit, description) in specs.items():
+        value = mapping.get(key)
+        status = "available" if value not in (None, "", [], {}) else "missing"
+        display_value: Optional[str] = None
+        if status == "available":
+            display_number = value
+            if key in {"profit_ratio", "concentration_90", "concentration_70"} and isinstance(value, (int, float)):
+                display_number = value * 100
+            if isinstance(display_number, float):
+                display_value = f"{display_number:.2f}"
+            else:
+                display_value = str(display_number)
+            if unit:
+                display_value += unit
+        details.append({
+            "key": key,
+            "label": label,
+            "status": status,
+            "value": _safe_scalar(value),
+            "display_value": display_value,
+            "unit": unit,
+            "description": description,
+            "missing_reason": None if status == "available" else "source_field_missing",
+        })
+    return details
 
 
 def _result_sources(payload: Any) -> List[str]:
@@ -367,6 +466,12 @@ def summarize_tool_result(
         "partial": status == "partial",
         "key_values": key_values,
     }
+    metric_details = _metric_details(tool_name, {**mapping, **key_values})
+    if metric_details:
+        evidence["metric_details"] = metric_details
+        evidence["missing_fields"] = [
+            item["key"] for item in metric_details if item["status"] == "missing"
+        ]
     tool_key = canonical_tool_name(tool_name)
     presentation = _TOOL_PRESENTATION.get(tool_key)
     if presentation:
@@ -391,7 +496,18 @@ def summarize_tool_result(
     if isinstance(requested_records, int):
         evidence["requested_records"] = requested_records
     if status not in {"available", "fallback", "stale", "partial", "estimated"}:
-        reason = mapping.get("error") or mapping.get("missing_reason") or mapping.get("note")
+        errors = mapping.get("errors")
+        errors_text = (
+            "; ".join(_safe_text(item, 200) for item in errors[:5] if item)
+            if isinstance(errors, list)
+            else None
+        )
+        reason = (
+            mapping.get("error")
+            or mapping.get("missing_reason")
+            or errors_text
+            or mapping.get("note")
+        )
         evidence["missing_reason"] = _safe_text(reason or status, 300)
         attempts = _failure_attempts(mapping)
         if attempts:
@@ -406,6 +522,88 @@ def summarize_tool_result(
         if failure_reason:
             evidence["failure_reason"] = _safe_text(failure_reason, 300)
     return evidence
+
+
+def build_prefetched_context_evidence(context: Any) -> List[Dict[str, Any]]:
+    """Summarize pipeline-prefetched inputs that the Agent report actually uses."""
+    if not isinstance(context, Mapping):
+        return []
+    candidates = (
+        ("get_realtime_quote", context.get("realtime_quote")),
+        ("get_chip_distribution", context.get("chip_distribution")),
+    )
+    evidence: List[Dict[str, Any]] = []
+    for tool_name, payload in candidates:
+        if not isinstance(payload, Mapping) or not payload:
+            continue
+        item = summarize_tool_result(tool_name, payload, execution_success=True)
+        item["stage"] = "prefetch"
+        item["prefetched"] = True
+        evidence.append(item)
+
+    fundamental = context.get("fundamental_context")
+    if isinstance(fundamental, Mapping) and fundamental:
+        flattened: Dict[str, Any] = {
+            "status": fundamental.get("status"),
+            "source_chain": fundamental.get("source_chain"),
+            "errors": fundamental.get("errors"),
+        }
+        for block_key in ("valuation", "growth"):
+            block = fundamental.get(block_key)
+            data = block.get("data") if isinstance(block, Mapping) else None
+            if isinstance(data, Mapping):
+                flattened.update(data)
+        item = summarize_tool_result("get_stock_info", flattened, execution_success=True)
+        item["stage"] = "prefetch"
+        item["prefetched"] = True
+        evidence.append(item)
+    return evidence
+
+
+def merge_prefetched_evidence(
+    manifest: Any,
+    prefetched_items: Iterable[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Merge report inputs fetched before Agent tool execution into the manifest."""
+    merged = dict(manifest) if isinstance(manifest, Mapping) else {
+        "schema_version": "strategy-evidence-v1",
+        "status": "verified",
+        "items": [],
+        "strategy_requirements": [],
+        "limitations": [],
+    }
+    if merged.get("schema_version") != "strategy-evidence-v1":
+        return None
+    items = [dict(item) for item in merged.get("items") or [] if isinstance(item, Mapping)]
+    by_tool = {canonical_tool_name(item.get("tool")): item for item in items}
+    for raw_item in prefetched_items:
+        item = dict(raw_item)
+        tool = canonical_tool_name(item.get("tool"))
+        if not tool:
+            continue
+        existing = by_tool.get(tool)
+        if existing is None:
+            items.append(item)
+            by_tool[tool] = item
+            continue
+        existing_values = existing.get("key_values")
+        if not isinstance(existing_values, dict):
+            existing_values = {}
+            existing["key_values"] = existing_values
+        existing_values.update(item.get("key_values") or {})
+        existing_metrics = existing.get("metric_details")
+        if not isinstance(existing_metrics, list) or not existing_metrics:
+            existing["metric_details"] = list(item.get("metric_details") or [])
+        existing_missing = existing.get("missing_fields")
+        if not isinstance(existing_missing, list):
+            existing["missing_fields"] = list(item.get("missing_fields") or [])
+        sources = list(existing.get("sources") or [])
+        for source in item.get("sources") or []:
+            if source not in sources:
+                sources.append(source)
+        existing["sources"] = sources[:10]
+    merged["items"] = items[:60]
+    return merged
 
 
 def collect_tool_evidence(tool_calls: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -671,16 +869,32 @@ def format_strategy_evidence_markdown(
             f"- {tool_text}: {display_status}{data_suffix} | "
             f"source={sources} | {value_text}{suffix}"
         )
+        metric_details = item.get("metric_details")
+        if isinstance(metric_details, list):
+            for metric in metric_details[:12]:
+                if not isinstance(metric, Mapping):
+                    continue
+                metric_label = metric.get("label") or metric.get("key") or "unknown"
+                if metric.get("status") == "available":
+                    metric_value = metric.get("display_value") or metric.get("value")
+                    metric_status = f"可用，{metric_value}" if language.startswith("zh") else f"available, {metric_value}"
+                else:
+                    metric_status = "缺失" if language.startswith("zh") else "missing"
+                description = str(metric.get("description") or "").strip()
+                description_suffix = f"；{description}" if description else ""
+                lines.append(f"  - {metric_label}: {metric_status}{description_suffix}")
     for limitation in (manifest.get("limitations") or [])[:10]:
         lines.append(f"- ⚠️ {limitation}")
     return "\n".join(lines)
 
 
 __all__ = [
+    "build_prefetched_context_evidence",
     "build_strategy_evidence_manifest",
     "canonical_tool_name",
     "collect_tool_evidence",
     "extract_strategy_evidence_manifest",
     "format_strategy_evidence_markdown",
+    "merge_prefetched_evidence",
     "summarize_tool_result",
 ]

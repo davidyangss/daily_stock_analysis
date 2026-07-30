@@ -389,6 +389,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - **Sector leaderboard** uses a fixed fallback order: consistent with global priority.
 > - **Timeout control** is a `best-effort` soft timeout: the stage will quickly degrade and continue execution based on the budget, but does not guarantee a hard interrupt of underlying third-party network calls.
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` indicates the target budget for the newly added fundamental stage, not a strict hard SLA; Windows, Docker, or rate-limited free data sources can raise it to `12-15s`.
+> - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` is shared by valuation, financial summaries, capital flow, dragon-tiger, and board data, while `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` caps one capability call. To keep a slow capital-flow request from consuming the budget of later capabilities, a practical starting point is a `45` second stage budget with a `15` second per-capability cap; the stage budget should not be lower than the per-capability cap. Higher values directly increase worst-case analysis latency.
 > - For a hard SLA, please upgrade to isolated child process execution in future versions to forcefully terminate timeout tasks.
 
 ### Other Configuration

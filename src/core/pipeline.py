@@ -49,7 +49,10 @@ from src.report_language import (
 )
 from src.search_service import SearchService
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
-from src.analysis_context_pack_overview import render_analysis_context_pack_overview
+from src.analysis_context_pack_overview import (
+    reconcile_agent_analysis_context_overview,
+    render_analysis_context_pack_overview,
+)
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.agent.final_explanation import (
@@ -57,7 +60,11 @@ from src.agent.final_explanation import (
     build_pipeline_final_explanation,
     capture_pipeline_action_adjustment,
 )
-from src.agent.evidence import collect_tool_evidence
+from src.agent.evidence import (
+    build_prefetched_context_evidence,
+    collect_tool_evidence,
+    merge_prefetched_evidence,
+)
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
     DailyMarketContext,
@@ -1451,6 +1458,19 @@ class StockAnalysisPipeline:
             )
             if result:
                 result.query_id = query_id
+                dashboard = getattr(result, "dashboard", None)
+                strategy_evidence = None
+                if isinstance(dashboard, dict):
+                    strategy_evidence = merge_prefetched_evidence(
+                        dashboard.get("strategy_data_evidence"),
+                        build_prefetched_context_evidence(initial_context),
+                    )
+                    if strategy_evidence is not None:
+                        dashboard["strategy_data_evidence"] = strategy_evidence
+                analysis_context_pack_overview = reconcile_agent_analysis_context_overview(
+                    analysis_context_pack_overview,
+                    strategy_evidence,
+                )
             # Agent weak integrity: placeholder fill only, no LLM retry
             if result and getattr(self.config, "report_integrity_enabled", False):
                 from src.analyzer import check_content_integrity, apply_placeholder_fill

@@ -312,6 +312,8 @@ P0 只记录历史消费面。完整 pack 不应默认公开到历史详情或�
 
 - `analysis_history.context_snapshot.enhanced_context.date` 是当前回测日期解析兼容点，P1/P2 不能在没有迁移的情况下破坏。
 - 完整 pack 不默认公开到历史、API、Web 或通知；P4/P5 只公开 `analysis_context_pack_overview` 低敏摘要、来源、fallback、stale、missing reason、block status count 和 `data_quality` 低敏评分。
+- 最终 Agent 报告会把分析过程中成功调用的新闻工具协调进公开 overview，并用 `news_acquired_during_agent_analysis` 标记后置输入，避免初始上下文缺失掩盖最终报告实际使用的新闻证据。
+- `partial` 基本面块公开 `available_items` 与 `unavailable_items`，列出已获取字段、未获取字段、失败子数据块及脱敏原因，便于用户判断数据覆盖和报告准确性；不公开原始财务 payload。
 - pack、日志、历史快照和 API 响应不得记录 API key、token、cookie、完整 webhook URL、邮箱密码、私有环境变量或其他密钥。
 - `source`、`timestamp`、`fallback`、`stale`、`partial` 等质量元数据只用于解释输入限制，不用于阻断分析；除非现有核心路径本来就是 fail-fast。
 - #1386 的盘前 / 盘中 phase 感知是后续 `phase` / `data_quality` 字段的重要背景；P0 只记录关系，不接入 runtime。

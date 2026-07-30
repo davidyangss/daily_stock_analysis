@@ -13,10 +13,12 @@ except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
 from src.agent.evidence import (
+    build_prefetched_context_evidence,
     build_strategy_evidence_manifest,
     extract_strategy_evidence_manifest,
     format_strategy_evidence_markdown,
     summarize_tool_result,
+    merge_prefetched_evidence,
 )
 from src.agent.protocols import AgentOpinion
 from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
@@ -25,6 +27,35 @@ from src.notification import _append_strategy_data_evidence_block
 
 
 class TestToolEvidence(unittest.TestCase):
+    def test_prefetched_chip_is_persistable_detailed_evidence(self) -> None:
+        items = build_prefetched_context_evidence({
+            "chip_distribution": {
+                "source": "akshare_sina_calculated",
+                "profit_ratio": 0.0758,
+                "avg_cost": 470.14,
+                "cost_90_low": 363.73,
+                "cost_90_high": 711.6,
+                "concentration_90": 0.3235,
+                "concentration_70": None,
+            }
+        })
+
+        self.assertEqual(len(items), 1)
+        chip = items[0]
+        self.assertEqual(chip["tool"], "get_chip_distribution")
+        self.assertTrue(chip["prefetched"])
+        self.assertEqual(chip["status"], "available")
+        metrics = {item["key"]: item for item in chip["metric_details"]}
+        self.assertEqual(metrics["profit_ratio"]["display_value"], "7.58%")
+        self.assertEqual(metrics["avg_cost"]["display_value"], "470.14元")
+        self.assertEqual(metrics["concentration_70"]["status"], "missing")
+        self.assertIn("concentration_70", chip["missing_fields"])
+
+        manifest = merge_prefetched_evidence(None, items)
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["items"][0]["stage"], "prefetch")
+        json.dumps(manifest, ensure_ascii=False)
+
     def test_available_quote_keeps_source_and_key_values(self) -> None:
         evidence = summarize_tool_result(
             "get_realtime_quote",
@@ -154,6 +185,16 @@ class TestToolEvidence(unittest.TestCase):
         self.assertEqual(evidence["failure_attempts"][0]["provider"], "AkshareFetcher")
         self.assertEqual(evidence["failure_attempts"][0]["reason"], "empty result")
         self.assertEqual(evidence["source_links"][0]["url"], "https://www.akshare.xyz/")
+
+    def test_failure_reason_uses_errors_array(self) -> None:
+        evidence = summarize_tool_result(
+            "get_capital_flow",
+            {"status": "failed", "errors": ["capital_flow timeout"]},
+            execution_success=True,
+        )
+
+        self.assertEqual(evidence["status"], "fetch_failed")
+        self.assertEqual(evidence["missing_reason"], "capital_flow timeout")
 
 
 class TestSkillEvidenceContract(unittest.TestCase):

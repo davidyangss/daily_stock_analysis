@@ -9,6 +9,7 @@ from typing import Any
 
 from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
+    reconcile_agent_analysis_context_overview,
     render_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
@@ -153,6 +154,8 @@ def test_renderer_outputs_only_public_schema_fields() -> None:
         "source",
         "warnings",
         "missing_reasons",
+        "available_items",
+        "unavailable_items",
     }
     assert set(overview["data_quality"]) == {
         "overall_score",
@@ -214,6 +217,30 @@ def test_counts_are_by_block_status_and_missing_reasons_are_deduped() -> None:
         "provider_timeout",
         "backup_unavailable",
     ]
+
+
+def test_agent_news_evidence_reconciles_final_report_overview() -> None:
+    overview = render_analysis_context_pack_overview(_pack(), report_language="zh")
+    reconciled = reconcile_agent_analysis_context_overview(
+        overview,
+        {"items": [{
+            "tool": "search_stock_news",
+            "status": "available",
+            "sources": ["Anspire"],
+            "record_count": 5,
+        }]},
+    )
+
+    assert reconciled is not None
+    news = next(block for block in reconciled["blocks"] if block["key"] == "news")
+    assert news["status"] == "available"
+    assert news["source"] == "Anspire"
+    assert news["warnings"] == ["news_acquired_during_agent_analysis"]
+    assert news["available_items"] == ["agent_news_search"]
+    assert reconciled["counts"]["missing"] == 0
+    assert reconciled["counts"]["available"] == 2
+    assert reconciled["metadata"]["news_result_count"] == 5
+    assert reconciled["data_quality"]["block_scores"]["news"] == 100
 
 
 def test_labels_follow_report_language_and_prompt_block_order() -> None:
@@ -376,7 +403,7 @@ def test_extract_reprojects_persisted_overview_to_public_schema() -> None:
         "backup_unavailable",
     ]
     rendered = json.dumps(extracted, ensure_ascii=False)
-    assert "items" not in rendered
+    assert '"items":' not in rendered
     assert "value" not in rendered
     assert "完整新闻正文" not in rendered
     assert "webhook_url" not in rendered

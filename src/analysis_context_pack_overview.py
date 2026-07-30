@@ -61,6 +61,12 @@ def render_analysis_context_pack_overview(
                     ),
                     "warnings": _list_strings(block.get("warnings")),
                     "missing_reasons": _item_missing_reasons(block.get("items")),
+                    "available_items": _list_strings(
+                        _nested(block, "metadata", "available_items"), limit=20
+                    ),
+                    "unavailable_items": _list_strings(
+                        _nested(block, "metadata", "unavailable_items"), limit=20
+                    ),
                 }
             )
 
@@ -162,6 +168,8 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
                 "source": _safe_text(block.get("source")) or None,
                 "warnings": _list_strings(block.get("warnings")),
                 "missing_reasons": _list_strings(block.get("missing_reasons"), limit=3),
+                "available_items": _list_strings(block.get("available_items"), limit=20),
+                "unavailable_items": _list_strings(block.get("unavailable_items"), limit=20),
             }
         )
 
@@ -187,6 +195,100 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
     }
     if "data_quality" in overview:
         sanitized["data_quality"] = _sanitize_data_quality(overview.get("data_quality"))
+    return sanitized
+
+
+def reconcile_agent_analysis_context_overview(
+    overview: Any,
+    strategy_evidence: Any,
+) -> Optional[Dict[str, Any]]:
+    """Include Agent tool inputs in the persisted final-report overview."""
+    sanitized = _sanitize_persisted_overview(_as_mapping(overview) or {})
+    evidence = _as_mapping(strategy_evidence)
+    if sanitized is None or evidence is None:
+        return sanitized
+
+    items = evidence.get("items")
+    if not isinstance(items, list):
+        return sanitized
+    news_items = [
+        item for item in items
+        if isinstance(item, Mapping)
+        and _safe_text(item.get("tool")).rsplit(":", 1)[-1] == "search_stock_news"
+        and _safe_status(item.get("status")) in {
+            "available", "fallback", "partial", "stale", "estimated"
+        }
+    ]
+    if not news_items:
+        return sanitized
+
+    news_block = next(
+        (block for block in sanitized["blocks"] if block.get("key") == "news"),
+        None,
+    )
+    if not isinstance(news_block, dict):
+        return sanitized
+
+    previous_status = news_block.get("status")
+    news_block["status"] = "available"
+    news_block["source"] = _first_non_empty(
+        *[
+            source
+            for item in news_items
+            for source in (
+                item.get("sources") if isinstance(item.get("sources"), list) else []
+            )
+        ]
+    )
+    news_block["missing_reasons"] = []
+    news_block["warnings"] = _list_strings(
+        list(news_block.get("warnings") or [])
+        + ["news_acquired_during_agent_analysis"]
+    )
+    news_block["available_items"] = ["agent_news_search"]
+    news_block["unavailable_items"] = []
+
+    if previous_status in sanitized["counts"]:
+        sanitized["counts"][previous_status] = max(
+            0, sanitized["counts"][previous_status] - 1
+        )
+    sanitized["counts"]["available"] += 1
+    record_counts = [
+        item.get("record_count") for item in news_items
+        if isinstance(item.get("record_count"), int)
+    ]
+    if record_counts:
+        sanitized["metadata"]["news_result_count"] = max(record_counts)
+    quality = sanitized.get("data_quality")
+    if isinstance(quality, dict):
+        scores = quality.get("block_scores")
+        if isinstance(scores, dict):
+            scores["news"] = 100
+            weights = {
+                "quote": 25,
+                "daily_bars": 25,
+                "technical": 25,
+                "news": 10,
+                "fundamentals": 10,
+                "chip": 5,
+            }
+            if all(isinstance(scores.get(key), int) for key in weights):
+                weighted_sum = sum(
+                    scores[key] * weight for key, weight in weights.items()
+                )
+                overall = int(round(weighted_sum / 100))
+                quality["overall_score"] = overall
+                quality["level"] = (
+                    "good" if overall >= 85
+                    else "usable" if overall >= 70
+                    else "limited" if overall >= 55
+                    else "poor"
+                )
+        limitations = quality.get("limitations")
+        if isinstance(limitations, list):
+            quality["limitations"] = [
+                item for item in limitations if not str(item).startswith("news:")
+            ]
     return sanitized
 
 

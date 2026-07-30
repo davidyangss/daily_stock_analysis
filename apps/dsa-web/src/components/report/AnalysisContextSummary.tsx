@@ -76,6 +76,8 @@ const TEXT = {
     evidenceScope: '仅代表进入本次 LLM 的输入，不等同于数据源运行成功',
     qualityScore: '质量分',
     limitations: '数据限制',
+    availableItems: '已获取',
+    unavailableItems: '未获取',
     newsResultCount: '新闻结果数',
     triggerSource: '触发来源',
     qualityLevel: {
@@ -108,6 +110,8 @@ const TEXT = {
     evidenceScope: 'Shows inputs included in this LLM run, not provider run success',
     qualityScore: 'Quality',
     limitations: 'Data Limitations',
+    availableItems: 'Available',
+    unavailableItems: 'Unavailable',
     newsResultCount: 'News Results',
     triggerSource: 'Trigger',
     qualityLevel: {
@@ -140,6 +144,8 @@ const TEXT = {
     evidenceScope: '이번 LLM 입력에 포함된 항목만 표시하며, 데이터 소스 실행 성공과는 다릅니다',
     qualityScore: '품질 점수',
     limitations: '데이터 한계',
+    availableItems: '사용 가능',
+    unavailableItems: '사용 불가',
     newsResultCount: '뉴스 결과 수',
     triggerSource: '트리거',
     qualityLevel: {
@@ -160,6 +166,34 @@ const TEXT = {
     },
   },
 } as const;
+
+const FUNDAMENTAL_ITEM_LABELS: Record<ReportLanguage, Record<string, string>> = {
+  zh: {
+    'valuation.pe_ratio': '市盈率（PE）',
+    'valuation.pb_ratio': '市净率（PB）',
+    'valuation.total_mv': '总市值',
+    'valuation.circ_mv': '流通市值',
+    'growth.revenue_yoy': '营收同比增长率',
+    'growth.net_profit_yoy': '净利润同比增长率',
+    'growth.roe': '净资产收益率（ROE）',
+    'growth.gross_margin': '毛利率',
+    'earnings.quick_report_summary': '业绩快报摘要',
+    'institution.top10_holder_change': '十大股东持股变化',
+    capital_flow: '主力资金流向',
+    dragon_tiger: '龙虎榜',
+    boards: '板块排行',
+    agent_news_search: 'Agent 阶段新闻搜索',
+  },
+  en: {},
+  ko: {},
+};
+
+const formatCoverageItem = (item: string, language: ReportLanguage): string => {
+  const [key, ...reasonParts] = item.split(':');
+  const label = FUNDAMENTAL_ITEM_LABELS[language][key.trim()] || key.trim();
+  const reason = reasonParts.join(':').trim();
+  return reason ? `${label}: ${reason}` : label;
+};
 
 const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
   zh: {
@@ -449,6 +483,12 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                   ))
                   .join('; ')
                 : STATUS_FALLBACK_GUIDANCE[reportLanguage][block.status];
+              const availableItems = block.availableItems?.map((item) => (
+                formatCoverageItem(item, reportLanguage)
+              )) || [];
+              const unavailableItems = block.unavailableItems?.map((item) => (
+                formatCoverageItem(item, reportLanguage)
+              )) || [];
               return (
                 <div key={block.key} className="home-subpanel p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -472,6 +512,16 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                   {detail ? (
                     <p className="mt-2 text-xs leading-5 text-muted-text">
                       {text.missingReasons}: {detail}
+                    </p>
+                  ) : null}
+                  {availableItems.length ? (
+                    <p className="mt-2 text-xs leading-5 text-success">
+                      {text.availableItems}: {availableItems.join('、')}
+                    </p>
+                  ) : null}
+                  {unavailableItems.length ? (
+                    <p className="mt-2 text-xs leading-5 text-danger">
+                      {text.unavailableItems}: {unavailableItems.join('；')}
                     </p>
                   ) : null}
                 </div>

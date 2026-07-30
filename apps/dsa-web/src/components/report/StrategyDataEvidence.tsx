@@ -19,18 +19,21 @@ const TEXT = {
     insufficient: '证据不足', strategy: '策略', requirement: '依赖状态', tool: '关键数据工具',
     status: '状态', requiredBy: '依赖策略', values: '关键值', source: '数据源 / 链接', freshness: '时效/覆盖', noSource: '未记录数据源',
     data: '获取内容', failure: '失败详情', dataLink: '数据源网站', noDataLink: '未记录可公开数据链接',
+    availableMetric: '可用', missingMetric: '缺失', prefetched: '分析前已获取',
   },
   en: {
     eyebrow: 'Strategy evidence', title: 'Critical data and sources', verified: 'Verified', limited: 'Limited',
     insufficient: 'Insufficient', strategy: 'Strategy', requirement: 'Dependency status', tool: 'Data tool',
     status: 'Status', requiredBy: 'Required by', values: 'Key values', source: 'Source / link', freshness: 'Freshness / coverage', noSource: 'Source unavailable',
     data: 'Data requested', failure: 'Failure details', dataLink: 'Source website', noDataLink: 'No public data link recorded',
+    availableMetric: 'Available', missingMetric: 'Missing', prefetched: 'Prefetched',
   },
   ko: {
     eyebrow: '전략 근거', title: '핵심 데이터 및 출처', verified: '검증됨', limited: '데이터 제한',
     insufficient: '근거 부족', strategy: '전략', requirement: '의존 상태', tool: '데이터 도구',
     status: '상태', requiredBy: '의존 전략', values: '핵심 값', source: '출처 / 링크', freshness: '시점 / 범위', noSource: '출처 없음',
     data: '가져온 내용', failure: '실패 상세', dataLink: '데이터 소스 사이트', noDataLink: '공개 데이터 링크가 기록되지 않음',
+    availableMetric: '사용 가능', missingMetric: '누락', prefetched: '사전 수집',
   },
 } as const;
 
@@ -161,7 +164,32 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
                 <td className="px-2 py-2"><Badge variant={statusVariant(item.status)}>{statusLabel(item.status, reportLanguage)}</Badge></td>
                 <td className="max-w-[180px] px-2 py-2 text-muted-text">{dataDescription}</td>
                 <td className="px-2 py-2 text-muted-text">{item.requiredBy?.join(', ') || '—'}</td>
-                <td className="max-w-[320px] px-2 py-2 text-foreground">{formatValues(item)}</td>
+                <td className="max-w-[380px] px-2 py-2 text-foreground">
+                  {item.prefetched ? (
+                    <div className="mb-1 text-[11px] text-cyan">{text.prefetched}</div>
+                  ) : null}
+                  {item.metricDetails?.length ? (
+                    <div className="space-y-1.5">
+                      {item.metricDetails.map((metric) => (
+                        <div key={metric.key} className="rounded-md border border-border/60 px-2 py-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{metric.label}</span>
+                            <span className={metric.status === 'available' ? 'text-success' : 'text-danger'}>
+                              {metric.status === 'available'
+                                ? `${text.availableMetric}: ${metric.displayValue ?? metric.value ?? '—'}`
+                                : text.missingMetric}
+                            </span>
+                          </div>
+                          {metric.description ? (
+                            <div className="mt-0.5 text-[11px] leading-4 text-muted-text">
+                              {metric.description}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : formatValues(item)}
+                </td>
                 <td className="max-w-[180px] px-2 py-2 text-muted-text">
                   <div>{item.sources?.join(', ') || text.noSource}</div>
                   {item.sourceLinks?.length ? item.sourceLinks.map((link) => (

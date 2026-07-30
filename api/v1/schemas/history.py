@@ -200,6 +200,8 @@ class AnalysisContextPackOverviewBlock(BaseModel):
     source: Optional[str] = Field(None, description="数据来源")
     warnings: List[str] = Field(default_factory=list, description="数据块告警码")
     missing_reasons: List[str] = Field(default_factory=list, description="缺失原因")
+    available_items: List[str] = Field(default_factory=list, description="已获取字段或子数据块")
+    unavailable_items: List[str] = Field(default_factory=list, description="未获取字段、子数据块及原因")
 
 
 class AnalysisContextPackOverviewCounts(BaseModel):

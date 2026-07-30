@@ -385,6 +385,7 @@ def _build_fundamentals_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisC
         "status": raw_status or None,
         "coverage": coverage,
         "source_chain": source_chain,
+        **_fundamental_availability_metadata(context),
     }
     metadata = {key: value for key, value in metadata.items() if value not in (None, {}, [])}
 
@@ -421,6 +422,40 @@ def _build_fundamentals_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisC
         source=source,
         metadata=metadata,
     )
+
+
+def _fundamental_availability_metadata(context: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Return report-safe field coverage details for accuracy review."""
+    available: List[str] = []
+    unavailable: List[str] = []
+    field_blocks = {
+        "valuation": ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"),
+        "growth": ("revenue_yoy", "net_profit_yoy", "roe", "gross_margin"),
+        "earnings": ("quick_report_summary",),
+        "institution": ("top10_holder_change",),
+    }
+    for block_key, field_keys in field_blocks.items():
+        block = context.get(block_key) if isinstance(context.get(block_key), dict) else {}
+        data = block.get("data") if isinstance(block.get("data"), dict) else {}
+        for field_key in field_keys:
+            qualified = f"{block_key}.{field_key}"
+            if data.get(field_key) not in (None, "", [], {}):
+                available.append(qualified)
+            else:
+                unavailable.append(qualified)
+
+    for block_key in ("capital_flow", "dragon_tiger", "boards"):
+        block = context.get(block_key) if isinstance(context.get(block_key), dict) else {}
+        status = str(block.get("status") or "missing")
+        errors = block.get("errors") if isinstance(block.get("errors"), list) else []
+        item = block_key
+        if errors:
+            item += ": " + "; ".join(str(error) for error in errors[:3])
+        if status in {"ok", "available", "partial"} and block.get("data"):
+            available.append(item)
+        else:
+            unavailable.append(item)
+    return {"available_items": available, "unavailable_items": unavailable}
 
 
 def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBlock:
