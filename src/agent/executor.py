@@ -59,6 +59,7 @@ class AgentResult:
     backend: str = ""
     error_code: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    stock_candidates: List[Dict[str, str]] = field(default_factory=list)
 
 
 # ============================================================
@@ -523,6 +524,7 @@ class PreparedAgentChat:
     system_prompt: str
     history_messages: List[Dict[str, Any]]
     stock_scope: Optional[StockScope]
+    stock_candidates: List[Dict[str, str]] = field(default_factory=list)
 
 
 def prepare_agent_chat(
@@ -540,9 +542,28 @@ def prepare_agent_chat(
     strict_initial_stock_scope: bool = False,
 ) -> PreparedAgentChat:
     """Build the existing Chat prompt order without choosing an Agent backend."""
+    original_context = dict(context or {})
+    explicit_codes = resolve_stock_scope(message, original_context).stock_scope
+    stock_candidates: List[Dict[str, str]] = []
+    # Only resolve Chinese names when no explicit code and no active stock were
+    # provided.  Existing code/current-context semantics stay authoritative.
+    if not explicit_codes and not original_context.get("stock_code"):
+        from src.services.name_to_code_resolver import resolve_name_candidates_in_text
+
+        name_candidates = resolve_name_candidates_in_text(message, limit=10)
+        if len(name_candidates) == 1:
+            candidate = name_candidates[0]
+            original_context["stock_code"] = candidate.code
+            original_context["stock_name"] = candidate.name
+        # Ask for a choice only when one Chinese term itself is ambiguous
+        # across markets/securities.  Several distinct names in a comparison
+        # question must not be mistaken for an ambiguous alias.
+        elif len(name_candidates) > 1 and len({candidate.matched_term for candidate in name_candidates}) == 1:
+            stock_candidates = [candidate.to_dict() for candidate in name_candidates]
+
     scope_resolution = resolve_stock_scope(
         message,
-        context,
+        original_context,
         strict_initial_scope=strict_initial_stock_scope,
     )
     effective_context = scope_resolution.effective_context
@@ -631,6 +652,7 @@ def prepare_agent_chat(
         system_prompt=system_prompt,
         history_messages=history_messages,
         stock_scope=scope_resolution.stock_scope,
+        stock_candidates=stock_candidates,
     )
 
 

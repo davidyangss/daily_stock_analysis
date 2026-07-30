@@ -108,6 +108,29 @@ def test_dsa_owned_backend_keeps_provider_trace_roundtrip() -> None:
     assert persist_trace.call_args.kwargs["assistant_message_id"] == 12
 
 
+def test_ambiguous_name_selection_bypasses_model_and_persists_choices() -> None:
+    backend = _Backend(runtime_owns_loop=False)
+    prepared = PreparedAgentChat(
+        system_prompt="system",
+        history_messages=[],
+        stock_scope=None,
+        stock_candidates=[
+            {"code": "BIDU", "display_code": "BIDU", "name": "百度", "market": "US"},
+            {"code": "09888.HK", "display_code": "09888", "name": "百度集团", "market": "HK"},
+        ],
+    )
+    with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), \
+         patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
+         patch("src.agent.chat_executor.conversation_manager.add_message", side_effect=[1, 2]) as add_message:
+        result = _executor(backend).chat("分析百度", "session")
+
+    assert result.success is True
+    assert result.stock_candidates == prepared.stock_candidates
+    assert "多个相近的上市标的" in result.content
+    assert backend.request is None
+    assert add_message.call_args_list[-1].args[2] == result.content
+
+
 def test_cancelled_codex_turn_is_not_persisted_as_analysis_failure() -> None:
     backend = _failure_backend(
         runtime_owns_loop=True,

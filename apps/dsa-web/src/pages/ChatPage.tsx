@@ -14,6 +14,7 @@ import {
   useAgentChatStore,
   type Message,
   type ProgressStep,
+  type StockCandidate,
 } from '../stores/agentChatStore';
 import { downloadSession, formatSessionAsMarkdown } from '../utils/chatExport';
 import type { ChatFollowUpContext } from '../utils/chatFollowUp';
@@ -737,6 +738,15 @@ const ChatPage: React.FC = () => {
     [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream, stockIndex],
   );
 
+  const handleStockCandidateSelect = useCallback((candidate: StockCandidate) => {
+    const code = (candidate.display_code || candidate.code || '').trim();
+    if (!code || loading) return;
+    void handleSend(`分析 ${code}`, undefined, {
+      stock_code: candidate.code,
+      stock_name: candidate.name,
+    });
+  }, [handleSend, loading]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1362,6 +1372,24 @@ const ChatPage: React.FC = () => {
                             {msg.content}
                           </Markdown>
                         </div>
+                        {msg.stockCandidates?.length ? (
+                          <div className="mt-3 flex flex-wrap gap-2" aria-label="股票候选">
+                            {msg.stockCandidates.map((candidate) => {
+                              const code = candidate.display_code || candidate.code;
+                              return (
+                                <Button
+                                  key={`${candidate.market || ''}:${candidate.code}`}
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={loading}
+                                  onClick={() => handleStockCandidateSelect(candidate)}
+                                >
+                                  {candidate.name} · {code}{candidate.market ? ` / ${candidate.market}` : ''}
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       msg.content

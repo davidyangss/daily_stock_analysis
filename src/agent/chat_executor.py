@@ -110,6 +110,16 @@ class AgentChatExecutor:
         cancel_event=None,
     ) -> AgentResult:
         """Execute a previously accepted turn and persist its terminal result."""
+        if turn.prepared.stock_candidates:
+            content = _format_stock_selection_prompt(turn.prepared.stock_candidates)
+            conversation_manager.add_message(turn.session_id, "assistant", content)
+            return AgentResult(
+                success=True,
+                content=content,
+                backend=self.backend.backend_id,
+                stock_candidates=turn.prepared.stock_candidates,
+            )
+
         backend_result = self.backend.run(
             AgentRunRequest(
                 system_prompt=turn.prepared.system_prompt,
@@ -168,3 +178,20 @@ class AgentChatExecutor:
                 failure_note,
             )
         return result
+
+
+def _format_stock_selection_prompt(candidates: list[Dict[str, str]]) -> str:
+    """Build a deterministic, user-visible disambiguation response.
+
+    This bypasses the model and therefore prevents it from guessing a market
+    when a Chinese short name maps to multiple listed securities.
+    """
+    lines = ["匹配到多个相近的上市标的，请选择后再分析："]
+    for index, candidate in enumerate(candidates, start=1):
+        name = str(candidate.get("name") or candidate.get("code") or "")
+        code = str(candidate.get("display_code") or candidate.get("code") or "")
+        market = str(candidate.get("market") or "")
+        suffix = f"，{market}" if market else ""
+        lines.append(f"{index}. {name}（{code}{suffix}）")
+    lines.append("请点击候选项，或直接输入对应股票代码。")
+    return "\n".join(lines)

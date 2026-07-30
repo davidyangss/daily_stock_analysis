@@ -20,7 +20,9 @@ from src.services.name_to_code_resolver import (
     _is_code_like,
     _normalize_code,
     _build_reverse_map_no_duplicates,
+    resolve_name_candidates_in_text,
 )
+from src.data.stock_index_loader import StockIndexIdentity
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +181,55 @@ class TestResolveNameToCode:
         result = resolve_name_to_code("aaaaaaa")
         assert result is None
         mock_akshare.assert_not_called()
+
+
+def test_resolve_name_candidates_in_text_matches_chinese_short_name(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.name_to_code_resolver.get_stock_index_identities",
+        lambda: (
+            StockIndexIdentity(
+                canonical_code="600519.SH",
+                display_code="600519",
+                name_zh="贵州茅台",
+                aliases=("茅台",),
+                market="CN",
+                popularity=100,
+            ),
+        ),
+    )
+
+    candidates = resolve_name_candidates_in_text("请分析茅台的趋势")
+
+    assert [(candidate.code, candidate.name, candidate.matched_term) for candidate in candidates] == [
+        ("600519", "贵州茅台", "茅台"),
+    ]
+
+
+def test_resolve_name_candidates_in_text_keeps_cross_market_candidates(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.name_to_code_resolver.get_stock_index_identities",
+        lambda: (
+            StockIndexIdentity(
+                canonical_code="BIDU",
+                display_code="BIDU",
+                name_zh="百度",
+                market="US",
+                popularity=100,
+            ),
+            StockIndexIdentity(
+                canonical_code="09888.HK",
+                display_code="09888",
+                name_zh="百度集团",
+                aliases=("百度",),
+                market="HK",
+                popularity=90,
+            ),
+        ),
+    )
+
+    candidates = resolve_name_candidates_in_text("分析百度")
+
+    assert {(candidate.code, candidate.market) for candidate in candidates} == {
+        ("BIDU", "US"),
+        ("09888", "HK"),
+    }

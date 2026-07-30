@@ -516,6 +516,8 @@ async def agent_chat_stream(request: ChatRequest):
                 "error_code": getattr(result, "error_code", None),
                 "request_id": request_id,
             })
+            if getattr(result, "stock_candidates", None):
+                event["stock_candidates"] = result.stock_candidates
             asyncio.run_coroutine_threadsafe(queue.put(event), loop)
         except Exception as exc:
             logger.error("Agent stream error: %s", exc)

@@ -79,6 +79,25 @@ beforeEach(() => {
 });
 
 describe('agentChatStore.startStream', () => {
+  it('keeps server-provided ambiguous stock candidates on the assistant message', async () => {
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      accepted('request-candidates'),
+      'data: {"type":"done","success":true,"content":"请选择标的","backend":"litellm","stock_candidates":[{"code":"BIDU","display_code":"BIDU","name":"百度","market":"US"},{"code":"09888.HK","display_code":"09888","name":"百度集团","market":"HK"}]}',
+    ]));
+
+    await useAgentChatStore.getState().startStream({
+      message: '分析百度',
+      session_id: 'session-test',
+      request_id: 'request-candidates',
+    });
+
+    const assistant = useAgentChatStore.getState().messages.at(-1);
+    expect(assistant?.stockCandidates).toEqual([
+      { code: 'BIDU', display_code: 'BIDU', name: '百度', market: 'US' },
+      { code: '09888.HK', display_code: '09888', name: '百度集团', market: 'HK' },
+    ]);
+  });
+
   it('aborts locally before the server has accepted the request', () => {
     const ac = new AbortController();
     useAgentChatStore.setState({

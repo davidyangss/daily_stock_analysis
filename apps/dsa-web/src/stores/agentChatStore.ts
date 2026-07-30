@@ -45,6 +45,14 @@ export interface Message {
   skillName?: string;
   thinkingSteps?: ProgressStep[];
   backend?: string;
+  stockCandidates?: StockCandidate[];
+}
+
+export interface StockCandidate {
+  code: string;
+  display_code?: string;
+  name: string;
+  market?: string;
 }
 
 export interface StreamMeta {
@@ -351,6 +359,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let buf = '';
       let finalContent: string | null = null;
       let finalBackend: string | undefined;
+      let finalStockCandidates: StockCandidate[] | undefined;
       let receivedDoneEvent = false;
       let acceptedEvent: StreamAcceptedEvent | null = null;
       const currentProgressSteps: ProgressStep[] = [];
@@ -418,6 +427,14 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             );
           }
           finalContent = doneEvent.content ?? '';
+          const rawCandidates = (event as ProgressStep & { stock_candidates?: unknown }).stock_candidates;
+          if (Array.isArray(rawCandidates)) {
+            finalStockCandidates = rawCandidates.filter((candidate): candidate is StockCandidate => (
+              typeof candidate === 'object' && candidate !== null
+              && typeof (candidate as StockCandidate).code === 'string'
+              && typeof (candidate as StockCandidate).name === 'string'
+            ));
+          }
           return;
         }
 
@@ -492,6 +509,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
               skillName,
               thinkingSteps: [...currentProgressSteps],
               backend: finalBackend,
+              stockCandidates: finalStockCandidates,
             },
           ],
         }));

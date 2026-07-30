@@ -479,6 +479,48 @@ def resolve_name_candidates(
     return _resolve_name_candidates_cached(name.strip(), safe_limit)
 
 
+def resolve_name_candidates_in_text(
+    text: str,
+    *,
+    limit: int = 10,
+) -> tuple[NameResolutionCandidate, ...]:
+    """Find indexed Chinese stock names or aliases mentioned in free text.
+
+    Agent Chat receives complete natural-language questions rather than a
+    dedicated name field.  This helper deliberately searches only the local
+    generated stock index: it must not make an AkShare/network lookup merely
+    because a user typed a conversational sentence.  The caller decides
+    whether the returned candidates are safe to auto-select or need a choice.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ()
+
+    normalized_text = _normalize_name_term(text)
+    if not normalized_text:
+        return ()
+
+    candidates: list[tuple[int, float, NameResolutionCandidate]] = []
+    for identity in get_stock_index_identities():
+        for term in _identity_terms(identity):
+            normalized_term = _normalize_name_term(term)
+            # This path is specifically for Chinese short names / aliases.
+            # Two CJK characters are useful (e.g. 茅台); shorter or non-CJK
+            # terms are too broad in a sentence and remain the code path.
+            if len(normalized_term) < 2 or not _contains_cjk(normalized_term):
+                continue
+            if normalized_term not in normalized_text:
+                continue
+            match_type = "exact_name" if normalized_text == normalized_term else "partial_name"
+            candidates.append((
+                len(normalized_term),
+                identity.popularity,
+                _candidate_from_identity(identity, matched_term=term, match_type=match_type),
+            ))
+
+    candidates.sort(key=lambda item: (-item[0], -item[1], item[2].code))
+    return _dedupe_candidates([item[2] for item in candidates], limit=max(1, min(int(limit or 10), 20)))
+
+
 def clear_name_resolution_cache() -> None:
     """Clear query results after a stock-index refresh."""
     _resolve_name_candidates_cached.cache_clear()
