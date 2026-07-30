@@ -142,12 +142,12 @@ _ZH_EVIDENCE_STATUS_LABELS = {
 
 _METRIC_SPECS: Dict[str, Dict[str, tuple[str, str, str]]] = {
     "get_daily_history": {
-        "latest_open": ("最近交易日开盘价", "元", "最近一根日K线的开盘价"),
-        "latest_high": ("最近交易日最高价", "元", "最近一根日K线的最高价"),
-        "latest_low": ("最近交易日最低价", "元", "最近一根日K线的最低价"),
-        "latest_close": ("最近交易日收盘价", "元", "最近一根已完成日K线的收盘价"),
-        "latest_volume": ("最近交易日成交量", "股", "最近一根日K线的成交股数"),
-        "latest_amount": ("最近交易日成交额", "元", "最近一根日K线的成交金额"),
+        "latest_open": ("最近交易日开盘价", "元", "最近一个交易日的开盘价"),
+        "latest_high": ("最近交易日最高价", "元", "最近一个交易日的最高价"),
+        "latest_low": ("最近交易日最低价", "元", "最近一个交易日的最低价"),
+        "latest_close": ("最近交易日收盘价", "元", "最近一个已完成交易日的收盘价"),
+        "latest_volume": ("最近交易日成交量", "股", "最近一个交易日的成交股数"),
+        "latest_amount": ("最近交易日成交额", "元", "最近一个交易日的成交金额"),
     },
     "get_volume_analysis": {
         "volume_ratio_vs_5d": ("成交量/近5日均量", "倍", "当前成交量相对近5日平均成交量"),
@@ -249,7 +249,9 @@ def _metric_details(tool_name: str, mapping: Mapping[str, Any]) -> List[Dict[str
             if key in {"profit_ratio", "concentration_90", "concentration_70"} and isinstance(value, (int, float)):
                 display_number = value * 100
             if isinstance(display_number, float):
-                display_value = f"{display_number:.2f}"
+                display_value = f"{display_number:,.2f}"
+            elif isinstance(display_number, int) and not isinstance(display_number, bool):
+                display_value = f"{display_number:,}"
             else:
                 display_value = str(display_number)
             if unit:
@@ -792,22 +794,52 @@ def format_strategy_evidence_markdown(
     if language.startswith("en"):
         heading = "Critical strategy data and sources"
         overall_label = "Overall evidence"
+        source_heading = "Data source overview"
+        metrics_heading = "Key metrics"
+        limitations_heading = "Data limitations"
+        headers = ("Data tool", "Status", "Data requested", "Source / coverage")
+        metric_headers = ("Metric", "Status", "Value", "Meaning")
+        available_text, missing_text = "Available", "Missing"
     elif language.startswith("ko"):
         heading = "전략 핵심 데이터 및 출처"
         overall_label = "전체 근거"
+        source_heading = "데이터 출처 개요"
+        metrics_heading = "핵심 지표"
+        limitations_heading = "데이터 한계"
+        headers = ("데이터 도구", "상태", "수집 데이터", "출처 / 범위")
+        metric_headers = ("지표", "상태", "값", "의미")
+        available_text, missing_text = "사용 가능", "누락"
     else:
         heading = "策略关键数据与来源"
         overall_label = "总体证据"
+        source_heading = "数据获取概览"
+        metrics_heading = "关键指标"
+        limitations_heading = "数据限制"
+        headers = ("数据工具", "状态", "获取内容", "来源 / 覆盖")
+        metric_headers = ("指标", "状态", "数值", "含义")
+        available_text, missing_text = "可用", "缺失"
 
-    lines = [f"### 🔎 {heading}", "", f"- {overall_label}: {manifest.get('status') or 'unknown'}"]
+    def cell(value: Any) -> str:
+        return str(value if value not in (None, "") else "N/A").replace("|", "\\|").replace("\n", "<br>")
+
+    lines = [f"### 🔎 {heading}", "", f"> **{overall_label}**：{manifest.get('status') or 'unknown'}"]
     for requirement in (manifest.get("strategy_requirements") or [])[:10]:
         if not isinstance(requirement, Mapping):
             continue
         skill_id = str(requirement.get("skill_id") or "").strip()
         if skill_id:
-            lines.append(f"- {skill_id}: {requirement.get('status') or 'unknown'}")
+            lines.append(f"> {skill_id}：{requirement.get('status') or 'unknown'}")
+
+    lines.extend([
+        "",
+        f"#### {source_heading}",
+        "",
+        f"| {headers[0]} | {headers[1]} | {headers[2]} | {headers[3]} |",
+        "|------|------|------|------|",
+    ])
 
     item_limit = 8 if compact else 20
+    metric_rows: List[str] = []
     for item in (manifest.get("items") or [])[:item_limit]:
         if not isinstance(item, Mapping):
             continue
@@ -864,10 +896,14 @@ def format_strategy_evidence_markdown(
         status = str(item.get("status") or "unknown")
         display_status = _ZH_EVIDENCE_STATUS_LABELS.get(status, status) if language.startswith("zh") else status
         tool_text = f"{tool_label} (`{tool_name}`)" if tool_label != tool_name else f"`{tool_name}`"
-        data_suffix = f" | data={data_description}" if data_description else ""
+        source_and_coverage = sources
+        if coverage:
+            source_and_coverage += "<br>" + "; ".join(coverage)
+        if value_text != "N/A" and not item.get("metric_details"):
+            source_and_coverage += f"<br>{value_text}"
         lines.append(
-            f"- {tool_text}: {display_status}{data_suffix} | "
-            f"source={sources} | {value_text}{suffix}"
+            f"| {cell(tool_text)} | {cell(display_status)} | "
+            f"{cell(data_description)} | {cell(source_and_coverage)} |"
         )
         metric_details = item.get("metric_details")
         if isinstance(metric_details, list):
@@ -877,14 +913,28 @@ def format_strategy_evidence_markdown(
                 metric_label = metric.get("label") or metric.get("key") or "unknown"
                 if metric.get("status") == "available":
                     metric_value = metric.get("display_value") or metric.get("value")
-                    metric_status = f"可用，{metric_value}" if language.startswith("zh") else f"available, {metric_value}"
+                    metric_status = available_text
                 else:
-                    metric_status = "缺失" if language.startswith("zh") else "missing"
+                    metric_status = missing_text
+                    metric_value = "—"
                 description = str(metric.get("description") or "").strip()
-                description_suffix = f"；{description}" if description else ""
-                lines.append(f"  - {metric_label}: {metric_status}{description_suffix}")
-    for limitation in (manifest.get("limitations") or [])[:10]:
-        lines.append(f"- ⚠️ {limitation}")
+                metric_rows.append(
+                    f"| {cell(metric_label)} | {cell(metric_status)} | "
+                    f"{cell(metric_value)} | {cell(description)} |"
+                )
+    if metric_rows:
+        lines.extend([
+            "",
+            f"#### {metrics_heading}",
+            "",
+            f"| {metric_headers[0]} | {metric_headers[1]} | {metric_headers[2]} | {metric_headers[3]} |",
+            "|------|:------:|------:|------|",
+            *metric_rows,
+        ])
+    limitations = list(manifest.get("limitations") or [])[:10]
+    if limitations:
+        lines.extend(["", f"#### ⚠️ {limitations_heading}", ""])
+        lines.extend(f"- {limitation}" for limitation in limitations)
     return "\n".join(lines)
 
 

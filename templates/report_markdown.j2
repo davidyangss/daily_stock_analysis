@@ -9,7 +9,9 @@
 ## 📊 {{ labels.summary_heading }}
 
 {% for e in enriched %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% if loop.first %}| {{ labels.report_title }} | {{ labels.action_advice_label }} | {{ labels.score_label }} | {{ labels.trend_label }} |
+|------|------|------:|------|
+{% endif %}| {{ e.signal_emoji }} **{{ e.stock_name }} ({{ e.result.code }})** | {{ markdown_cell(e.signal_text) }} | {{ e.result.sentiment_score }} | {{ markdown_cell(e.localized_trend_prediction) }} |
 {% endfor %}
 
 ---
@@ -77,7 +79,9 @@
 
 {% set trend_data = data_persp.get('trend_status', {}) %}
 {% if trend_data %}
-**{{ labels.ma_alignment_label }}**: {{ trend_data.get('ma_alignment', 'N/A') }} | {{ labels.bullish_alignment_label }}: {{ '✅ ' ~ labels.yes_label if trend_data.get('is_bullish') else '❌ ' ~ labels.no_label }} | {{ labels.trend_strength_label }}: {{ trend_data.get('trend_score', 'N/A') }}/100
+| {{ labels.ma_alignment_label }} | {{ labels.bullish_alignment_label }} | {{ labels.trend_strength_label }} |
+|------|------|------:|
+| {{ markdown_cell(trend_data.get('ma_alignment', 'N/A')) }} | {{ '✅ ' ~ labels.yes_label if trend_data.get('is_bullish') else '❌ ' ~ labels.no_label }} | {{ trend_data.get('trend_score', 'N/A') }}/100 |
 {% endif %}
 
 {% set price_data = data_persp.get('price_position', {}) %}
@@ -95,14 +99,23 @@
 
 {% set vol_data = data_persp.get('volume_analysis', {}) %}
 {% if vol_data %}
-**{{ labels.volume_label }}**: {{ labels.volume_ratio_label }} {{ vol_data.get('volume_ratio', 'N/A') }} ({{ vol_data.get('volume_status', '') }}) | {{ labels.turnover_rate_label }} {{ vol_data.get('turnover_rate', 'N/A') }}%
+| {{ labels.volume_ratio_label }} | {{ labels.turnover_rate_label }} | {{ labels.meaning_label }} |
+|------:|------:|------|
+| {{ vol_data.get('volume_ratio', 'N/A') }} | {{ vol_data.get('turnover_rate', 'N/A') }}% | {{ markdown_cell(vol_data.get('volume_status', 'N/A')) }} |
 💡 *{{ vol_data.get('volume_meaning', '') }}*
 {% endif %}
 
 {% set chip_data = data_persp.get('chip_structure', {}) %}
 {% set chip_unavailable_reason = get_chip_unavailable_reason(chip_data, report_language) if chip_data and is_chip_structure_unavailable(chip_data) else get_chip_unavailable_reason(data_persp, report_language) %}
 {% if chip_data and not is_chip_structure_unavailable(chip_data) %}
-**{{ labels.chip_label }}**: {{ chip_data.get('profit_ratio', 'N/A') }} | {{ chip_data.get('avg_cost', 'N/A') }} | {{ chip_data.get('concentration', 'N/A') }} {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }}
+**{{ labels.chip_label }}**
+
+| {{ labels.metric_label }} | {{ labels.value_label }} | {{ labels.meaning_label }} |
+|------|------:|------|
+| {{ labels.profit_ratio_label }} | {{ format_ratio(chip_data.get('profit_ratio')) }} | {{ labels.profit_ratio_meaning }} |
+| {{ labels.avg_cost_label }} | {{ format_number(chip_data.get('avg_cost')) }} | {{ labels.avg_cost_meaning }} |
+| {{ labels.chip_concentration_label }} | {{ format_ratio(chip_data.get('concentration')) }} | {{ labels.chip_concentration_meaning }} |
+| {{ labels.chip_health_label }} | {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }} | {{ labels.chip_health_meaning }} |
 {% elif chip_unavailable_reason %}
 **{{ labels.chip_label }}**: {{ chip_unavailable_reason }}
 {% endif %}

@@ -27,6 +27,30 @@ from src.notification import _append_strategy_data_evidence_block
 
 
 class TestToolEvidence(unittest.TestCase):
+    def test_large_numeric_metrics_use_thousands_separators(self) -> None:
+        evidence = summarize_tool_result(
+            "get_daily_history",
+            json.dumps({
+                "success": True,
+                "data": [{
+                    "date": "2026-07-30",
+                    "open": 356.75,
+                    "high": 392.07,
+                    "low": 342.0,
+                    "close": 371.1,
+                    "volume": 97123885.0,
+                    "amount": 35483794588.0,
+                }],
+                "source": "db_cache",
+            }),
+            execution_success=True,
+        )
+
+        metrics = {item["key"]: item for item in evidence["metric_details"]}
+        self.assertEqual(metrics["latest_close"]["display_value"], "371.10元")
+        self.assertEqual(metrics["latest_volume"]["display_value"], "97,123,885.00股")
+        self.assertEqual(metrics["latest_amount"]["display_value"], "35,483,794,588.00元")
+
     def test_prefetched_chip_is_persistable_detailed_evidence(self) -> None:
         items = build_prefetched_context_evidence({
             "chip_distribution": {
@@ -327,7 +351,8 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         _append_strategy_data_evidence_block(lines, manifest, "zh")
         rendered = "\n".join(lines)
         self.assertIn("策略关键数据与来源", rendered)
-        self.assertIn("source=searxng", rendered)
+        self.assertIn("#### 数据获取概览", rendered)
+        self.assertIn("searxng", rendered)
         self.assertIn("required data unavailable", rendered)
 
     def test_other_agent_call_cannot_mask_missing_strategy_dependency(self) -> None:
@@ -390,9 +415,34 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
             "limitations": [],
         }, "zh")
 
-        self.assertIn("K线形态识别 (`analyze_pattern`): 抓取失败", rendered)
+        self.assertIn("| K线形态识别 (`analyze_pattern`) | 抓取失败 |", rendered)
         self.assertIn("[AkshareFetcher](https://www.akshare.xyz/)", rendered)
         self.assertIn("failure=AkshareFetcher get_daily_data: empty result", rendered)
+
+    def test_markdown_renders_metric_details_as_hierarchical_table(self) -> None:
+        rendered = format_strategy_evidence_markdown({
+            "schema_version": "strategy-evidence-v1",
+            "status": "limited",
+            "items": [{
+                "tool": "analyze_trend",
+                "tool_display_name": "技术指标分析",
+                "status": "available",
+                "sources": ["db_cache"],
+                "metric_details": [
+                    {"key": "current_price", "label": "分析价格", "status": "available", "display_value": "371.10元", "description": "技术指标计算使用的价格"},
+                    {"key": "revenue_yoy", "label": "营收同比增长率", "status": "missing", "display_value": None, "description": "营业收入相对上年同期的变化"},
+                ],
+            }],
+            "strategy_requirements": [],
+            "limitations": ["fundamentals partial"],
+        }, "zh")
+
+        self.assertIn("#### 数据获取概览", rendered)
+        self.assertIn("#### 关键指标", rendered)
+        self.assertIn("| 指标 | 状态 | 数值 | 含义 |", rendered)
+        self.assertIn("| 分析价格 | 可用 | 371.10元 | 技术指标计算使用的价格 |", rendered)
+        self.assertIn("| 营收同比增长率 | 缺失 | — | 营业收入相对上年同期的变化 |", rendered)
+        self.assertIn("#### ⚠️ 数据限制", rendered)
 
 
 if __name__ == "__main__":

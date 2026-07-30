@@ -130,8 +130,58 @@ describe('StrategyDataEvidence', () => {
     expect(screen.getByText('筹码分布分析')).toBeInTheDocument();
     expect(screen.getByText('分析前已获取')).toBeInTheDocument();
     expect(screen.getByText('获利盘比例')).toBeInTheDocument();
-    expect(screen.getByText('可用: 7.58%')).toBeInTheDocument();
+    expect(screen.getByText('7.58%')).toBeInTheDocument();
     expect(screen.getByText('70%筹码集中度')).toBeInTheDocument();
     expect(screen.getByText('缺失')).toBeInTheDocument();
+  });
+
+  it('formats large values and clarifies daily-bar descriptions in old reports', () => {
+    render(
+      <StrategyDataEvidence
+        evidence={{
+          schemaVersion: 'strategy-evidence-v1',
+          status: 'verified',
+          strategyRequirements: [],
+          limitations: [],
+          items: [{
+            tool: 'get_daily_history',
+            status: 'available',
+            sources: ['db_cache'],
+            cached: true,
+            partial: false,
+            keyValues: {},
+            metricDetails: [
+              {
+                key: 'latest_volume',
+                label: '最近交易日成交量',
+                status: 'available',
+                value: 97123885,
+                displayValue: '97123885.00股',
+                unit: '股',
+                description: '最近一根日K线的成交股数',
+              },
+              {
+                key: 'latest_amount',
+                label: '最近交易日成交额',
+                status: 'available',
+                value: 35483794588,
+                displayValue: '35483794588.00元',
+                unit: '元',
+                description: '最近一根日K线的成交金额',
+              },
+            ],
+          }],
+        }}
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByText('97,123,885.00股')).toBeInTheDocument();
+    expect(screen.getByText('35,483,794,588.00元')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '指标' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '数值' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '含义' })).toBeInTheDocument();
+    expect(screen.getByText('最近一个交易日的成交股数')).toBeInTheDocument();
+    expect(screen.getByText('最近一个交易日的成交金额')).toBeInTheDocument();
   });
 });

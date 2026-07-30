@@ -19,21 +19,21 @@ const TEXT = {
     insufficient: '证据不足', strategy: '策略', requirement: '依赖状态', tool: '关键数据工具',
     status: '状态', requiredBy: '依赖策略', values: '关键值', source: '数据源 / 链接', freshness: '时效/覆盖', noSource: '未记录数据源',
     data: '获取内容', failure: '失败详情', dataLink: '数据源网站', noDataLink: '未记录可公开数据链接',
-    availableMetric: '可用', missingMetric: '缺失', prefetched: '分析前已获取',
+    availableMetric: '可用', missingMetric: '缺失', prefetched: '分析前已获取', metric: '指标', metricValue: '数值', meaning: '含义',
   },
   en: {
     eyebrow: 'Strategy evidence', title: 'Critical data and sources', verified: 'Verified', limited: 'Limited',
     insufficient: 'Insufficient', strategy: 'Strategy', requirement: 'Dependency status', tool: 'Data tool',
     status: 'Status', requiredBy: 'Required by', values: 'Key values', source: 'Source / link', freshness: 'Freshness / coverage', noSource: 'Source unavailable',
     data: 'Data requested', failure: 'Failure details', dataLink: 'Source website', noDataLink: 'No public data link recorded',
-    availableMetric: 'Available', missingMetric: 'Missing', prefetched: 'Prefetched',
+    availableMetric: 'Available', missingMetric: 'Missing', prefetched: 'Prefetched', metric: 'Metric', metricValue: 'Value', meaning: 'Meaning',
   },
   ko: {
     eyebrow: '전략 근거', title: '핵심 데이터 및 출처', verified: '검증됨', limited: '데이터 제한',
     insufficient: '근거 부족', strategy: '전략', requirement: '의존 상태', tool: '데이터 도구',
     status: '상태', requiredBy: '의존 전략', values: '핵심 값', source: '출처 / 링크', freshness: '시점 / 범위', noSource: '출처 없음',
     data: '가져온 내용', failure: '실패 상세', dataLink: '데이터 소스 사이트', noDataLink: '공개 데이터 링크가 기록되지 않음',
-    availableMetric: '사용 가능', missingMetric: '누락', prefetched: '사전 수집',
+    availableMetric: '사용 가능', missingMetric: '누락', prefetched: '사전 수집', metric: '지표', metricValue: '값', meaning: '의미',
   },
 } as const;
 
@@ -45,6 +45,26 @@ const LEGACY_TOOL_PRESENTATION: Record<string, { name: string; description: stri
     description: '基于近期日线K线识别十字星、锤头线、吞没、突破和箱体等形态。',
     data: '近期日线K线（开盘、最高、最低、收盘、成交量）',
   },
+};
+
+const METRIC_DESCRIPTION_OVERRIDES: Record<string, string> = {
+  latest_open: '最近一个交易日的开盘价',
+  latest_high: '最近一个交易日的最高价',
+  latest_low: '最近一个交易日的最低价',
+  latest_close: '最近一个已完成交易日的收盘价',
+  latest_volume: '最近一个交易日的成交股数',
+  latest_amount: '最近一个交易日的成交金额',
+};
+
+// Old reports persist displayValue as text. Format its numeric prefix here so
+// history benefits from readability improvements without rewriting snapshots.
+const formatMetricDisplayValue = (value: unknown): string => {
+  const textValue = String(value ?? '—');
+  const match = textValue.match(/^([+-]?)(\d[\d,]*)(\.\d+)?(.*)$/);
+  if (!match) return textValue;
+  const [, sign, integerPart, decimalPart = '', suffix] = match;
+  const groupedInteger = integerPart.replaceAll(',', '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${sign}${groupedInteger}${decimalPart}${suffix}`;
 };
 
 const statusVariant = (status: string): 'success' | 'warning' | 'danger' | 'default' => {
@@ -169,24 +189,35 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
                     <div className="mb-1 text-[11px] text-cyan">{text.prefetched}</div>
                   ) : null}
                   {item.metricDetails?.length ? (
-                    <div className="space-y-1.5">
-                      {item.metricDetails.map((metric) => (
-                        <div key={metric.key} className="rounded-md border border-border/60 px-2 py-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium">{metric.label}</span>
-                            <span className={metric.status === 'available' ? 'text-success' : 'text-danger'}>
-                              {metric.status === 'available'
-                                ? `${text.availableMetric}: ${metric.displayValue ?? metric.value ?? '—'}`
-                                : text.missingMetric}
-                            </span>
-                          </div>
-                          {metric.description ? (
-                            <div className="mt-0.5 text-[11px] leading-4 text-muted-text">
-                              {metric.description}
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
+                    <div className="overflow-x-auto rounded-md border border-border/60">
+                      <table className="w-full min-w-[520px] text-[11px]">
+                        <thead className="bg-muted/30 text-muted-text">
+                          <tr className="home-divider border-b">
+                            <th className="px-2 py-1.5 text-left font-medium">{text.metric}</th>
+                            <th className="px-2 py-1.5 text-left font-medium">{text.status}</th>
+                            <th className="px-2 py-1.5 text-right font-medium">{text.metricValue}</th>
+                            <th className="px-2 py-1.5 text-left font-medium">{text.meaning}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {item.metricDetails.map((metric) => (
+                            <tr key={metric.key} className="home-divider border-b align-top last:border-b-0">
+                              <td className="px-2 py-1.5 font-medium">{metric.label}</td>
+                              <td className={`px-2 py-1.5 ${metric.status === 'available' ? 'text-success' : 'text-danger'}`}>
+                                {metric.status === 'available' ? text.availableMetric : text.missingMetric}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                                {metric.status === 'available'
+                                  ? formatMetricDisplayValue(metric.displayValue ?? metric.value)
+                                  : '—'}
+                              </td>
+                              <td className="min-w-[180px] px-2 py-1.5 leading-4 text-muted-text">
+                                {METRIC_DESCRIPTION_OVERRIDES[metric.key] || metric.description || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   ) : formatValues(item)}
                 </td>

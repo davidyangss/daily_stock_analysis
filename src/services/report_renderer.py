@@ -78,6 +78,46 @@ def _clean_sniper_value(val: Any) -> str:
     return s
 
 
+def _format_number(value: Any, decimals: int = 2) -> str:
+    """Format report numbers compactly without exposing float noise."""
+    if value is None or isinstance(value, bool):
+        return "N/A" if value is None else str(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip() or "N/A"
+    return f"{number:.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def _format_ratio(value: Any, decimals: int = 2) -> str:
+    """Format a decimal ratio as a percentage while preserving text values."""
+    if value is None or isinstance(value, bool):
+        return "N/A" if value is None else str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "N/A"
+        if text.endswith("%"):
+            return text
+        try:
+            number = float(text)
+        except ValueError:
+            return text
+    else:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return f"{number * 100:.{decimals}f}".rstrip("0").rstrip(".") + "%"
+
+
+def _markdown_cell(value: Any) -> str:
+    """Keep arbitrary model text inside one GFM table cell."""
+    if value is None:
+        return "N/A"
+    return str(value).replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
+
+
 def _resolve_templates_dir() -> Path:
     """Resolve template directory relative to project root."""
     config = get_config()
@@ -225,6 +265,9 @@ def render(
         "market_status_line": market_status_line(),
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
+        "format_number": _format_number,
+        "format_ratio": _format_ratio,
+        "markdown_cell": _markdown_cell,
         "failed_checks": failed_checks,
         "phase_pack_excerpt": phase_pack_excerpt,
         "history_by_code": {},

@@ -119,12 +119,10 @@ class TestReportRenderer(unittest.TestCase):
         out = render("markdown", [avoid, alert], summary_only=True)
 
         self.assertIsNotNone(out)
-        self.assertIn("🟡 **Avoid Corp(AVOID)**: Avoid | Score 90", out)
-        self.assertIn("🔴 **Alert Corp(ALERT)**: Alert | Score 85", out)
-        self.assertIn("**Avoid Corp(AVOID)**: Avoid | Score 90", out)
-        self.assertIn("**Alert Corp(ALERT)**: Alert | Score 85", out)
-        self.assertNotIn("**Avoid Corp(AVOID)**: Buy", out)
-        self.assertNotIn("**Alert Corp(ALERT)**: Buy", out)
+        self.assertIn("| 🟡 **Avoid Corp (AVOID)** | Avoid | 90 | Bullish |", out)
+        self.assertIn("| 🔴 **Alert Corp (ALERT)** | Alert | 85 | Bullish |", out)
+        self.assertNotIn("| 🟡 **Avoid Corp (AVOID)** | Buy", out)
+        self.assertNotIn("| 🔴 **Alert Corp (ALERT)** | Buy", out)
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""
@@ -382,6 +380,31 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("**筹码**: 筹码分布未启用或数据源暂不可用，未纳入筹码判断。", out)
         self.assertEqual(out.count("数据缺失，无法判断"), 0)
 
+    def test_render_markdown_labels_and_formats_chip_metrics_as_table(self) -> None:
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "data_perspective": {
+                    "chip_structure": {
+                        "profit_ratio": 0.07582432747990527,
+                        "avg_cost": 470.14,
+                        "concentration": 0.3235006928105791,
+                        "chip_health": "一般",
+                    }
+                },
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("| 指标 | 数值 | 含义 |", out)
+        self.assertIn("| 获利比例 | 7.58% | 当前价格以下的获利筹码占比 |", out)
+        self.assertIn("| 平均成本 | 470.14 | 市场筹码的平均持仓成本 |", out)
+        self.assertIn("| 90%筹码集中度 | 32.35% |", out)
+        self.assertIn("| 筹码健康度 | 一般 |", out)
+        self.assertNotIn("0.07582432747990527", out)
+
     def test_render_markdown_renders_strategy_synthesis_with_localized_labels(self) -> None:
         r = _make_result(
             dashboard={
@@ -459,7 +482,8 @@ class TestReportRenderer(unittest.TestCase):
 
             self.assertIsNotNone(out)
             self.assertIn("策略关键数据与来源", out)
-            self.assertIn("source=searxng", out)
+            self.assertIn("#### 数据获取概览", out)
+            self.assertIn("| `search_stock_news` | 无数据 | N/A | searxng", out)
             self.assertIn("reason=no results", out)
 
     def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
