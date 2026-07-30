@@ -351,6 +351,87 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
         self.assertIn("新闻检索返回 3 条结果", news["message"])
         self.assertIn("未进入本次分析输入", news["message"])
 
+    def test_agent_news_provider_success_overrides_missing_prefetched_context(self) -> None:
+        diagnostics = _diagnostic_snapshot()
+        diagnostics["provider_runs"].append(
+            {
+                "trace_id": "trace-p2",
+                "data_type": "news_search",
+                "provider": "Anspire",
+                "operation": "search_stock_news",
+                "success": True,
+                "record_count": 5,
+            }
+        )
+        summary = build_run_diagnostic_summary(
+            context_snapshot={
+                "diagnostics": diagnostics,
+                "analysis_context_pack_overview": _analysis_context_overview(
+                    blocks=[
+                        {
+                            "key": "news",
+                            "label": "新闻",
+                            "status": "missing",
+                            "source": None,
+                            "warnings": [],
+                            "missing_reasons": ["news_context_missing"],
+                        }
+                    ]
+                ),
+            },
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        news = summary["components"]["news"]
+        # The shared fixture contains a quote-provider fallback, so the run as
+        # a whole remains degraded even though news itself is successful.
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(news["status"], "ok")
+        self.assertEqual(news["details"]["provider"], "Anspire")
+        self.assertEqual(news["details"]["record_count"], 5)
+        self.assertEqual(news["details"]["analysis_input_status"], "missing")
+        self.assertEqual(news["details"]["evidence_scope"], "run_provider_diagnostics")
+        self.assertIn("本次运行已记录新闻搜索证据", news["message"])
+
+    def test_agent_news_provider_failure_is_not_hidden_by_missing_context(self) -> None:
+        diagnostics = _diagnostic_snapshot()
+        diagnostics["provider_runs"].append(
+            {
+                "trace_id": "trace-p2",
+                "data_type": "news_search",
+                "provider": "Anspire",
+                "operation": "search_stock_news",
+                "success": False,
+                "error_type": "TimeoutError",
+            }
+        )
+        summary = build_run_diagnostic_summary(
+            context_snapshot={
+                "diagnostics": diagnostics,
+                "analysis_context_pack_overview": _analysis_context_overview(
+                    blocks=[
+                        {
+                            "key": "news",
+                            "label": "新闻",
+                            "status": "missing",
+                            "source": None,
+                            "warnings": [],
+                            "missing_reasons": ["news_context_missing"],
+                        }
+                    ]
+                ),
+            },
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        news = summary["components"]["news"]
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(news["status"], "failed")
+        self.assertIn("TimeoutError", news["message"])
+        self.assertEqual(news["details"]["evidence_scope"], "run_provider_diagnostics")
+
     def test_summary_marks_llm_failure_as_failed(self) -> None:
         diagnostics = _diagnostic_snapshot()
         diagnostics["llm_runs"] = [

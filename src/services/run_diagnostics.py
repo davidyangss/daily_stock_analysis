@@ -1223,10 +1223,41 @@ def _provider_component(
     )
 
 
-def _news_component(context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]) -> RunDiagnosticComponent:
+def _news_component(
+    context_snapshot: Dict[str, Any],
+    raw_result: Dict[str, Any],
+    provider_runs: List[Dict[str, Any]],
+) -> RunDiagnosticComponent:
     label = "新闻搜索"
     input_block = _analysis_input_block(context_snapshot, "news")
     input_message = _analysis_input_status_message(input_block)
+    provider_component = _provider_component(
+        key="news",
+        label=label,
+        data_type="news_search",
+        provider_runs=provider_runs,
+    )
+    if provider_component.status != "unknown":
+        details = dict(provider_component.details)
+        details["evidence_scope"] = "run_provider_diagnostics"
+        if input_message:
+            details.update(
+                {
+                    "analysis_input_block": "news",
+                    "analysis_input_status": input_block.get("status"),
+                    "analysis_input_missing_reasons": _list_text(
+                        input_block.get("missing_reasons")
+                    ),
+                }
+            )
+            if provider_component.status in {"ok", "degraded"}:
+                provider_component.message = (
+                    f"{provider_component.message}；预置新闻上下文{input_message}，"
+                    "但本次运行已记录新闻搜索证据"
+                )
+        provider_component.details = details
+        return provider_component
+
     has_retrieval_news = "news_retrieval_content" in context_snapshot
     has_snapshot_news = has_retrieval_news or "news_content" in context_snapshot
     news_result_count = context_snapshot.get("news_result_count")
@@ -1447,7 +1478,7 @@ def build_run_diagnostic_summary(
             daily_data_component,
             snapshot,
         ),
-        "news": _news_component(snapshot, raw),
+        "news": _news_component(snapshot, raw, provider_runs),
         "llm": _llm_component(diagnostics, raw),
         "notification": _notification_component(diagnostics),
         "history": _history_component(diagnostics, report_saved),
