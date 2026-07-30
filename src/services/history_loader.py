@@ -12,7 +12,7 @@ import contextvars
 import logging
 from datetime import date, datetime, timedelta
 from threading import Lock
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -134,7 +134,68 @@ def load_history_df(
     actual provider name on network fallback.  Returns ``(None, "none")`` when
     both paths fail.
     """
+    df, source, _metadata = load_history_df_with_metadata(
+        stock_code,
+        days=days,
+        target_date=target_date,
+    )
+    return df, source
+
+
+def _daily_provider_attempts_since(start_index: int) -> List[Dict[str, str]]:
+    """Return safe daily-data provider attempts made by this history request."""
+    try:
+        from src.services.run_diagnostics import current_diagnostic_snapshot
+
+        snapshot = current_diagnostic_snapshot() or {}
+        provider_runs = snapshot.get("provider_runs") or []
+    except Exception:  # pragma: no cover - diagnostics must stay fail-open
+        return []
+
+    attempts: List[Dict[str, str]] = []
+    for run in provider_runs[start_index:]:
+        if not isinstance(run, dict) or run.get("data_type") != "daily_data":
+            continue
+        attempt = {
+            "provider": str(run.get("provider") or "unknown"),
+            "operation": str(run.get("operation") or "get_daily_data"),
+        }
+        if run.get("success") is False:
+            attempt["reason"] = str(
+                run.get("error_message_sanitized")
+                or run.get("error_type")
+                or "数据源未返回可用数据"
+            )
+        attempts.append(attempt)
+    return attempts[:10]
+
+
+def _daily_provider_run_count() -> int:
+    try:
+        from src.services.run_diagnostics import current_diagnostic_snapshot
+
+        return len((current_diagnostic_snapshot() or {}).get("provider_runs") or [])
+    except Exception:  # pragma: no cover - diagnostics must stay fail-open
+        return 0
+
+
+def load_history_df_with_metadata(
+    stock_code: str,
+    days: int = 60,
+    target_date: Optional[date] = None,
+) -> Tuple[Optional[pd.DataFrame], str, Dict[str, Any]]:
+    """Load K-line history and return safe source/failure evidence metadata.
+
+    The original :func:`load_history_df` remains a two-value compatibility API.
+    This companion API lets report-facing tools retain the actual provider attempts
+    already captured by run diagnostics without exposing raw exceptions.
+    """
     from src.storage import get_db
+
+    provider_run_start = _daily_provider_run_count()
+    metadata: Dict[str, Any] = {
+        "data_description": "日线K线（开盘、最高、最低、收盘、成交量）",
+    }
 
     # Resolve effective end date
     if target_date is not None:
@@ -158,7 +219,8 @@ def load_history_df(
                 "load_history_df(%s): %d bars from DB (requested %d)",
                 stock_code, len(df), days,
             )
-            return df, "db_cache"
+            metadata["source"] = "db_cache"
+            return df, "db_cache", metadata
     except Exception as e:
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
@@ -167,8 +229,24 @@ def load_history_df(
         manager = _get_fetcher_manager()
         df, source = manager.get_daily_data(stock_code, days=days)
         if df is not None and not df.empty:
-            return df, source
+            metadata["source"] = source
+            metadata["provider_attempts"] = _daily_provider_attempts_since(provider_run_start)
+            return df, source, metadata
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
+        try:
+            from src.services.run_diagnostics import sanitize_diagnostic_text
 
-    return None, "none"
+            metadata["failure_reason"] = sanitize_diagnostic_text(e)
+        except Exception:  # pragma: no cover - diagnostics must stay fail-open
+            metadata["failure_reason"] = "日线数据源请求失败"
+
+    attempts = _daily_provider_attempts_since(provider_run_start)
+    if attempts:
+        metadata["provider_attempts"] = attempts
+        failed_attempts = [attempt for attempt in attempts if attempt.get("reason")]
+        if failed_attempts:
+            metadata["failure_source"] = failed_attempts[-1].get("provider")
+            metadata["failure_operation"] = failed_attempts[-1].get("operation")
+            metadata["failure_reason"] = failed_attempts[-1].get("reason")
+    return None, "none", metadata

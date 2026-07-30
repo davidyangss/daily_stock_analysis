@@ -322,16 +322,25 @@ get_volume_analysis_tool = ToolDefinition(
 
 def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     """Detect common candlestick and chart patterns in recent price history."""
-    from src.services.history_loader import load_history_df
+    from src.services.history_loader import load_history_df_with_metadata
 
-    df, source = load_history_df(stock_code, days=max(days, 120))
+    df, source, history_metadata = load_history_df_with_metadata(
+        stock_code,
+        days=max(days, 120),
+    )
 
     if df is None or df.empty:
-        return {"error": f"No historical data for {stock_code}"}
+        return {
+            "error": f"No historical data for {stock_code}",
+            **history_metadata,
+        }
 
     df = df.tail(days).copy().reset_index(drop=True)
     if len(df) < 10:
-        return {"error": f"Insufficient data for pattern analysis (got {len(df)} days, need >= 10)"}
+        return {
+            "error": f"Insufficient data for pattern analysis (got {len(df)} days, need >= 10)",
+            **history_metadata,
+        }
 
     o = df["open"].values
     h = df["high"].values
@@ -486,6 +495,7 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     return {
         "code": stock_code,
         "source": source,
+        "data_description": history_metadata["data_description"],
         "period_days": len(df),
         "current_price": round(float(c[-1]), 2),
         "patterns_count": len(unique_patterns),

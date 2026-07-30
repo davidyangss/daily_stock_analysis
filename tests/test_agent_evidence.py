@@ -15,6 +15,7 @@ except ModuleNotFoundError:
 from src.agent.evidence import (
     build_strategy_evidence_manifest,
     extract_strategy_evidence_manifest,
+    format_strategy_evidence_markdown,
     summarize_tool_result,
 )
 from src.agent.protocols import AgentOpinion
@@ -109,6 +110,33 @@ class TestToolEvidence(unittest.TestCase):
         )
 
         self.assertEqual(evidence["status"], "missing")
+
+    def test_pattern_fetch_failure_keeps_tool_description_and_provider_attempts(self) -> None:
+        evidence = summarize_tool_result(
+            "analyze_pattern",
+            {
+                "error": "No historical data for 688825",
+                "data_description": "日线K线（开盘、最高、最低、收盘、成交量）",
+                "provider_attempts": [{
+                    "provider": "AkshareFetcher",
+                    "operation": "get_daily_data",
+                    "reason": "empty result",
+                }],
+                "failure_source": "AkshareFetcher",
+                "failure_operation": "get_daily_data",
+                "failure_reason": "empty result",
+            },
+            execution_success=True,
+        )
+
+        self.assertEqual(evidence["status"], "fetch_failed")
+        self.assertEqual(evidence["tool_display_name"], "K线形态识别")
+        self.assertIn("十字星", evidence["tool_description"])
+        self.assertEqual(evidence["data_description"], "日线K线（开盘、最高、最低、收盘、成交量）")
+        self.assertEqual(evidence["sources"], ["AkshareFetcher"])
+        self.assertEqual(evidence["failure_attempts"][0]["provider"], "AkshareFetcher")
+        self.assertEqual(evidence["failure_attempts"][0]["reason"], "empty result")
+        self.assertEqual(evidence["source_links"][0]["url"], "https://www.akshare.xyz/")
 
 
 class TestSkillEvidenceContract(unittest.TestCase):
@@ -278,6 +306,35 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         self.assertEqual(manifest["items"][0]["status"], "missing")
         self.assertEqual(manifest["items"][0]["required_by"], ["breakout"])
         self.assertNotIn("other-agent-source", manifest["items"][0]["sources"])
+
+    def test_markdown_uses_chinese_tool_description_and_failure_attempt(self) -> None:
+        rendered = format_strategy_evidence_markdown({
+            "schema_version": "strategy-evidence-v1",
+            "status": "insufficient",
+            "items": [{
+                "tool": "analyze_pattern",
+                "tool_display_name": "K线形态识别",
+                "data_description": "日线K线（开盘、最高、最低、收盘、成交量）",
+                "status": "fetch_failed",
+                "sources": ["AkshareFetcher"],
+                "source_links": [{
+                    "name": "AkshareFetcher",
+                    "url": "https://www.akshare.xyz/",
+                }],
+                "key_values": {},
+                "failure_attempts": [{
+                    "provider": "AkshareFetcher",
+                    "operation": "get_daily_data",
+                    "reason": "empty result",
+                }],
+            }],
+            "strategy_requirements": [],
+            "limitations": [],
+        }, "zh")
+
+        self.assertIn("K线形态识别 (`analyze_pattern`): 抓取失败", rendered)
+        self.assertIn("[AkshareFetcher](https://www.akshare.xyz/)", rendered)
+        self.assertIn("failure=AkshareFetcher get_daily_data: empty result", rendered)
 
 
 if __name__ == "__main__":

@@ -944,7 +944,7 @@ P5 在不修改 `PACK_VERSION = "1.0"`、不新增数据源和不改变报告 JS
 
 Specialist 策略会把 YAML 中的 `required_tools` 作为硬数据依赖。运行时基于真实工具结果生成 `dashboard.strategy_data_evidence`（`strategy-evidence-v1`）：全部必需数据可用为 `verified`，fallback/partial/estimated/stale 为 `limited`，未调用或 missing/fetch_failed/not_supported 为 `insufficient`。证据不足的策略观点不会参与多策略投票，但单个策略缺失不会中断整个分析任务。
 
-同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；Web 报告与通知详细报告会展示策略依赖、工具状态、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。清单来自工具执行日志的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告或非 Specialist 路径没有该字段时继续隐藏，不影响既有客户端。
+同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；Web 报告与通知详细报告会展示策略依赖、工具的中文用途说明、获取内容、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。已知数据源成功时，Web 会提供该源的公开网站链接；本地缓存不伪造外部链接。日线数据源失败时，清单会列出各实际尝试过的源、请求操作和已脱敏的失败原因，例如“AkshareFetcher：日线K线（get_daily_data）失败：empty result”。清单来自工具执行日志的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告或非 Specialist 路径没有该字段时继续隐藏，不影响既有客户端。
 
 `AnalysisContextPack.data_quality.limitations` 现在也会保留辅助块的 missing/not_supported/partial/estimated 状态，避免报告只显示分数而隐藏新闻、基本面或筹码缺失；这不改变既有固定权重评分公式。
 

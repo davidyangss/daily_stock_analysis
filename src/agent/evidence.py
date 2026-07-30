@@ -68,6 +68,58 @@ _COUNT_FIELDS = (
     "count",
 )
 
+_TOOL_PRESENTATION = {
+    "analyze_pattern": (
+        "K线形态识别",
+        "基于近期日线K线识别十字星、锤头线、吞没、突破和箱体等形态。",
+        "近期日线K线（开盘、最高、最低、收盘、成交量）",
+    ),
+    "analyze_trend": ("技术指标分析", "计算均线、MACD、RSI、支撑阻力和趋势信号。", "近期日线K线与技术指标"),
+    "get_daily_history": ("K线数据获取", "获取指定交易日数量的日线OHLCV数据。", "日线K线（开盘、最高、最低、收盘、成交量）"),
+    "get_realtime_quote": ("实时行情获取", "获取最新价格、涨跌幅、成交量和估值等行情字段。", "实时行情"),
+    "get_volume_analysis": ("量能分析", "分析成交量、量比和量价关系。", "近期日线K线与成交量"),
+    "calculate_ma": ("均线计算", "根据日线收盘价计算指定周期均线。", "近期日线K线收盘价"),
+    "search_stock_news": ("新闻搜索", "检索与该股票相关的公开新闻和舆情。", "公开新闻与舆情"),
+    "get_stock_info": ("基本信息获取", "获取股票基础资料及可用基本面字段。", "股票基础资料与基本面"),
+    "get_chip_distribution": ("筹码分布分析", "获取成本分布、平均成本和筹码集中度。", "筹码分布数据"),
+    "get_sector_rankings": ("行业板块分析", "获取行业或概念板块涨跌排名。", "行业与概念板块行情"),
+}
+
+_SOURCE_URLS = {
+    "aksharefetcher": "https://www.akshare.xyz/",
+    "akshare": "https://www.akshare.xyz/",
+    "efinancefetcher": "https://efinance.readthedocs.io/",
+    "efinance": "https://efinance.readthedocs.io/",
+    "tusharefetcher": "https://tushare.pro/",
+    "tushare": "https://tushare.pro/",
+    "pytdxfetcher": "https://www.pytdx.org/",
+    "pytdx": "https://www.pytdx.org/",
+    "baostockfetcher": "http://www.baostock.com/",
+    "baostock": "http://www.baostock.com/",
+    "yfinancefetcher": "https://finance.yahoo.com/",
+    "yfinance": "https://finance.yahoo.com/",
+    "finnhubfetcher": "https://finnhub.io/",
+    "finnhub": "https://finnhub.io/",
+    "alphavantagefetcher": "https://www.alphavantage.co/",
+    "alphavantage": "https://www.alphavantage.co/",
+    "longbridgefetcher": "https://longbridge.com/",
+    "longbridge": "https://longbridge.com/",
+    "tencentfetcher": "https://gu.qq.com/",
+    "tencent": "https://gu.qq.com/",
+    "searxng": "https://docs.searxng.org/",
+}
+
+_ZH_EVIDENCE_STATUS_LABELS = {
+    "available": "成功",
+    "fallback": "已降级",
+    "partial": "部分数据",
+    "estimated": "估算",
+    "stale": "数据过期",
+    "missing": "无数据",
+    "fetch_failed": "抓取失败",
+    "not_supported": "不支持",
+}
+
 
 def canonical_tool_name(value: Any) -> str:
     """Normalize optional MCP/provider prefixes for dependency matching."""
@@ -126,6 +178,11 @@ def _result_sources(payload: Any) -> List[str]:
             for item in source_chain[:20]:
                 if isinstance(item, Mapping):
                     add(item.get("provider") or item.get("source"))
+        provider_attempts = payload.get("provider_attempts")
+        if isinstance(provider_attempts, list):
+            for item in provider_attempts[:20]:
+                if isinstance(item, Mapping):
+                    add(item.get("provider") or item.get("source"))
         raw_results = payload.get("results")
         if isinstance(raw_results, list):
             for item in raw_results[:20]:
@@ -138,6 +195,33 @@ def _result_sources(payload: Any) -> List[str]:
                 for source in _result_sources(nested):
                     add(source)
     return sources[:10]
+
+
+def _source_links(sources: Iterable[str]) -> List[Dict[str, str]]:
+    """Return public provider home/data pages only; never derive URLs from errors."""
+    links: List[Dict[str, str]] = []
+    for source in sources:
+        name = _safe_text(source, 120)
+        url = _SOURCE_URLS.get(name.lower())
+        if url and not any(item["url"] == url for item in links):
+            links.append({"name": name, "url": url})
+    return links
+
+
+def _failure_attempts(mapping: Mapping[str, Any]) -> List[Dict[str, str]]:
+    raw_attempts = mapping.get("provider_attempts")
+    if not isinstance(raw_attempts, list):
+        return []
+    attempts: List[Dict[str, str]] = []
+    for raw in raw_attempts[:10]:
+        if not isinstance(raw, Mapping) or not raw.get("reason"):
+            continue
+        attempts.append({
+            "provider": _safe_text(raw.get("provider") or "unknown", 120),
+            "operation": _safe_text(raw.get("operation") or "get_data", 120),
+            "reason": _safe_text(raw.get("reason"), 300),
+        })
+    return attempts
 
 
 def _result_count(payload: Any) -> Optional[int]:
@@ -165,6 +249,12 @@ def _evidence_status(payload: Any, execution_success: bool) -> str:
             return "missing"
         raw_status = str(payload.get("status") or "").strip().lower()
         error = payload.get("error")
+        provider_attempts = payload.get("provider_attempts")
+        if isinstance(provider_attempts, list) and any(
+            isinstance(attempt, Mapping) and attempt.get("reason")
+            for attempt in provider_attempts
+        ):
+            return "fetch_failed"
         if raw_status in {"not_supported", "unsupported"}:
             return "not_supported"
         if raw_status in {"failed", "error", "fetch_failed"}:
@@ -267,6 +357,19 @@ def summarize_tool_result(
         "partial": status == "partial",
         "key_values": key_values,
     }
+    tool_key = canonical_tool_name(tool_name)
+    presentation = _TOOL_PRESENTATION.get(tool_key)
+    if presentation:
+        evidence["tool_display_name"] = presentation[0]
+        evidence["tool_description"] = presentation[1]
+        evidence["data_description"] = _safe_text(
+            mapping.get("data_description") or presentation[2]
+        )
+    elif mapping.get("data_description"):
+        evidence["data_description"] = _safe_text(mapping["data_description"])
+    source_links = _source_links(evidence["sources"])
+    if source_links:
+        evidence["source_links"] = source_links
     as_of = _first_text(mapping, _DATE_FIELDS)
     if not as_of and isinstance(latest_record, Mapping):
         as_of = _first_text(latest_record, _DATE_FIELDS)
@@ -280,6 +383,18 @@ def summarize_tool_result(
     if status not in {"available", "fallback", "stale", "partial", "estimated"}:
         reason = mapping.get("error") or mapping.get("missing_reason") or mapping.get("note")
         evidence["missing_reason"] = _safe_text(reason or status, 300)
+        attempts = _failure_attempts(mapping)
+        if attempts:
+            evidence["failure_attempts"] = attempts
+        failure_source = mapping.get("failure_source")
+        failure_operation = mapping.get("failure_operation")
+        failure_reason = mapping.get("failure_reason")
+        if failure_source:
+            evidence["failure_source"] = _safe_text(failure_source, 120)
+        if failure_operation:
+            evidence["failure_operation"] = _safe_text(failure_operation, 120)
+        if failure_reason:
+            evidence["failure_reason"] = _safe_text(failure_reason, 300)
     return evidence
 
 
@@ -491,6 +606,14 @@ def format_strategy_evidence_markdown(
         sources = ", ".join(
             str(value) for value in (item.get("sources") or []) if value
         ) or "N/A"
+        source_links = item.get("source_links") if isinstance(item.get("source_links"), list) else []
+        source_link_text = ", ".join(
+            f"[{link.get('name') or 'source'}]({link.get('url')})"
+            for link in source_links
+            if isinstance(link, Mapping) and link.get("url")
+        )
+        if source_link_text:
+            sources = f"{sources} ({source_link_text})"
         values = item.get("key_values") if isinstance(item.get("key_values"), Mapping) else {}
         value_text = ", ".join(
             f"{key}={value}" for key, value in list(values.items())[:6]
@@ -511,11 +634,31 @@ def format_strategy_evidence_markdown(
         )
         if required_by:
             coverage.append(f"required_by={required_by}")
-        if item.get("missing_reason"):
-            coverage.append(f"reason={item['missing_reason']}")
+        failure_attempts = item.get("failure_attempts")
+        if isinstance(failure_attempts, list):
+            for attempt in failure_attempts[:5]:
+                if not isinstance(attempt, Mapping):
+                    continue
+                coverage.append(
+                    "failure="
+                    f"{attempt.get('provider') or 'unknown'} "
+                    f"{attempt.get('operation') or 'get_data'}: "
+                    f"{attempt.get('reason') or 'unknown'}"
+                )
+        elif item.get("failure_reason") or item.get("missing_reason"):
+            coverage.append(
+                "reason=" + str(item.get("failure_reason") or item.get("missing_reason"))
+            )
         suffix = f" | {'; '.join(coverage)}" if coverage else ""
+        tool_name = str(item.get("tool") or "unknown")
+        tool_label = str(item.get("tool_display_name") or tool_name)
+        data_description = str(item.get("data_description") or "")
+        status = str(item.get("status") or "unknown")
+        display_status = _ZH_EVIDENCE_STATUS_LABELS.get(status, status) if language.startswith("zh") else status
+        tool_text = f"{tool_label} (`{tool_name}`)" if tool_label != tool_name else f"`{tool_name}`"
+        data_suffix = f" | data={data_description}" if data_description else ""
         lines.append(
-            f"- `{item.get('tool') or 'unknown'}`: {item.get('status') or 'unknown'} | "
+            f"- {tool_text}: {display_status}{data_suffix} | "
             f"source={sources} | {value_text}{suffix}"
         )
     for limitation in (manifest.get("limitations") or [])[:10]:

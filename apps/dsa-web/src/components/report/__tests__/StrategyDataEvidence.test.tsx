@@ -18,6 +18,21 @@ describe('StrategyDataEvidence', () => {
           }],
           items: [
             {
+              tool: 'analyze_pattern',
+              toolDisplayName: 'K线形态识别',
+              toolDescription: '基于近期日线K线识别十字星、锤头线和吞没等形态。',
+              dataDescription: '日线K线（开盘、最高、最低、收盘、成交量）',
+              status: 'fetch_failed',
+              sources: ['AkshareFetcher'],
+              sourceLinks: [{ name: 'AkshareFetcher', url: 'https://www.akshare.xyz/' }],
+              failureAttempts: [{ provider: 'AkshareFetcher', operation: 'get_daily_data', reason: 'empty result' }],
+              cached: false,
+              partial: false,
+              keyValues: {},
+              required: true,
+              requiredBy: ['volume_breakout'],
+            },
+            {
               tool: 'get_realtime_quote',
               status: 'available',
               sources: ['tushare'],
@@ -47,10 +62,15 @@ describe('StrategyDataEvidence', () => {
     );
 
     expect(screen.getByText('关键数据与来源')).toBeInTheDocument();
+    expect(screen.getByText('K线形态识别')).toBeInTheDocument();
+    expect(screen.getByText(/基于近期日线K线识别/)).toBeInTheDocument();
+    expect(screen.getByText('抓取失败')).toBeInTheDocument();
+    expect(screen.getByText(/AkshareFetcher：日线K线.*empty result/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '数据源网站：AkshareFetcher' })).toHaveAttribute('href', 'https://www.akshare.xyz/');
     expect(screen.getByText(/volume_breakout: required data unavailable/)).toBeInTheDocument();
     expect(screen.getByText('tushare')).toBeInTheDocument();
     expect(screen.getByText(/price=1880/)).toBeInTheDocument();
-    expect(screen.getByText('no results')).toBeInTheDocument();
+    expect(screen.getByText(/no results/)).toBeInTheDocument();
   });
 
   it('does not render when evidence is absent', () => {

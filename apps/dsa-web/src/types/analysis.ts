@@ -378,6 +378,14 @@ export interface StrategyEvidenceItem {
   recordCount?: number;
   requestedRecords?: number;
   missingReason?: string;
+  toolDisplayName?: string;
+  toolDescription?: string;
+  dataDescription?: string;
+  sourceLinks?: Array<{ name: string; url: string }>;
+  failureSource?: string;
+  failureOperation?: string;
+  failureReason?: string;
+  failureAttempts?: Array<{ provider: string; operation: string; reason: string }>;
   required?: boolean;
   requiredBy?: string[];
 }
