@@ -483,7 +483,8 @@ class TestReportRenderer(unittest.TestCase):
             self.assertIsNotNone(out)
             self.assertIn("策略关键数据与来源", out)
             self.assertIn("#### 数据获取概览", out)
-            self.assertIn("| `search_stock_news` | 无数据 | N/A | searxng", out)
+            self.assertIn("##### `search_stock_news`", out)
+            self.assertIn("| 无数据 | N/A | searxng", out)
             self.assertIn("reason=no results", out)
 
     def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:

@@ -69,7 +69,8 @@ describe('StrategyDataEvidence', () => {
     expect(screen.getByRole('link', { name: '数据源网站：AkshareFetcher' })).toHaveAttribute('href', 'https://www.akshare.xyz/');
     expect(screen.getByText(/volume_breakout: required data unavailable/)).toBeInTheDocument();
     expect(screen.getByText('tushare')).toBeInTheDocument();
-    expect(screen.getByText(/price=1880/)).toBeInTheDocument();
+    expect(screen.getByText('price')).toBeInTheDocument();
+    expect(screen.getByText('1,880')).toBeInTheDocument();
     expect(screen.getByText(/no results/)).toBeInTheDocument();
   });
 
@@ -128,7 +129,7 @@ describe('StrategyDataEvidence', () => {
     );
 
     expect(screen.getByText('筹码分布分析')).toBeInTheDocument();
-    expect(screen.getByText('分析前已获取')).toBeInTheDocument();
+    expect(screen.getByText(/分析前已获取/)).toBeInTheDocument();
     expect(screen.getByText('获利盘比例')).toBeInTheDocument();
     expect(screen.getByText('7.58%')).toBeInTheDocument();
     expect(screen.getByText('70%筹码集中度')).toBeInTheDocument();

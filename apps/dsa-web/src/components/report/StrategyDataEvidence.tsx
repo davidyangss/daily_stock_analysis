@@ -1,4 +1,4 @@
-import type React from 'react';
+import { Fragment, type FC } from 'react';
 import type {
   ReportLanguage,
   StrategyDataEvidence as StrategyDataEvidenceType,
@@ -74,13 +74,6 @@ const statusVariant = (status: string): 'success' | 'warning' | 'danger' | 'defa
   return 'default';
 };
 
-const formatValues = (item: StrategyEvidenceItem): string => {
-  const entries = Object.entries(item.keyValues || {}).slice(0, 8);
-  return entries.length
-    ? entries.map(([key, value]) => `${key}=${value ?? 'N/A'}`).join(' · ')
-    : '—';
-};
-
 const formatCoverage = (item: StrategyEvidenceItem): string => {
   const parts = [
     item.asOf ? `as-of ${item.asOf}` : '',
@@ -125,7 +118,7 @@ const formatFailure = (item: StrategyEvidenceItem, dataDescription: string): str
   return [];
 };
 
-export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
+export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
   evidence,
   language = 'zh',
 }) => {
@@ -162,7 +155,6 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
               <th className="px-2 py-2 text-left font-medium">{text.status}</th>
               <th className="px-2 py-2 text-left font-medium">{text.data}</th>
               <th className="px-2 py-2 text-left font-medium">{text.requiredBy}</th>
-              <th className="px-2 py-2 text-left font-medium">{text.values}</th>
               <th className="px-2 py-2 text-left font-medium">{text.source}</th>
               <th className="px-2 py-2 text-left font-medium">{text.failure}</th>
               <th className="px-2 py-2 text-left font-medium">{text.freshness}</th>
@@ -176,7 +168,10 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
                 const toolDescription = item.toolDescription || legacyPresentation?.description;
                 const dataDescription = item.dataDescription || legacyPresentation?.data || '—';
                 const failureDetails = formatFailure(item, dataDescription);
-                return <tr key={`${item.stage || 'agent'}-${item.tool}-${index}`} className="home-divider border-b align-top last:border-b-0">
+                const rowKey = `${item.stage || 'agent'}-${item.tool}-${index}`;
+                const rawValues = Object.entries(item.keyValues || {}).slice(0, 8);
+                return <Fragment key={rowKey}>
+                <tr className="align-top">
                 <td className="px-2 py-2 text-foreground">
                   <div className="font-medium">{toolDisplayName}</div>
                   {toolDescription ? <div className="mt-1 max-w-[220px] text-muted-text">{toolDescription}</div> : <div className="mt-1 font-mono text-muted-text">{item.tool}</div>}
@@ -184,10 +179,26 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
                 <td className="px-2 py-2"><Badge variant={statusVariant(item.status)}>{statusLabel(item.status, reportLanguage)}</Badge></td>
                 <td className="max-w-[180px] px-2 py-2 text-muted-text">{dataDescription}</td>
                 <td className="px-2 py-2 text-muted-text">{item.requiredBy?.join(', ') || '—'}</td>
-                <td className="max-w-[380px] px-2 py-2 text-foreground">
-                  {item.prefetched ? (
-                    <div className="mb-1 text-[11px] text-cyan">{text.prefetched}</div>
-                  ) : null}
+                <td className="max-w-[180px] px-2 py-2 text-muted-text">
+                  <div>{item.sources?.join(', ') || text.noSource}</div>
+                  {item.sourceLinks?.length ? item.sourceLinks.map((link) => (
+                    <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="mt-1 block text-primary hover:underline">
+                      {text.dataLink}：{link.name}
+                    </a>
+                  )) : item.status === 'available' ? <div className="mt-1">{text.noDataLink}</div> : null}
+                </td>
+                <td className="max-w-[300px] px-2 py-2 text-muted-text">
+                  {failureDetails.map((detail) => <div key={detail}>{detail}</div>)}
+                  {!failureDetails.length ? '—' : null}
+                </td>
+                <td className="px-2 py-2 text-muted-text">{formatCoverage(item)}</td>
+              </tr>
+              <tr className="home-divider border-b align-top last:border-b-0">
+                <td colSpan={7} className="px-2 pb-3 pt-1 text-foreground">
+                  <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-muted-text">
+                    <span>{text.values}</span>
+                    {item.prefetched ? <span className="text-cyan">· {text.prefetched}</span> : null}
+                  </div>
                   {item.metricDetails?.length ? (
                     <div className="overflow-x-auto rounded-md border border-border/60">
                       <table className="w-full min-w-[520px] text-[11px]">
@@ -219,22 +230,29 @@ export const StrategyDataEvidence: React.FC<StrategyDataEvidenceProps> = ({
                         </tbody>
                       </table>
                     </div>
-                  ) : formatValues(item)}
+                  ) : rawValues.length ? (
+                    <div className="overflow-x-auto rounded-md border border-border/60">
+                      <table className="w-full min-w-[360px] text-[11px]">
+                        <thead className="bg-muted/30 text-muted-text">
+                          <tr className="home-divider border-b">
+                            <th className="px-2 py-1.5 text-left font-medium">{text.metric}</th>
+                            <th className="px-2 py-1.5 text-right font-medium">{text.metricValue}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rawValues.map(([key, value]) => (
+                            <tr key={key} className="home-divider border-b last:border-b-0">
+                              <td className="px-2 py-1.5 font-medium">{key}</td>
+                              <td className="px-2 py-1.5 text-right tabular-nums">{formatMetricDisplayValue(value)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <span className="text-muted-text">—</span>}
                 </td>
-                <td className="max-w-[180px] px-2 py-2 text-muted-text">
-                  <div>{item.sources?.join(', ') || text.noSource}</div>
-                  {item.sourceLinks?.length ? item.sourceLinks.map((link) => (
-                    <a key={link.url} href={link.url} target="_blank" rel="noreferrer" className="mt-1 block text-primary hover:underline">
-                      {text.dataLink}：{link.name}
-                    </a>
-                  )) : item.status === 'available' ? <div className="mt-1">{text.noDataLink}</div> : null}
-                </td>
-                <td className="max-w-[300px] px-2 py-2 text-muted-text">
-                  {failureDetails.map((detail) => <div key={detail}>{detail}</div>)}
-                  {!failureDetails.length ? '—' : null}
-                </td>
-                <td className="px-2 py-2 text-muted-text">{formatCoverage(item)}</td>
-              </tr>;
+              </tr>
+              </Fragment>;
               })()
             ))}
           </tbody>

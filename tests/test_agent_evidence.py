@@ -415,7 +415,8 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
             "limitations": [],
         }, "zh")
 
-        self.assertIn("| K线形态识别 (`analyze_pattern`) | 抓取失败 |", rendered)
+        self.assertIn("##### K线形态识别 (`analyze_pattern`)", rendered)
+        self.assertIn("| 抓取失败 | 日线K线（开盘、最高、最低、收盘、成交量） |", rendered)
         self.assertIn("[AkshareFetcher](https://www.akshare.xyz/)", rendered)
         self.assertIn("failure=AkshareFetcher get_daily_data: empty result", rendered)
 
@@ -438,7 +439,8 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         }, "zh")
 
         self.assertIn("#### 数据获取概览", rendered)
-        self.assertIn("#### 关键指标", rendered)
+        self.assertIn("##### 技术指标分析 (`analyze_trend`)", rendered)
+        self.assertIn("**关键指标**", rendered)
         self.assertIn("| 指标 | 状态 | 数值 | 含义 |", rendered)
         self.assertIn("| 分析价格 | 可用 | 371.10元 | 技术指标计算使用的价格 |", rendered)
         self.assertIn("| 营收同比增长率 | 缺失 | — | 营业收入相对上年同期的变化 |", rendered)

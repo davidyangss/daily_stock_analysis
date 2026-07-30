@@ -797,7 +797,7 @@ def format_strategy_evidence_markdown(
         source_heading = "Data source overview"
         metrics_heading = "Key metrics"
         limitations_heading = "Data limitations"
-        headers = ("Data tool", "Status", "Data requested", "Source / coverage")
+        headers = ("Status", "Data requested", "Source / coverage")
         metric_headers = ("Metric", "Status", "Value", "Meaning")
         available_text, missing_text = "Available", "Missing"
     elif language.startswith("ko"):
@@ -806,7 +806,7 @@ def format_strategy_evidence_markdown(
         source_heading = "데이터 출처 개요"
         metrics_heading = "핵심 지표"
         limitations_heading = "데이터 한계"
-        headers = ("데이터 도구", "상태", "수집 데이터", "출처 / 범위")
+        headers = ("상태", "수집 데이터", "출처 / 범위")
         metric_headers = ("지표", "상태", "값", "의미")
         available_text, missing_text = "사용 가능", "누락"
     else:
@@ -815,7 +815,7 @@ def format_strategy_evidence_markdown(
         source_heading = "数据获取概览"
         metrics_heading = "关键指标"
         limitations_heading = "数据限制"
-        headers = ("数据工具", "状态", "获取内容", "来源 / 覆盖")
+        headers = ("状态", "获取内容", "来源 / 覆盖")
         metric_headers = ("指标", "状态", "数值", "含义")
         available_text, missing_text = "可用", "缺失"
 
@@ -833,13 +833,9 @@ def format_strategy_evidence_markdown(
     lines.extend([
         "",
         f"#### {source_heading}",
-        "",
-        f"| {headers[0]} | {headers[1]} | {headers[2]} | {headers[3]} |",
-        "|------|------|------|------|",
     ])
 
     item_limit = 8 if compact else 20
-    metric_rows: List[str] = []
     for item in (manifest.get("items") or [])[:item_limit]:
         if not isinstance(item, Mapping):
             continue
@@ -889,7 +885,6 @@ def format_strategy_evidence_markdown(
             coverage.append(
                 "reason=" + str(item.get("failure_reason") or item.get("missing_reason"))
             )
-        suffix = f" | {'; '.join(coverage)}" if coverage else ""
         tool_name = str(item.get("tool") or "unknown")
         tool_label = str(item.get("tool_display_name") or tool_name)
         data_description = str(item.get("data_description") or "")
@@ -901,12 +896,17 @@ def format_strategy_evidence_markdown(
             source_and_coverage += "<br>" + "; ".join(coverage)
         if value_text != "N/A" and not item.get("metric_details"):
             source_and_coverage += f"<br>{value_text}"
-        lines.append(
-            f"| {cell(tool_text)} | {cell(display_status)} | "
-            f"{cell(data_description)} | {cell(source_and_coverage)} |"
-        )
+        lines.extend([
+            "",
+            f"##### {tool_text}",
+            "",
+            f"| {headers[0]} | {headers[1]} | {headers[2]} |",
+            "|------|------|------|",
+            f"| {cell(display_status)} | {cell(data_description)} | {cell(source_and_coverage)} |",
+        ])
         metric_details = item.get("metric_details")
         if isinstance(metric_details, list):
+            metric_rows: List[str] = []
             for metric in metric_details[:12]:
                 if not isinstance(metric, Mapping):
                     continue
@@ -922,15 +922,15 @@ def format_strategy_evidence_markdown(
                     f"| {cell(metric_label)} | {cell(metric_status)} | "
                     f"{cell(metric_value)} | {cell(description)} |"
                 )
-    if metric_rows:
-        lines.extend([
-            "",
-            f"#### {metrics_heading}",
-            "",
-            f"| {metric_headers[0]} | {metric_headers[1]} | {metric_headers[2]} | {metric_headers[3]} |",
-            "|------|:------:|------:|------|",
-            *metric_rows,
-        ])
+            if metric_rows:
+                lines.extend([
+                    "",
+                    f"**{metrics_heading}**",
+                    "",
+                    f"| {metric_headers[0]} | {metric_headers[1]} | {metric_headers[2]} | {metric_headers[3]} |",
+                    "|------|:------:|------:|------|",
+                    *metric_rows,
+                ])
     limitations = list(manifest.get("limitations") or [])[:10]
     if limitations:
         lines.extend(["", f"#### ⚠️ {limitations_heading}", ""])
