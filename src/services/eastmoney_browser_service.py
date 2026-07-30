@@ -405,24 +405,28 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         logger.info("[PlaywrightBrowserAdapter] CDP 连接成功，port=%d", self._CDP_PORT)
 
     def check_login(self) -> bool:
-        """检查 eastmoney 相关 Cookie 是否存在已登录凭据（uidal / 长 ut / empinf）"""
+        """
+        用轻量 K 线探测替代 Cookie 检查。
+        东财 K 线 API 不要求账号登录，公开 ut 参数即可访问。
+        探测 rc=0 且有 klines 数据则视为可用。
+        """
+        import json as _json
+        probe_url = (
+            f"https://{_KLINE_DOMAIN}/api/qt/stock/kline/get"
+            "?secid=1.600519&ut=fa5fd1943c7b386f172d6893dbfba10b"
+            "&fields1=f1&fields2=f51,f53,f61&klt=101&fqt=0&end=20991231&lmt=2"
+        )
         try:
-            all_cookies = self._context.cookies()
-            em = {
-                c["name"]: c["value"]
-                for c in all_cookies
-                if "eastmoney" in c.get("domain", "")
-            }
-            uidal  = em.get("uidal", "")
-            ut     = em.get("ut", "")
-            empinf = em.get("empinf", "")
-            logged_in = bool(uidal) or (bool(ut) and len(ut) > 20) or bool(empinf)
-            logger.debug(
-                "[PlaywrightBrowserAdapter] check_login: em_cookies=%d uidal=%s → %s",
-                len(em), bool(uidal), logged_in,
-            )
-            return logged_in
+            resp = self._page.goto(probe_url, timeout=10_000, wait_until="commit")
+            if resp is None:
+                return False
+            d = _json.loads(resp.text())
+            ok = d.get("rc") == 0 and bool(d.get("data", {}).get("klines"))
+            logger.debug("[PlaywrightBrowserAdapter] check_login probe: rc=%s → %s", d.get("rc"), ok)
+            return ok
         except Exception as exc:
+            logger.warning("[PlaywrightBrowserAdapter] check_login probe 失败: %s", exc)
+            return False
             logger.warning("[PlaywrightBrowserAdapter] check_login 异常: %s", exc)
             return False
 
