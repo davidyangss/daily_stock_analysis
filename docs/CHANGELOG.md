@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 新增通达信 TdxQuant A 股数据源 Feature 设计，明确 Windows Bridge、只读 provider、数据质量、fallback、安全边界与分阶段验收方案。
 - [修复] 报告诊断优先采用本次运行的新闻搜索 provider 证据，避免 Agent 模式新闻搜索成功时仍显示为未获取
 
 - [改进] A 股筹码分布保留东财成品数据优先级，并在东财异常、超时、空数据或字段无效时依次使用新浪、腾讯不复权日线与换手率本地计算，避免单一平台故障导致筹码能力整体不可用。
