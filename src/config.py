@@ -1047,6 +1047,15 @@ class Config:
     enable_chip_distribution: bool = True
     # 东财接口补丁开关
     enable_eastmoney_patch: bool = False
+    # 东财持久浏览器：维护一个持久化的 Chrome Profile，由浏览器上下文直接发东财行情请求
+    # 比 Requests+Cookie 注入更稳定（保留完整 TLS/HTTP2/Fingerprint）；默认关闭
+    eastmoney_browser_enabled: bool = False
+    # Profile 目录（仓库外路径，建议权限 0700）；留空时浏览器路径不可用
+    eastmoney_browser_profile_dir: str = ""
+    # K 线单次请求超时（秒）
+    eastmoney_browser_request_timeout: int = 12
+    # 浏览器空闲超时（秒），超时后进入 degraded 状态
+    eastmoney_browser_idle_timeout: int = 1800
     # 实时行情数据源优先级（逗号分隔）
     # 推荐顺序：tencent > akshare_sina > efinance > akshare_em > tushare
     # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
@@ -2031,6 +2040,17 @@ class Config:
             enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
             # 东财接口补丁开关
             enable_eastmoney_patch=os.getenv('ENABLE_EASTMONEY_PATCH', 'false').lower() == 'true',
+            # 东财持久浏览器
+            eastmoney_browser_enabled=os.getenv('EASTMONEY_BROWSER_ENABLED', 'false').lower() == 'true',
+            eastmoney_browser_profile_dir=os.getenv('EASTMONEY_BROWSER_PROFILE_DIR', ''),
+            eastmoney_browser_request_timeout=parse_env_int(
+                os.getenv('EASTMONEY_BROWSER_REQUEST_TIMEOUT'), 12,
+                field_name='EASTMONEY_BROWSER_REQUEST_TIMEOUT', minimum=1,
+            ),
+            eastmoney_browser_idle_timeout=parse_env_int(
+                os.getenv('EASTMONEY_BROWSER_IDLE_TIMEOUT'), 1800,
+                field_name='EASTMONEY_BROWSER_IDLE_TIMEOUT', minimum=0,
+            ),
             # 实时行情数据源优先级：
             # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）
             # - akshare_sina: 新浪财经，基本行情稳定，但无量比

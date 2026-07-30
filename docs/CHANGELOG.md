@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 东财持久浏览器服务骨架（Phase 1）：新增 EastmoneyBrowserService 状态机、BrowserAdapter 抽象接口与 FakeBrowserAdapter，配置项 EASTMONEY_BROWSER_ENABLED / PROFILE_DIR / REQUEST_TIMEOUT / IDLE_TIMEOUT，默认关闭，不影响现有筹码链路
+- [新功能] 东财持久浏览器 Phase 2：实现 PlaywrightBrowserAdapter（CDP 模式），Chrome 以原生 TLS 指纹启动后由 Playwright connect_over_cdp 接管，page.goto 直接访问 K 线 API，smoke test 验证 rc=0 klines=10
+
 - [修复] 基本面聚合缺失估值时复用并持久化实时行情 PE、PB 与市值字段，同时修正证据合并后的缺失状态
 
 - [改进] 完整 Markdown 报告将摘要、趋势、量能和筹码等并列数据改为带明确列名的表格；筹码指标补充含义并规范百分比与小数精度，避免展示无标签原始浮点数。
