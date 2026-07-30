@@ -403,6 +403,16 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
         logger.info("[PlaywrightBrowserAdapter] CDP 连接成功，port=%d", self._CDP_PORT)
+        # 热身导航：访问东财主页建立正常浏览器状态（TLS session / Cookie）
+        try:
+            self._page.goto(
+                "https://www.eastmoney.com",
+                timeout=15_000,
+                wait_until="domcontentloaded",
+            )
+            logger.info("[PlaywrightBrowserAdapter] 热身导航完成")
+        except Exception as exc:
+            logger.warning("[PlaywrightBrowserAdapter] 热身导航失败（不影响启动）: %s", exc)
 
     def check_login(self) -> bool:
         """
@@ -437,7 +447,6 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
             raise RuntimeError("page.goto 无响应")
         text = resp.text()
         return _json.loads(text)
-
     def close(self) -> None:
         for attr, method, label in [
             ("_browser", "close", "browser.close"),
