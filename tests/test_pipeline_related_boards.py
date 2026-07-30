@@ -53,6 +53,38 @@ class PipelineRelatedBoardsTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         DataFetcherManager.clear_concept_rankings_cache_for_tests()
 
+    def test_realtime_quote_backfills_and_preserves_fundamental_valuation(self) -> None:
+        context = {
+            "status": "partial",
+            "coverage": {"valuation": "failed"},
+            "source_chain": [],
+            "valuation": {
+                "status": "partial",
+                "data": {"pe_ratio": 88.0, "pb_ratio": None},
+            },
+        }
+        quote = MagicMock(
+            pe_ratio=90.59,
+            pb_ratio=10.52,
+            total_mv=260_418_000_000,
+            circ_mv=248_077_000_000,
+        )
+
+        enriched = StockAnalysisPipeline._backfill_fundamental_valuation_from_realtime(
+            context,
+            quote,
+        )
+
+        self.assertEqual(enriched["valuation"]["data"]["pe_ratio"], 88.0)
+        self.assertEqual(enriched["valuation"]["data"]["pb_ratio"], 10.52)
+        self.assertEqual(enriched["valuation"]["data"]["total_mv"], 260_418_000_000)
+        self.assertEqual(enriched["coverage"]["valuation"], "ok")
+        self.assertEqual(
+            enriched["source_chain"][-1]["fields"],
+            ["pb_ratio", "total_mv", "circ_mv"],
+        )
+        self.assertIsNone(context["valuation"]["data"]["pb_ratio"])
+
     def test_attach_belong_boards_shallow_copies_context_before_injecting(self) -> None:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetcher_manager = MagicMock()

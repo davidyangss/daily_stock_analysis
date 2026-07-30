@@ -498,6 +498,27 @@ def _handle_get_stock_info(stock_code: str) -> dict:
 
     compact_context = _compact_fundamental_context(fundamental_context)
     valuation = compact_context.get("valuation", {}).get("data", {})
+    growth = compact_context.get("growth", {}).get("data", {})
+    if not isinstance(valuation, dict):
+        valuation = {}
+    if not isinstance(growth, dict):
+        growth = {}
+
+    quote_fallback: Dict[str, Any] = {}
+    if any(valuation.get(field) is None for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv")):
+        try:
+            quote = manager.get_realtime_quote(stock_code)
+            for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"):
+                value = getattr(quote, field, None) if quote is not None else None
+                if value is not None:
+                    quote_fallback[field] = value
+        except Exception as e:
+            logger.debug("get_stock_info realtime valuation fallback failed for %s: %s", stock_code, e)
+
+    def valuation_value(field: str) -> Any:
+        value = valuation.get(field)
+        return value if value is not None else quote_fallback.get(field)
+
     sector_rankings = compact_context.get("boards", {}).get("data", {})
     belong_boards = manager.get_belong_boards(stock_code)
 
@@ -510,10 +531,14 @@ def _handle_get_stock_info(stock_code: str) -> dict:
     return {
         "code": stock_code.upper(),
         "name": stock_name,
-        "pe_ratio": valuation.get("pe_ratio"),
-        "pb_ratio": valuation.get("pb_ratio"),
-        "total_mv": valuation.get("total_mv"),
-        "circ_mv": valuation.get("circ_mv"),
+        "pe_ratio": valuation_value("pe_ratio"),
+        "pb_ratio": valuation_value("pb_ratio"),
+        "total_mv": valuation_value("total_mv"),
+        "circ_mv": valuation_value("circ_mv"),
+        "revenue_yoy": growth.get("revenue_yoy"),
+        "net_profit_yoy": growth.get("net_profit_yoy"),
+        "roe": growth.get("roe"),
+        "gross_margin": growth.get("gross_margin"),
         "fundamental_context": compact_context,
         "belong_boards": belong_boards,
         # Compatibility alias for existing callers; prefer belong_boards.

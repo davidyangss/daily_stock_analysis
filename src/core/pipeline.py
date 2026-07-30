@@ -522,6 +522,10 @@ class StockAnalysisPipeline:
                 code,
                 fundamental_context,
             )
+            fundamental_context = self._backfill_fundamental_valuation_from_realtime(
+                fundamental_context,
+                realtime_quote,
+            )
             market_structure_context = self._build_market_structure_context(
                 code=code,
                 stock_name=stock_name,
@@ -1149,6 +1153,68 @@ class StockAnalysisPipeline:
         enriched_context["belong_boards"] = boards or existing_board_list or []
         self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
         return enriched_context
+
+    @staticmethod
+    def _backfill_fundamental_valuation_from_realtime(
+        fundamental_context: Optional[Dict[str, Any]],
+        realtime_quote: Any,
+    ) -> Dict[str, Any]:
+        """Persist already-fetched quote valuation in the fundamental snapshot.
+
+        Fundamental aggregation and realtime quote collection have independent
+        timeout/fallback paths.  Keep the successful quote values redundantly in
+        the valuation block so a transient fundamental-stage miss does not turn
+        PE/PB/market-cap fields into missing report evidence.
+        """
+        context = dict(fundamental_context) if isinstance(fundamental_context, dict) else {}
+        valuation = context.get("valuation")
+        valuation = dict(valuation) if isinstance(valuation, dict) else {}
+        valuation_data = valuation.get("data")
+        valuation_data = dict(valuation_data) if isinstance(valuation_data, dict) else {}
+
+        def quote_value(field: str) -> Any:
+            if isinstance(realtime_quote, dict):
+                return realtime_quote.get(field)
+            return getattr(realtime_quote, field, None) if realtime_quote is not None else None
+
+        filled_fields: List[str] = []
+        for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"):
+            if valuation_data.get(field) is not None:
+                continue
+            value = quote_value(field)
+            if value is not None:
+                valuation_data[field] = value
+                filled_fields.append(field)
+
+        if not filled_fields:
+            return context
+
+        valuation["data"] = valuation_data
+        valuation["status"] = "ok" if all(
+            valuation_data.get(field) is not None
+            for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv")
+        ) else "partial"
+        source_chain = list(valuation.get("source_chain") or [])
+        source_chain.append({
+            "provider": "realtime_quote",
+            "result": "fallback",
+            "fields": filled_fields,
+        })
+        valuation["source_chain"] = source_chain
+        context["valuation"] = valuation
+
+        coverage = dict(context.get("coverage") or {})
+        coverage["valuation"] = valuation["status"]
+        context["coverage"] = coverage
+        context_source_chain = list(context.get("source_chain") or [])
+        context_source_chain.append({
+            "provider": "realtime_quote",
+            "result": "fallback",
+            "block": "valuation",
+            "fields": filled_fields,
+        })
+        context["source_chain"] = context_source_chain
+        return context
 
     def _attach_concept_rankings_to_fundamental_context(
         self,

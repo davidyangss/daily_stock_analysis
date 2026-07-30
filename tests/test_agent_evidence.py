@@ -80,6 +80,40 @@ class TestToolEvidence(unittest.TestCase):
         self.assertEqual(manifest["items"][0]["stage"], "prefetch")
         json.dumps(manifest, ensure_ascii=False)
 
+    def test_prefetched_fundamentals_replace_missing_metric_evidence(self) -> None:
+        existing = summarize_tool_result(
+            "get_stock_info",
+            {"status": "partial", "pe_ratio": None, "pb_ratio": None},
+            execution_success=True,
+        )
+        manifest = {
+            "schema_version": "strategy-evidence-v1",
+            "status": "verified",
+            "items": [existing],
+            "strategy_requirements": [],
+            "limitations": [],
+        }
+        prefetched = build_prefetched_context_evidence({
+            "fundamental_context": {
+                "status": "partial",
+                "source_chain": [{"provider": "realtime_quote", "result": "fallback"}],
+                "valuation": {
+                    "status": "ok",
+                    "data": {"pe_ratio": 90.59, "pb_ratio": 10.52},
+                },
+                "growth": {"status": "partial", "data": {}},
+            },
+        })
+
+        merged = merge_prefetched_evidence(manifest, prefetched)
+        stock_info = merged["items"][0]
+        metrics = {metric["key"]: metric for metric in stock_info["metric_details"]}
+        self.assertEqual(stock_info["key_values"]["pe_ratio"], 90.59)
+        self.assertEqual(metrics["pe_ratio"]["status"], "available")
+        self.assertEqual(metrics["pb_ratio"]["display_value"], "10.52倍")
+        self.assertNotIn("pe_ratio", stock_info["missing_fields"])
+        self.assertIn("roe", stock_info["missing_fields"])
+
     def test_available_quote_keeps_source_and_key_values(self) -> None:
         evidence = summarize_tool_result(
             "get_realtime_quote",

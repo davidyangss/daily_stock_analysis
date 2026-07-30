@@ -594,11 +594,28 @@ def merge_prefetched_evidence(
             existing["key_values"] = existing_values
         existing_values.update(item.get("key_values") or {})
         existing_metrics = existing.get("metric_details")
-        if not isinstance(existing_metrics, list) or not existing_metrics:
-            existing["metric_details"] = list(item.get("metric_details") or [])
-        existing_missing = existing.get("missing_fields")
-        if not isinstance(existing_missing, list):
-            existing["missing_fields"] = list(item.get("missing_fields") or [])
+        incoming_metrics = item.get("metric_details")
+        metrics_by_key = {
+            metric.get("key"): dict(metric)
+            for metric in existing_metrics or []
+            if isinstance(metric, Mapping) and metric.get("key")
+        }
+        for metric in incoming_metrics or []:
+            if not isinstance(metric, Mapping) or not metric.get("key"):
+                continue
+            key = metric["key"]
+            current = metrics_by_key.get(key)
+            if current is None or (
+                current.get("status") == "missing" and metric.get("status") == "available"
+            ):
+                metrics_by_key[key] = dict(metric)
+        if metrics_by_key:
+            existing["metric_details"] = list(metrics_by_key.values())
+            existing["missing_fields"] = [
+                metric["key"]
+                for metric in existing["metric_details"]
+                if metric.get("status") == "missing"
+            ]
         sources = list(existing.get("sources") or [])
         for source in item.get("sources") or []:
             if source not in sources:

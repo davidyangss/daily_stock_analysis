@@ -94,6 +94,40 @@ class TestGetStockInfoContract(unittest.TestCase):
             manager._context["source_chain"],
         )
 
+    def test_get_stock_info_exposes_growth_and_reuses_quote_valuation(self) -> None:
+        manager = _DummyManager()
+        manager._context["valuation"]["data"] = {
+            "pe_ratio": None,
+            "pb_ratio": None,
+            "total_mv": None,
+            "circ_mv": None,
+        }
+        manager._context["growth"] = {
+            "status": "ok",
+            "data": {
+                "revenue_yoy": 21.5,
+                "net_profit_yoy": 18.2,
+                "roe": 12.6,
+                "gross_margin": 46.8,
+            },
+        }
+        manager.get_realtime_quote = lambda _code: type("Quote", (), {
+            "pe_ratio": 90.59,
+            "pb_ratio": 10.52,
+            "total_mv": 260_418_000_000,
+            "circ_mv": 248_077_000_000,
+        })()
+
+        with patch("src.agent.tools.data_tools._get_fetcher_manager", return_value=manager):
+            result = _handle_get_stock_info("603986")
+
+        self.assertEqual(result["pe_ratio"], 90.59)
+        self.assertEqual(result["pb_ratio"], 10.52)
+        self.assertEqual(result["revenue_yoy"], 21.5)
+        self.assertEqual(result["net_profit_yoy"], 18.2)
+        self.assertEqual(result["roe"], 12.6)
+        self.assertEqual(result["gross_margin"], 46.8)
+
 
 if __name__ == "__main__":
     unittest.main()
