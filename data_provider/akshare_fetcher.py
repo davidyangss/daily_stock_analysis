@@ -24,13 +24,14 @@ AkshareFetcher - 主数据源 (Priority 1)
 """
 
 import logging
+import math
 import multiprocessing
 import os
 import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -63,6 +64,7 @@ logger = logging.getLogger(__name__)
 SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
 TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
+_AKSHARE_CHIP_CALL_TIMEOUT = 12.0
 _AKSHARE_TIMEOUT_PROCESS_JOIN_GRACE = 1.0
 _AKSHARE_TIMEOUT_PROCESS_START_METHOD = "spawn"
 
@@ -123,6 +125,118 @@ def _is_etf_code(stock_code: str) -> bool:
     etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
     code = stock_code.strip().split('.')[0]
     return code.startswith(etf_prefixes) and len(code) == 6
+
+
+def _calculate_chip_distribution_from_history(
+    stock_code: str,
+    history: pd.DataFrame,
+    source: str,
+) -> ChipDistribution:
+    """Calculate the latest CYQ metrics from unadjusted OHLC and turnover data.
+
+    The calculation follows the public algorithm used by AkShare's
+    ``stock_cyq_em`` implementation. ``turnover`` must be a decimal ratio
+    (0.01 means 1%); at most the latest 120 trading sessions participate.
+    """
+    required_columns = {"date", "open", "close", "high", "low", "turnover"}
+    missing_columns = required_columns.difference(history.columns)
+    if missing_columns:
+        raise ValueError(f"chip history missing columns: {sorted(missing_columns)}")
+
+    data = history.loc[:, sorted(required_columns)].copy()
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+    for column in required_columns - {"date"}:
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    data = data.dropna(subset=list(required_columns)).sort_values("date").tail(120)
+    data = data[
+        (data["open"] > 0)
+        & (data["close"] > 0)
+        & (data["high"] > 0)
+        & (data["low"] > 0)
+        & (data["high"] >= data["low"])
+        & (data["turnover"] >= 0)
+    ]
+    if data.empty:
+        raise ValueError("chip history has no usable rows")
+
+    factor = 150
+    max_price = float(data["high"].max())
+    min_price = float(data["low"].min())
+    accuracy = max(0.01, (max_price - min_price) / (factor - 1))
+    chips = [0.0] * factor
+
+    for row in data.itertuples(index=False):
+        open_price = float(row.open)
+        close_price = float(row.close)
+        high_price = float(row.high)
+        low_price = float(row.low)
+        average_price = (open_price + close_price + high_price + low_price) / 4
+        turnover = min(1.0, float(row.turnover))
+
+        for index in range(factor):
+            chips[index] *= 1 - turnover
+
+        high_index = min(factor - 1, math.floor((high_price - min_price) / accuracy))
+        low_index = max(0, math.ceil((low_price - min_price) / accuracy))
+        average_index = min(
+            factor - 1,
+            max(0, math.floor((average_price - min_price) / accuracy)),
+        )
+        if high_price == low_price:
+            chips[average_index] += (factor - 1) * turnover / 2
+            continue
+
+        peak = 2 / (high_price - low_price)
+        for index in range(low_index, high_index + 1):
+            current_price = min_price + accuracy * index
+            if current_price <= average_price:
+                weight = peak if abs(average_price - low_price) < 1e-8 else (
+                    (current_price - low_price) / (average_price - low_price) * peak
+                )
+            else:
+                weight = peak if abs(high_price - average_price) < 1e-8 else (
+                    (high_price - current_price) / (high_price - average_price) * peak
+                )
+            chips[index] += weight * turnover
+
+    total_chips = sum(chips)
+    if total_chips <= 0:
+        raise ValueError("chip history produced an empty distribution")
+
+    def cost_at(percentile: float) -> float:
+        target = total_chips * percentile
+        accumulated = 0.0
+        for index, value in enumerate(chips):
+            if accumulated + value > target:
+                return round(min_price + index * accuracy, 2)
+            accumulated += value
+        return round(max_price, 2)
+
+    current_price = float(data.iloc[-1]["close"])
+    profit_ratio = sum(
+        value
+        for index, value in enumerate(chips)
+        if current_price >= min_price + index * accuracy
+    ) / total_chips
+    cost_90_low, cost_90_high = cost_at(0.05), cost_at(0.95)
+    cost_70_low, cost_70_high = cost_at(0.15), cost_at(0.85)
+
+    def concentration(low: float, high: float) -> float:
+        return 0.0 if low + high == 0 else (high - low) / (low + high)
+
+    return ChipDistribution(
+        code=stock_code,
+        date=str(data.iloc[-1]["date"].date()),
+        source=source,
+        profit_ratio=profit_ratio,
+        avg_cost=cost_at(0.5),
+        cost_90_low=cost_90_low,
+        cost_90_high=cost_90_high,
+        concentration_90=concentration(cost_90_low, cost_90_high),
+        cost_70_low=cost_70_low,
+        cost_70_high=cost_70_high,
+        concentration_70=concentration(cost_70_low, cost_70_high),
+    )
 
 
 def _is_hk_code(stock_code: str) -> bool:
@@ -1701,51 +1815,112 @@ class AkshareFetcher(BaseFetcher):
             logger.debug(f"[API跳过] {stock_code} 是 ETF/指数，无筹码分布数据")
             return None
         
+        errors = []
         try:
-            # 防封禁策略
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            
             logger.info(f"[API调用] ak.stock_cyq_em(symbol={stock_code}) 获取筹码分布...")
-            import time as _time
-            api_start = _time.time()
-            
-            df = ak.stock_cyq_em(symbol=stock_code)
-            
-            api_elapsed = _time.time() - api_start
-            
-            if df.empty:
-                logger.warning(f"[API返回] ak.stock_cyq_em 返回空数据, 耗时 {api_elapsed:.2f}s")
-                return None
-            
-            logger.info(f"[API返回] ak.stock_cyq_em 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
-            logger.debug(f"[API返回] 筹码数据列名: {list(df.columns)}")
-            
-            # 取最新一天的数据
-            latest = df.iloc[-1]
-            
-            # 使用 realtime_types.py 中的统一转换函数
-            chip = ChipDistribution(
-                code=stock_code,
-                date=str(latest.get('日期', '')),
-                profit_ratio=safe_float(latest.get('获利比例')),
-                avg_cost=safe_float(latest.get('平均成本')),
-                cost_90_low=safe_float(latest.get('90成本-低')),
-                cost_90_high=safe_float(latest.get('90成本-高')),
-                concentration_90=safe_float(latest.get('90集中度')),
-                cost_70_low=safe_float(latest.get('70成本-低')),
-                cost_70_high=safe_float(latest.get('70成本-高')),
-                concentration_70=safe_float(latest.get('70集中度')),
+            api_start = time.time()
+            df = _akshare_call_with_timeout(
+                ak.stock_cyq_em,
+                symbol=stock_code,
+                timeout=_AKSHARE_CHIP_CALL_TIMEOUT,
+                call_name="ak.stock_cyq_em",
             )
-            
-            logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
-                       f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
-                       f"70%集中度={chip.concentration_70:.2%}")
-            return chip
-            
-        except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
-            return None
+            api_elapsed = time.time() - api_start
+            if df is not None and not df.empty:
+                latest = df.iloc[-1]
+                chip = ChipDistribution(
+                    code=stock_code,
+                    date=str(latest.get('日期', '')),
+                    source="akshare_eastmoney",
+                    profit_ratio=safe_float(latest.get('获利比例')),
+                    avg_cost=safe_float(latest.get('平均成本')),
+                    cost_90_low=safe_float(latest.get('90成本-低')),
+                    cost_90_high=safe_float(latest.get('90成本-高')),
+                    concentration_90=safe_float(latest.get('90集中度')),
+                    cost_70_low=safe_float(latest.get('70成本-低')),
+                    cost_70_high=safe_float(latest.get('70成本-高')),
+                    concentration_70=safe_float(latest.get('70集中度')),
+                )
+                core_metrics = (
+                    chip.profit_ratio,
+                    chip.avg_cost,
+                    chip.cost_90_low,
+                    chip.cost_90_high,
+                    chip.concentration_90,
+                    chip.cost_70_low,
+                    chip.cost_70_high,
+                    chip.concentration_70,
+                )
+                if (
+                    all(value is not None for value in core_metrics)
+                    and chip.avg_cost > 0
+                    and chip.cost_90_low > 0
+                    and chip.cost_90_high > 0
+                    and chip.cost_70_low > 0
+                    and chip.cost_70_high > 0
+                    and 0 <= chip.profit_ratio <= 1
+                    and chip.concentration_90 >= 0
+                    and chip.concentration_70 >= 0
+                ):
+                    logger.info(
+                        f"[API返回] ak.stock_cyq_em 成功: 返回 {len(df)} 天数据, "
+                        f"耗时 {api_elapsed:.2f}s"
+                    )
+                    return chip
+                errors.append(ValueError("ak.stock_cyq_em returned incomplete metrics"))
+            else:
+                errors.append(ValueError("ak.stock_cyq_em returned empty data"))
+                logger.warning(
+                    f"[API返回] ak.stock_cyq_em 返回空数据, 耗时 {api_elapsed:.2f}s，"
+                    "尝试日线本地计算"
+                )
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning(f"[API错误] 东财筹码获取失败，尝试日线本地计算: {exc}")
+
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=400)
+        fallback_sources = [
+            ("sina", ak.stock_zh_a_daily, "akshare_sina_calculated"),
+            ("tencent", ak.stock_zh_a_hist_tx, "akshare_tencent_calculated"),
+        ]
+        for provider, api_func, source in fallback_sources:
+            if provider == "tencent" and is_bse_code(stock_code):
+                logger.debug(f"[筹码分布] 腾讯日线不支持北交所 {stock_code}，跳过")
+                continue
+            symbol = _to_sina_tx_symbol(stock_code)
+            try:
+                self._enforce_rate_limit()
+                kwargs = {
+                    "symbol": symbol,
+                    "start_date": start_date.strftime("%Y%m%d"),
+                    "end_date": end_date.strftime("%Y%m%d"),
+                    "adjust": "",
+                }
+                history = _akshare_call_with_timeout(
+                    api_func,
+                    timeout=self._history_call_timeout,
+                    call_name=f"ak.stock_zh_a_{'daily' if provider == 'sina' else 'hist_tx'}[chip]",
+                    **kwargs,
+                )
+                chip = _calculate_chip_distribution_from_history(stock_code, history, source)
+                logger.info(
+                    f"[筹码分布] {stock_code} 使用{provider}不复权日线本地计算成功: "
+                    f"日期={chip.date}, 平均成本={chip.avg_cost}, "
+                    f"90%集中度={chip.concentration_90:.2%}"
+                )
+                return chip
+            except Exception as exc:
+                errors.append(exc)
+                logger.warning(f"[筹码分布] {provider} 日线本地计算失败 {stock_code}: {exc}")
+
+        if errors:
+            raise DataFetchError(
+                f"Akshare 筹码所有渠道失败: {type(errors[-1]).__name__}: {errors[-1]}"
+            ) from errors[-1]
+        return None
     
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         """
@@ -1775,8 +1950,12 @@ class AkshareFetcher(BaseFetcher):
         # 获取实时行情
         result['realtime_quote'] = self.get_realtime_quote(stock_code)
         
-        # 获取筹码分布
-        result['chip_distribution'] = self.get_chip_distribution(stock_code)
+        # 获取筹码分布。统一 manager 入口需要异常来驱动熔断；增强数据聚合仍
+        # 保持原有 fail-open 契约，避免单一可选能力拖垮整个聚合结果。
+        try:
+            result['chip_distribution'] = self.get_chip_distribution(stock_code)
+        except Exception as e:
+            logger.warning(f"获取 {stock_code} 筹码分布失败，增强数据继续降级: {e}")
         
         return result
 
