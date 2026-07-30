@@ -411,8 +411,6 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
         """
         logger.debug("[PlaywrightBrowserAdapter] check_login → True (no auth required)")
         return True
-            logger.warning("[PlaywrightBrowserAdapter] check_login 异常: %s", exc)
-            return False
 
     def fetch_kline(self, secid: str, lmt: int, timeout_seconds: int) -> Dict[str, Any]:
         """
