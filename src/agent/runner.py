@@ -73,6 +73,7 @@ _THINKING_TOOL_LABELS: Dict[str, str] = {
     "get_sector_rankings": "行业板块分析",
     "get_analysis_context": "历史分析上下文",
     "get_stock_info": "基本信息获取",
+    "get_capital_flow": "主力资金流向获取",
     "analyze_pattern": "K线形态识别",
     "get_volume_analysis": "量能分析",
     "calculate_ma": "均线计算",

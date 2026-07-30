@@ -111,6 +111,23 @@ class TestToolEvidence(unittest.TestCase):
 
         self.assertEqual(evidence["status"], "missing")
 
+    def test_intel_and_capital_flow_tools_have_chinese_presentations(self) -> None:
+        intel = summarize_tool_result(
+            "search_comprehensive_intel",
+            {"dimensions": {"latest_news": {"results_count": 1}}},
+            execution_success=True,
+        )
+        capital_flow = summarize_tool_result(
+            "get_capital_flow",
+            {"status": "ok", "main_net_inflow": 12_000_000},
+            execution_success=True,
+        )
+
+        self.assertEqual(intel["tool_display_name"], "综合情报搜索")
+        self.assertEqual(capital_flow["tool_display_name"], "主力资金流向获取")
+        self.assertNotEqual(intel["tool_display_name"], "search_comprehensive_intel")
+        self.assertNotEqual(capital_flow["tool_display_name"], "get_capital_flow")
+
     def test_pattern_fetch_failure_keeps_tool_description_and_provider_attempts(self) -> None:
         evidence = summarize_tool_result(
             "analyze_pattern",

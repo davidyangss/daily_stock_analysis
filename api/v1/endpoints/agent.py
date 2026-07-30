@@ -25,6 +25,7 @@ TOOL_DISPLAY_NAMES: Dict[str, str] = {
     "get_chip_distribution":      "分析筹码分布",
     "get_analysis_context":       "获取分析上下文",
     "get_stock_info":             "获取股票基本面",
+    "get_capital_flow":           "获取主力资金流向",
     "search_stock_news":          "搜索股票新闻",
     "search_comprehensive_intel": "搜索综合情报",
     "analyze_trend":              "分析技术趋势",
