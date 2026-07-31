@@ -759,7 +759,7 @@ class DataFetcherManager:
         ]
         merged: Dict[str, Any] = {
             "status": "not_supported", "growth": {}, "earnings": {}, "institution": {},
-            "source_chain": [], "errors": [],
+            "source_chain": [], "errors": [], "missing_reasons": {},
         }
         tried_akshare = False
         # Merge every consulted provider immediately so a slower fallback cannot
@@ -793,10 +793,19 @@ class DataFetcherManager:
                     self._merge_missing_mapping(merged[block], payload)
             merged["source_chain"].extend(candidate.get("source_chain") or [])
             merged["errors"].extend(candidate.get("errors") or [])
+            candidate_reasons = candidate.get("missing_reasons")
+            if isinstance(candidate_reasons, dict):
+                merged["missing_reasons"].update(candidate_reasons)
             if self._has_complete_financial_strategy_fields(merged):
                 break
         if any(merged[block] for block in ("growth", "earnings", "institution")):
             merged["status"] = "partial"
+        merged["missing_reasons"] = {
+            key: reason
+            for key, reason in merged["missing_reasons"].items()
+            if key.count(".") == 1
+            and merged.get(key.split(".", 1)[0], {}).get(key.split(".", 1)[1]) in (None, "", [], {})
+        }
         return merged
 
     def _ensure_concurrency_guards(self) -> None:
@@ -3072,6 +3081,7 @@ class DataFetcherManager:
             "coverage": {},
             "source_chain": [],
             "errors": [],
+            "missing_reasons": {},
         }
         start_ts = time.time()
 
@@ -3448,6 +3458,8 @@ class DataFetcherManager:
         growth_payload = bundle_payload.get("growth", {}) if isinstance(bundle_payload, dict) else {}
         earnings_payload = bundle_payload.get("earnings", {}) if isinstance(bundle_payload, dict) else {}
         institution_payload = bundle_payload.get("institution", {}) if isinstance(bundle_payload, dict) else {}
+        if isinstance(bundle_payload, dict) and isinstance(bundle_payload.get("missing_reasons"), dict):
+            result_ctx["missing_reasons"] = dict(bundle_payload["missing_reasons"])
         if not isinstance(growth_payload, dict):
             growth_payload = {}
         else:

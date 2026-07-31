@@ -428,6 +428,7 @@ def _fundamental_availability_metadata(context: Dict[str, Any]) -> Dict[str, Lis
     """Return report-safe field coverage details for accuracy review."""
     available: List[str] = []
     unavailable: List[str] = []
+    missing_reasons = context.get("missing_reasons") if isinstance(context.get("missing_reasons"), dict) else {}
     field_blocks = {
         "valuation": ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"),
         "growth": ("revenue_yoy", "net_profit_yoy", "roe", "gross_margin"),
@@ -442,7 +443,8 @@ def _fundamental_availability_metadata(context: Dict[str, Any]) -> Dict[str, Lis
             if data.get(field_key) not in (None, "", [], {}):
                 available.append(qualified)
             else:
-                unavailable.append(qualified)
+                reason = str(missing_reasons.get(qualified) or "").strip()
+                unavailable.append(f"{qualified}: {reason}" if reason else qualified)
 
     for block_key in ("capital_flow", "dragon_tiger", "boards"):
         block = context.get(block_key) if isinstance(context.get(block_key), dict) else {}

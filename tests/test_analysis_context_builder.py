@@ -426,6 +426,9 @@ def test_fundamental_partial_block_exposes_available_and_unavailable_items() -> 
             "growth": {"status": "partial", "data": {"revenue_yoy": None}},
             "earnings": {"status": "partial", "data": {}},
             "institution": {"status": "partial", "data": {}},
+            "missing_reasons": {
+                "earnings.quick_report_summary": "no_matching_quick_report",
+            },
             "capital_flow": {"status": "failed", "data": {}, "errors": ["capital_flow timeout"]},
             "dragon_tiger": {"status": "failed", "data": {}, "errors": ["fundamental stage timeout"]},
             "boards": {"status": "failed", "data": {}, "errors": ["fundamental stage timeout"]},
@@ -436,6 +439,7 @@ def test_fundamental_partial_block_exposes_available_and_unavailable_items() -> 
     assert "valuation.pe_ratio" in metadata["available_items"]
     assert "valuation.pb_ratio" in metadata["available_items"]
     assert "growth.revenue_yoy" in metadata["unavailable_items"]
+    assert "earnings.quick_report_summary: no_matching_quick_report" in metadata["unavailable_items"]
     assert "capital_flow: capital_flow timeout" in metadata["unavailable_items"]
 
 

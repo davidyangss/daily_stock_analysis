@@ -57,6 +57,10 @@ class TestFundamentalContext(unittest.TestCase):
             "institution": {},
             "source_chain": ["growth:iwencai"],
             "errors": [],
+            "missing_reasons": {
+                "earnings.quick_report_summary": "no_matching_quick_report",
+                "institution.top10_holder_change": "no_top10_holder_change",
+            },
         }
 
         with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
@@ -77,6 +81,7 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertEqual(bundle["growth"]["gross_margin"], 89.7)
         self.assertEqual(bundle["earnings"]["quick_report_summary"], "业绩快报摘要")
         self.assertEqual(bundle["institution"]["top10_holder_change"], "十大股东持股变化摘要")
+        self.assertEqual(bundle["missing_reasons"], {})
 
     def test_cn_fundamentals_fill_only_missing_fields_from_fallback(self) -> None:
         manager = DataFetcherManager(fetchers=[])
@@ -94,6 +99,9 @@ class TestFundamentalContext(unittest.TestCase):
             },
             "source_chain": ["growth:iwencai"],
             "errors": [],
+            "missing_reasons": {
+                "earnings.quick_report_summary": "no_matching_quick_report",
+            },
         }
         fallback_bundle = {
             "growth": {
@@ -120,6 +128,9 @@ class TestFundamentalContext(unittest.TestCase):
             "net_profit_yoy": 1.4,
             "roe": 10.5,
             "gross_margin": 89.7,
+        })
+        self.assertEqual(bundle["missing_reasons"], {
+            "earnings.quick_report_summary": "no_matching_quick_report",
         })
 
     def test_capital_flow_stops_when_higher_priority_windows_are_complete(self) -> None:

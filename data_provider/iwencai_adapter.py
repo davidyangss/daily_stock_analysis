@@ -360,6 +360,7 @@ class IwencaiAdapter:
             if any(value is not None for value in financial_report.values()) else {}
         )
         errors = []
+        missing_reasons: Dict[str, str] = {}
         quick_query = (
             f"{stock_code} 最新业绩快报 业绩快报营业收入 业绩快报归母净利润 "
             "业绩快报营业收入同比增长率 业绩快报归母净利润同比增长率 业绩快报公告日期"
@@ -369,9 +370,12 @@ class IwencaiAdapter:
                 self.query(quick_query, skill_id="hithink-finance-query", limit=3), stock_code
             )
             quick_summary = _quick_report_summary(quick_row or {})
+            if not quick_summary:
+                missing_reasons["earnings.quick_report_summary"] = "no_matching_quick_report"
         except Exception as exc:
             quick_summary = None
             errors.append(f"earnings_quick:iwencai:{type(exc).__name__}")
+            missing_reasons["earnings.quick_report_summary"] = "quick_report_fetch_failed"
         # Keep this query deliberately narrow. Adding requested output columns
         # makes iWencai reinterpret it as the current top-10 holding total and
         # drops the change-detail rows.
@@ -381,9 +385,12 @@ class IwencaiAdapter:
                 self.query(top10_query, skill_id="hithink-finance-query", limit=10), stock_code
             )
             top10_summary = _top10_holder_change_summary(top10_rows)
+            if not top10_summary:
+                missing_reasons["institution.top10_holder_change"] = "no_top10_holder_change"
         except Exception as exc:
             top10_summary = None
             errors.append(f"top10:iwencai:{type(exc).__name__}")
+            missing_reasons["institution.top10_holder_change"] = "top10_holder_change_fetch_failed"
         if quick_summary:
             earnings["quick_report_summary"] = quick_summary
         if top10_summary:
@@ -398,4 +405,5 @@ class IwencaiAdapter:
             "institution": institution,
             "source_chain": [{"provider": "iwencai", "result": "partial", "duration_ms": 0}] if has_data else [],
             "errors": errors,
+            "missing_reasons": missing_reasons,
         }

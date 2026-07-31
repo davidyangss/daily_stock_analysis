@@ -142,3 +142,26 @@ def test_top10_query_stays_narrow_to_preserve_change_detail_semantics() -> None:
         adapter.get_fundamental_bundle("300170")
 
     assert queries[-1] == "300170 前十大股东持股数量变动"
+
+
+def test_hande_top10_real_response_shape_and_quick_report_absence_are_explicit() -> None:
+    adapter = IwencaiAdapter("secret")
+    financial = {"datas": [{"股票代码": "300170.SZ", "营业收入同比增长率": 6.393}]}
+    quick_without_report = {"datas": [{"股票代码": "300170.SZ", "股票简称": "汉得信息"}]}
+    top10 = {"datas": [
+        {"股票代码": "300170.SZ", "公告日期": "20260428", "持股数量变动": -12_246_371, "持股变动类型": "减持"},
+        {"股票代码": "300170.SZ", "公告日期": "20260428", "持股变动类型": "新进"},
+        {"股票代码": "300170.SZ", "持股数量变动": -5_422_300, "持股变动类型": "新出"},
+        {"股票代码": "300170.SZ", "公告日期": "20260428", "持股数量变动": 0, "持股变动类型": "不变"},
+    ]}
+
+    with patch.object(adapter, "query", side_effect=[financial, quick_without_report, top10]):
+        result = adapter.get_fundamental_bundle("300170")
+
+    assert result["institution"]["top10_holder_change"] == (
+        "20260428：减持1名，新进1名，新出1名，不变1名，"
+        "已披露持股数量变动合计-17,668,671股"
+    )
+    assert result["missing_reasons"] == {
+        "earnings.quick_report_summary": "no_matching_quick_report"
+    }
