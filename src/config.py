@@ -1072,14 +1072,18 @@ class Config:
     # - akshare_sina: 新浪财经，基本行情稳定，但无量比
     # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
     # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
-    realtime_source_priority: str = "tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em"
+    realtime_source_priority: str = "tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em"
     # 同花顺问财 OpenAPI（可选，默认关闭；密钥仅从环境变量读取）
     iwencai_enabled: bool = False
     iwencai_api_key: str = ""
     iwencai_timeout_seconds: float = 8.0
+    # 东方财富妙想 Skills API（可选；启用后在东财浏览器前尝试）
+    eastmoney_mx_enabled: bool = False
+    eastmoney_mx_api_key: str = ""
+    eastmoney_mx_timeout_seconds: float = 12.0
     # 各数据能力独立的 provider 顺序。未知或未配置 provider 会 fail-open 跳过。
     daily_source_priority: str = "local,tushare,tickflow,longbridge,tencent,eastmoney,akshare,efinance,yfinance,iwencai,baostock,pytdx"
-    capital_flow_source_priority: str = "iwencai,eastmoney_browser,akshare_em,efinance"
+    capital_flow_source_priority: str = "iwencai,eastmoney_mx,eastmoney_browser,akshare_em,efinance"
     financial_source_priority: str = "tushare,iwencai,akshare_em,longbridge,yfinance"
     governance_source_priority: str = "iwencai,tushare,akshare_em"
     event_source_priority: str = "iwencai_announcement,iwencai_event,eastmoney,news"
@@ -2103,8 +2107,14 @@ class Config:
                 os.getenv('IWENCAI_TIMEOUT_SECONDS'), 8.0,
                 field_name='IWENCAI_TIMEOUT_SECONDS', minimum=0.1,
             ),
+            eastmoney_mx_enabled=os.getenv('EASTMONEY_MX_ENABLED', 'false').lower() == 'true',
+            eastmoney_mx_api_key=os.getenv('MX_APIKEY', '').strip(),
+            eastmoney_mx_timeout_seconds=parse_env_float(
+                os.getenv('EASTMONEY_MX_TIMEOUT_SECONDS'), 12.0,
+                field_name='EASTMONEY_MX_TIMEOUT_SECONDS', minimum=0.1,
+            ),
             daily_source_priority=os.getenv('DAILY_SOURCE_PRIORITY', 'local,tushare,tickflow,longbridge,tencent,eastmoney,akshare,efinance,yfinance,iwencai,baostock,pytdx'),
-            capital_flow_source_priority=os.getenv('CAPITAL_FLOW_SOURCE_PRIORITY', 'iwencai,eastmoney_browser,akshare_em,efinance'),
+            capital_flow_source_priority=os.getenv('CAPITAL_FLOW_SOURCE_PRIORITY', 'iwencai,eastmoney_mx,eastmoney_browser,akshare_em,efinance'),
             financial_source_priority=os.getenv('FINANCIAL_SOURCE_PRIORITY', 'tushare,iwencai,akshare_em,longbridge,yfinance'),
             governance_source_priority=os.getenv('GOVERNANCE_SOURCE_PRIORITY', 'iwencai,tushare,akshare_em'),
             event_source_priority=os.getenv('EVENT_SOURCE_PRIORITY', 'iwencai_announcement,iwencai_event,eastmoney,news'),
@@ -2722,7 +2732,7 @@ class Config:
         Resolve the recommended realtime source priority.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = 'tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em'
+        default_priority = 'tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em'
 
         if explicit:
             # User explicitly set priority, respect it

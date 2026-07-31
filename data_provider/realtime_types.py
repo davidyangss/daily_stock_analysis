@@ -101,6 +101,7 @@ class RealtimeSource(Enum):
     TICKFLOW = "tickflow"           # TickFlow
     TENCENT = "tencent"             # 腾讯直连
     IWENCAI = "iwencai"             # 同花顺问财 OpenAPI
+    EASTMONEY_MX = "eastmoney_mx"   # 东方财富妙想 Skills API
     SINA = "sina"                   # 新浪直连
     STOOQ = "stooq"                 # Stooq 美股兜底
     LONGBRIDGE = "longbridge"       # 长桥（美股/港股兜底）

@@ -66,6 +66,12 @@ _FRONTEND_INDEX_NO_CACHE_HEADERS = {
 }
 
 
+def _provider_precedes(priority: str, preferred: str, fallback: str) -> bool:
+    """Return whether both providers exist and preferred is ordered first."""
+    tokens = [item.strip().lower() for item in (priority or "").split(",") if item.strip()]
+    return preferred in tokens and fallback in tokens and tokens.index(preferred) < tokens.index(fallback)
+
+
 def _frontend_index_response(static_dir: Path) -> FileResponse:
     return FileResponse(
         static_dir / "index.html",
@@ -292,7 +298,23 @@ async def app_lifespan(app: FastAPI):
     # 东财持久浏览器服务（后台线程启动，不阻塞 FastAPI）
     from src.config import get_config as _get_config
     _browser_config = _get_config()
-    if getattr(_browser_config, "eastmoney_browser_enabled", False) is True:
+    _mx_precedes_browser = (
+        getattr(_browser_config, "eastmoney_mx_enabled", False) is True
+        and bool(getattr(_browser_config, "eastmoney_mx_api_key", ""))
+        and (
+            _provider_precedes(
+                getattr(_browser_config, "realtime_source_priority", ""),
+                "eastmoney_mx",
+                "eastmoney_browser",
+            )
+            or _provider_precedes(
+                getattr(_browser_config, "capital_flow_source_priority", ""),
+                "eastmoney_mx",
+                "eastmoney_browser",
+            )
+        )
+    )
+    if getattr(_browser_config, "eastmoney_browser_enabled", False) is True and not _mx_precedes_browser:
         import threading as _threading
         from src.services.eastmoney_browser_service import EastmoneyBrowserService as _BrowserSvc
         _threading.Thread(
@@ -301,6 +323,8 @@ async def app_lifespan(app: FastAPI):
             daemon=True,
         ).start()
         logger.info("[app_lifespan] 东财持久浏览器服务启动中（后台）")
+    elif getattr(_browser_config, "eastmoney_browser_enabled", False) is True:
+        logger.info("[app_lifespan] 妙想已启用，东财浏览器保留为按需 fallback")
     try:
         yield
     finally:

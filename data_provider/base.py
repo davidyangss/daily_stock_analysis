@@ -30,6 +30,7 @@ from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .iwencai_adapter import IwencaiAdapter
+from .eastmoney_mx_adapter import EastmoneyMxAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
 from .realtime_types import CircuitBreaker
 
@@ -661,6 +662,8 @@ class DataFetcherManager:
         self._yfinance_fundamental_adapter = YfinanceFundamentalAdapter()
         self._iwencai_adapter: Optional[IwencaiAdapter] = None
         self._iwencai_adapter_key: str = ""
+        self._eastmoney_mx_adapter: Optional[EastmoneyMxAdapter] = None
+        self._eastmoney_mx_adapter_key: str = ""
         self._tickflow_fetcher = None
         self._tickflow_api_key: Optional[str] = None
         self._tickflow_lock = RLock()
@@ -684,6 +687,25 @@ class DataFetcherManager:
         else:
             self._iwencai_adapter.timeout = max(0.1, timeout)
         return self._iwencai_adapter
+
+    def _get_eastmoney_mx_adapter(self) -> Optional[EastmoneyMxAdapter]:
+        """Return the optional Eastmoney MX adapter without exposing its credential."""
+        from src.config import get_config
+
+        config = get_config()
+        key = (getattr(config, "eastmoney_mx_api_key", "") or "").strip()
+        if not getattr(config, "eastmoney_mx_enabled", False) or not key:
+            return None
+        timeout = float(getattr(config, "eastmoney_mx_timeout_seconds", 12.0))
+        if (
+            getattr(self, "_eastmoney_mx_adapter", None) is None
+            or getattr(self, "_eastmoney_mx_adapter_key", "") != key
+        ):
+            self._eastmoney_mx_adapter = EastmoneyMxAdapter(key, timeout=timeout)
+            self._eastmoney_mx_adapter_key = key
+        else:
+            self._eastmoney_mx_adapter.timeout = max(0.1, timeout)
+        return self._eastmoney_mx_adapter
 
     @staticmethod
     def _merge_missing_mapping(primary: Dict[str, Any], supplement: Dict[str, Any]) -> Dict[str, Any]:
@@ -1974,6 +1996,11 @@ class DataFetcherManager:
         primary_fallback_from: Optional[str] = None
         
         for source_index, source in enumerate(source_priority):
+            # The persistent browser is a whole-source fallback for MX, not a
+            # field supplement. A valid MX quote must not wake Chrome merely
+            # because optional fields are absent.
+            if source == "eastmoney_browser" and primary_quote is not None:
+                continue
             attempt_start = time.time()
             fallback_to = source_priority[source_index + 1] if source_index + 1 < len(source_priority) else None
             fetcher = None
@@ -2049,6 +2076,16 @@ class DataFetcherManager:
                             operation="get_realtime_quote",
                         )
                         quote = iwencai.get_realtime_quote(stock_code)
+
+                elif source == "eastmoney_mx":
+                    mx = self._get_eastmoney_mx_adapter()
+                    if mx is not None:
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider="eastmoney_mx",
+                            operation="get_realtime_quote",
+                        )
+                        quote = mx.get_realtime_quote(stock_code)
 
                 elif source == "eastmoney_browser":
                     # Browser transport is applied transparently to AkShare EM.
@@ -3619,6 +3656,11 @@ class DataFetcherManager:
                 try:
                     if source == "iwencai":
                         adapter = self._get_iwencai_adapter()
+                        if adapter is None:
+                            continue
+                        candidate = adapter.get_capital_flow(stock_code)
+                    elif source == "eastmoney_mx":
+                        adapter = self._get_eastmoney_mx_adapter()
                         if adapter is None:
                             continue
                         candidate = adapter.get_capital_flow(stock_code)

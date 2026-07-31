@@ -81,6 +81,23 @@ class _FallbackDailyFetcher:
         )
 
 
+class _FakeAkshareFetcher:
+    name = "AkshareFetcher"
+    priority = 3
+
+    def __init__(self):
+        self.quote_calls = []
+
+    def get_realtime_quote(self, stock_code, source=None):
+        self.quote_calls.append((stock_code, source))
+        return UnifiedRealtimeQuote(
+            code=stock_code,
+            name="BrowserName",
+            price=9.0,
+            source=RealtimeSource.AKSHARE_EM,
+        )
+
+
 class TestTickFlowManagerRouting(unittest.TestCase):
     def _manager(self, fetcher):
         return DataFetcherManager(fetchers=[fetcher])
@@ -157,8 +174,80 @@ class TestTickFlowManagerRouting(unittest.TestCase):
         with patch.dict(os.environ, {"TICKFLOW_API_KEY": "tk-test"}, clear=True):
             self.assertEqual(
                 Config._resolve_realtime_source_priority(),
-                "tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em",
+                "tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em",
             )
+
+    def test_mx_success_does_not_use_browser_as_field_supplement(self):
+        browser = _FakeAkshareFetcher()
+        manager = DataFetcherManager(fetchers=[browser])
+        mx_quote = UnifiedRealtimeQuote(
+            code="600519", name="MXName", price=10.0,
+            source=RealtimeSource.EASTMONEY_MX,
+        )
+        mx = SimpleNamespace(get_realtime_quote=lambda _code: mx_quote)
+        config = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="eastmoney_mx,eastmoney_browser",
+            eastmoney_browser_enabled=True,
+            realtime_cache_ttl=600,
+        )
+
+        with (
+            patch("src.config.get_config", return_value=config),
+            patch.object(manager, "_get_eastmoney_mx_adapter", return_value=mx),
+        ):
+            quote = manager.get_realtime_quote("600519")
+
+        self.assertIs(quote, mx_quote)
+        self.assertEqual(browser.quote_calls, [])
+
+    def test_mx_failure_falls_back_to_browser(self):
+        browser = _FakeAkshareFetcher()
+        manager = DataFetcherManager(fetchers=[browser])
+
+        def fail(_code):
+            raise RuntimeError("MX unavailable")
+
+        mx = SimpleNamespace(get_realtime_quote=fail)
+        config = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="eastmoney_mx,eastmoney_browser",
+            eastmoney_browser_enabled=True,
+            realtime_cache_ttl=600,
+        )
+
+        with (
+            patch("src.config.get_config", return_value=config),
+            patch.object(manager, "_get_eastmoney_mx_adapter", return_value=mx),
+        ):
+            quote = manager.get_realtime_quote("600519")
+
+        self.assertEqual(quote.source, RealtimeSource.AKSHARE_EM)
+        self.assertEqual(browser.quote_calls, [("600519", "em")])
+
+    def test_mx_failure_skips_browser_when_browser_is_disabled(self):
+        browser = _FakeAkshareFetcher()
+        manager = DataFetcherManager(fetchers=[browser])
+
+        def fail(_code):
+            raise RuntimeError("MX unavailable")
+
+        mx = SimpleNamespace(get_realtime_quote=fail)
+        config = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="eastmoney_mx,eastmoney_browser",
+            eastmoney_browser_enabled=False,
+            realtime_cache_ttl=600,
+        )
+
+        with (
+            patch("src.config.get_config", return_value=config),
+            patch.object(manager, "_get_eastmoney_mx_adapter", return_value=mx),
+        ):
+            quote = manager.get_realtime_quote("600519", log_final_failure=False)
+
+        self.assertIsNone(quote)
+        self.assertEqual(browser.quote_calls, [])
 
 
 if __name__ == "__main__":

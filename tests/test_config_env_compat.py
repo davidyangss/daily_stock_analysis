@@ -123,13 +123,15 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertIsNone(config.tickflow_api_key)
         self.assertEqual(
             config.realtime_source_priority,
-            "tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em",
+            "tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em",
         )
         self.assertFalse(config.iwencai_enabled)
         self.assertEqual(config.iwencai_api_key, "")
+        self.assertFalse(config.eastmoney_mx_enabled)
+        self.assertEqual(config.eastmoney_mx_api_key, "")
         self.assertEqual(
             config.capital_flow_source_priority,
-            "iwencai,eastmoney_browser,akshare_em,efinance",
+            "iwencai,eastmoney_mx,eastmoney_browser,akshare_em,efinance",
         )
 
     @patch("src.config.setup_env")
@@ -152,6 +154,27 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertTrue(config.iwencai_enabled)
         self.assertEqual(config.iwencai_api_key, "test-secret")
         self.assertEqual(config.capital_flow_source_priority, "akshare_em,iwencai")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_reads_eastmoney_mx_settings(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "EASTMONEY_MX_ENABLED": "true",
+                "MX_APIKEY": "mx-test-secret",
+                "EASTMONEY_MX_TIMEOUT_SECONDS": "3.5",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.eastmoney_mx_enabled)
+        self.assertEqual(config.eastmoney_mx_api_key, "mx-test-secret")
+        self.assertEqual(config.eastmoney_mx_timeout_seconds, 3.5)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
