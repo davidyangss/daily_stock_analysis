@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Web/API 重启时端口预检复用 Uvicorn 的地址复用语义，避免旧连接处于 TIME_WAIT 时误报端口占用；显式 Web 模式启动失败后退出非零，防止服务静默退化为仅调度器
 - [新功能] 新增可选东方财富妙想只读数据源，实时行情和主力资金在东财浏览器前优先尝试；启用后浏览器改为失败时按需启动并保留原有 fallback、登录态与管理能力
 
 - [修复] 运行诊断不再将通知内部状态 `failed` 直接显示为失败原因，并在渠道未返回具体错误时提供可执行的配置与日志排查提示

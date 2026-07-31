@@ -1118,6 +1118,10 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Match Uvicorn's listener semantics. Without SO_REUSEADDR, recently
+        # closed HTTP connections in TIME_WAIT can make this preflight bind
+        # report EADDRINUSE even though no process is listening anymore.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
     except OSError as exc:
         raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
@@ -1447,9 +1451,10 @@ def main() -> int:
             bot_clients_started = True
         except Exception as e:
             logger.error(f"启动 FastAPI 服务失败: {e}")
-            if args.serve_only:
-                return 1
-            start_serve = False
+            # A process explicitly asked to provide Web/API service must not
+            # silently remain alive as a scheduler-only process. Returning a
+            # failure lets systemd apply its configured restart policy.
+            return 1
 
     if bot_clients_started:
         start_bot_stream_clients(config)

@@ -269,6 +269,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(log_level="INFO")
 
         class BusySocket:
+            def setsockopt(self, level, option, value):
+                self.socket_options = (level, option, value)
+
             def bind(self, address):
                 raise OSError("address already in use")
 
@@ -305,6 +308,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
             Server = _FakeUvicornServer
 
         class _UnusedSocket:
+            def setsockopt(self, level, option, value):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -346,6 +352,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     raise TypeError("install_signal_handlers is unsupported")
 
         class _UnusedSocket:
+            def setsockopt(self, level, option, value):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -680,7 +689,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
-    def test_serve_mode_continues_single_analysis_when_api_server_start_fails(self) -> None:
+    def test_serve_mode_exits_before_single_analysis_when_api_server_start_fails(self) -> None:
         args = self._make_args(serve=True, host="127.0.0.1", port=8000)
         config = self._make_config(webui_enabled=False, run_immediately=True)
 
@@ -695,13 +704,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.logger.error") as error_log:
             exit_code = main.main()
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 1)
         start_bots.assert_not_called()
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_not_called()
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
-    def test_serve_schedule_mode_continues_scheduler_when_api_server_start_fails(self) -> None:
+    def test_serve_schedule_mode_exits_before_scheduler_when_api_server_start_fails(self) -> None:
         args = self._make_args(serve=True, schedule=True, host="127.0.0.1", port=8000)
         config = self._make_config(webui_enabled=False, schedule_enabled=False)
         scheduled_call = {}
@@ -731,12 +740,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.logger.error") as error_log:
             exit_code = main.main()
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 1)
         start_bots.assert_not_called()
-        run_full_analysis.assert_called_once_with(config, args, None)
-        self.assertEqual(scheduled_call["schedule_time"], "18:00")
-        self.assertEqual(scheduled_call["run_immediately"], True)
-        self.assertEqual(scheduled_call["background_tasks"], [])
+        run_full_analysis.assert_not_called()
+        self.assertEqual(scheduled_call, {})
         error_log.assert_called_once()
 
     def test_serve_with_enabled_schedule_uses_api_runtime_scheduler(self) -> None:
