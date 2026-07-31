@@ -108,7 +108,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_load_from_env_keeps_default_behavior_without_tickflow_api_key(
+    def test_load_from_env_uses_recommended_capability_priorities_without_optional_keys(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
         with patch.dict(
@@ -123,8 +123,35 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertIsNone(config.tickflow_api_key)
         self.assertEqual(
             config.realtime_source_priority,
-            "tencent,akshare_sina,efinance,akshare_em",
+            "tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em",
         )
+        self.assertFalse(config.iwencai_enabled)
+        self.assertEqual(config.iwencai_api_key, "")
+        self.assertEqual(
+            config.capital_flow_source_priority,
+            "iwencai,eastmoney_browser,akshare_em,efinance",
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_reads_iwencai_switch_and_priority_override(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "IWENCAI_ENABLED": "true",
+                "IWENCAI_API_KEY": "test-secret",
+                "CAPITAL_FLOW_SOURCE_PRIORITY": "akshare_em,iwencai",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.iwencai_enabled)
+        self.assertEqual(config.iwencai_api_key, "test-secret")
+        self.assertEqual(config.capital_flow_source_priority, "akshare_em,iwencai")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

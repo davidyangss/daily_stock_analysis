@@ -1072,7 +1072,23 @@ class Config:
     # - akshare_sina: 新浪财经，基本行情稳定，但无量比
     # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
     # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
-    realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
+    realtime_source_priority: str = "tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em"
+    # 同花顺问财 OpenAPI（可选，默认关闭；密钥仅从环境变量读取）
+    iwencai_enabled: bool = False
+    iwencai_api_key: str = ""
+    iwencai_timeout_seconds: float = 8.0
+    # 各数据能力独立的 provider 顺序。未知或未配置 provider 会 fail-open 跳过。
+    daily_source_priority: str = "local,tushare,tickflow,longbridge,tencent,eastmoney,akshare,efinance,yfinance,iwencai,baostock,pytdx"
+    capital_flow_source_priority: str = "iwencai,eastmoney_browser,akshare_em,efinance"
+    financial_source_priority: str = "tushare,iwencai,akshare_em,longbridge,yfinance"
+    governance_source_priority: str = "iwencai,tushare,akshare_em"
+    event_source_priority: str = "iwencai_announcement,iwencai_event,eastmoney,news"
+    sector_source_priority: str = "iwencai,eastmoney,tushare,akshare,efinance,local"
+    news_source_priority: str = "iwencai_news,search_aggregators,web_search"
+    announcement_source_priority: str = "iwencai_announcement,eastmoney,web_search"
+    research_source_priority: str = "iwencai_report,iwencai_insresearch,broker_website,news"
+    macro_source_priority: str = "iwencai,tushare,financial_media"
+    chip_source_priority: str = "eastmoney_browser,akshare_em,iwencai,local_estimate"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -2081,6 +2097,23 @@ class Config:
             # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
             # - tushare: Tushare Pro，需要2000积分，数据全面
             realtime_source_priority=cls._resolve_realtime_source_priority(),
+            iwencai_enabled=os.getenv('IWENCAI_ENABLED', 'false').lower() == 'true',
+            iwencai_api_key=os.getenv('IWENCAI_API_KEY', '').strip(),
+            iwencai_timeout_seconds=parse_env_float(
+                os.getenv('IWENCAI_TIMEOUT_SECONDS'), 8.0,
+                field_name='IWENCAI_TIMEOUT_SECONDS', minimum=0.1,
+            ),
+            daily_source_priority=os.getenv('DAILY_SOURCE_PRIORITY', 'local,tushare,tickflow,longbridge,tencent,eastmoney,akshare,efinance,yfinance,iwencai,baostock,pytdx'),
+            capital_flow_source_priority=os.getenv('CAPITAL_FLOW_SOURCE_PRIORITY', 'iwencai,eastmoney_browser,akshare_em,efinance'),
+            financial_source_priority=os.getenv('FINANCIAL_SOURCE_PRIORITY', 'tushare,iwencai,akshare_em,longbridge,yfinance'),
+            governance_source_priority=os.getenv('GOVERNANCE_SOURCE_PRIORITY', 'iwencai,tushare,akshare_em'),
+            event_source_priority=os.getenv('EVENT_SOURCE_PRIORITY', 'iwencai_announcement,iwencai_event,eastmoney,news'),
+            sector_source_priority=os.getenv('SECTOR_SOURCE_PRIORITY', 'iwencai,eastmoney,tushare,akshare,efinance,local'),
+            news_source_priority=os.getenv('NEWS_SOURCE_PRIORITY', 'iwencai_news,search_aggregators,web_search'),
+            announcement_source_priority=os.getenv('ANNOUNCEMENT_SOURCE_PRIORITY', 'iwencai_announcement,eastmoney,web_search'),
+            research_source_priority=os.getenv('RESEARCH_SOURCE_PRIORITY', 'iwencai_report,iwencai_insresearch,broker_website,news'),
+            macro_source_priority=os.getenv('MACRO_SOURCE_PRIORITY', 'iwencai,tushare,financial_media'),
+            chip_source_priority=os.getenv('CHIP_SOURCE_PRIORITY', 'eastmoney_browser,akshare_em,iwencai,local_estimate'),
             realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
             circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
             enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
@@ -2686,30 +2719,14 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
-
-        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
+        Resolve the recommended realtime source priority.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+        default_priority = 'tickflow,tencent,iwencai,tushare,eastmoney_browser,akshare_sina,efinance,akshare_em'
 
         if explicit:
             # User explicitly set priority, respect it
             return explicit
-
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
-            import logging
-            logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
-            logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
-            )
-            return resolved
 
         return default_priority
 

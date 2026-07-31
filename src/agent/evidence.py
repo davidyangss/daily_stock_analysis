@@ -126,6 +126,7 @@ _SOURCE_URLS = {
     "longbridge": "https://longbridge.com/",
     "tencentfetcher": "https://gu.qq.com/",
     "tencent": "https://gu.qq.com/",
+    "iwencai": "https://www.iwencai.com/unifiedwap/chat",
     "searxng": "https://docs.searxng.org/",
 }
 

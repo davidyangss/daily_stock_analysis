@@ -1,0 +1,104 @@
+# -*- coding: utf-8 -*-
+"""Contract tests for normalized iWencai query responses."""
+
+from unittest.mock import patch
+
+from data_provider.iwencai_adapter import IwencaiAdapter
+from data_provider.realtime_types import RealtimeSource
+
+
+def test_realtime_quote_normalizes_date_suffixed_columns_and_units() -> None:
+    adapter = IwencaiAdapter("secret")
+    payload = {
+        "datas": [{
+            "股票代码": "600519.SH",
+            "股票简称": "贵州茅台",
+            "最新价[20260731]": "1418.20",
+            "涨跌幅[20260731]": "1.25%",
+            "成交量[20260731]": "2.5万",
+            "成交额[20260731]": "35.6亿",
+            "换手率[20260731]": "0.62%",
+            "市盈率(ttm)[20260731]": "21.3",
+        }]
+    }
+    with patch.object(adapter, "query", return_value=payload):
+        quote = adapter.get_realtime_quote("600519")
+
+    assert quote is not None
+    assert quote.source == RealtimeSource.IWENCAI
+    assert quote.price == 1418.2
+    assert quote.change_pct == 1.25
+    assert quote.volume == 25000
+    assert quote.amount == 3_560_000_000
+    assert quote.pe_ratio == 21.3
+
+
+def test_capital_flow_maps_each_window_without_cross_window_fallback() -> None:
+    adapter = IwencaiAdapter("secret")
+    payload = {
+        "datas": [{
+            "股票代码": "600519",
+            "当日主力净流入[20260731]": "1.2亿",
+            "近5日主力累计净流入": "3.4亿",
+            "近10日主力累计净流入": "-2.1亿",
+        }]
+    }
+    with patch.object(adapter, "query", return_value=payload):
+        result = adapter.get_capital_flow("600519")
+
+    assert result["stock_flow"] == {
+        "main_net_inflow": 120_000_000,
+        "inflow_5d": 340_000_000,
+        "inflow_10d": -210_000_000,
+    }
+    assert result["source_chain"] == [
+        {"provider": "iwencai", "result": "partial", "duration_ms": 0}
+    ]
+
+
+def test_capital_flow_maps_real_query2data_date_range_columns() -> None:
+    adapter = IwencaiAdapter("secret")
+    payload = {
+        "datas": [{
+            "股票代码": "600519",
+            "主力资金流向[20260731]": "1.2亿",
+            "主力资金流向[20260727-20260731]": "3.4亿",
+            "主力资金流向[20260720-20260731]": "-2.1亿",
+        }]
+    }
+    with patch.object(adapter, "query", return_value=payload):
+        result = adapter.get_capital_flow("600519")
+
+    assert result["stock_flow"] == {
+        "main_net_inflow": 120_000_000,
+        "inflow_5d": 340_000_000,
+        "inflow_10d": -210_000_000,
+    }
+
+
+def test_mismatched_stock_code_is_rejected() -> None:
+    adapter = IwencaiAdapter("secret")
+    with patch.object(adapter, "query", return_value={"datas": [{"股票代码": "000001", "最新价": 10}]}):
+        assert adapter.get_realtime_quote("600519") is None
+
+
+def test_fundamental_bundle_maps_real_dated_financial_columns() -> None:
+    adapter = IwencaiAdapter("secret")
+    payload = {"datas": [{
+        "股票代码": "600519",
+        "营业收入": 53_909_252_220.51,
+        "营业收入同比增长率": 6.538,
+        "归母净利润": 27_242_512_886.45,
+        "归母净利润同比增长率": 1.4714,
+        "净资产收益率[20260331]": 10.5687,
+        "销售毛利率[20260331]": 89.7592,
+        "经营活动产生的现金流量净额[20260331]": 10_000_000,
+        "总户数较上期变动[20260731]": -1234,
+    }]}
+    with patch.object(adapter, "query", return_value=payload):
+        result = adapter.get_fundamental_bundle("600519")
+
+    report = result["earnings"]["financial_report"]
+    assert report["report_date"] == "20260331"
+    assert report["operating_cash_flow"] == 10_000_000
+    assert result["institution"]["shareholder_count_change"] == -1234

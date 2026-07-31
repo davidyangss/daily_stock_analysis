@@ -29,6 +29,7 @@ from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
+from .iwencai_adapter import IwencaiAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
 from .realtime_types import CircuitBreaker
 
@@ -658,6 +659,8 @@ class DataFetcherManager:
             self._init_default_fetchers()
         self._fundamental_adapter = AkshareFundamentalAdapter()
         self._yfinance_fundamental_adapter = YfinanceFundamentalAdapter()
+        self._iwencai_adapter: Optional[IwencaiAdapter] = None
+        self._iwencai_adapter_key: str = ""
         self._tickflow_fetcher = None
         self._tickflow_api_key: Optional[str] = None
         self._tickflow_lock = RLock()
@@ -665,6 +668,87 @@ class DataFetcherManager:
         self._fundamental_cache_lock = RLock()
         self._fundamental_timeout_worker_limit = 8
         self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
+
+    def _get_iwencai_adapter(self) -> Optional[IwencaiAdapter]:
+        """Return the optional iWencai adapter without exposing its credential."""
+        from src.config import get_config
+
+        config = get_config()
+        key = (getattr(config, "iwencai_api_key", "") or "").strip()
+        if not getattr(config, "iwencai_enabled", False) or not key:
+            return None
+        timeout = float(getattr(config, "iwencai_timeout_seconds", 8.0))
+        if getattr(self, "_iwencai_adapter", None) is None or getattr(self, "_iwencai_adapter_key", "") != key:
+            self._iwencai_adapter = IwencaiAdapter(key, timeout=timeout)
+            self._iwencai_adapter_key = key
+        else:
+            self._iwencai_adapter.timeout = max(0.1, timeout)
+        return self._iwencai_adapter
+
+    @staticmethod
+    def _merge_missing_mapping(primary: Dict[str, Any], supplement: Dict[str, Any]) -> Dict[str, Any]:
+        for key, value in supplement.items():
+            if isinstance(value, dict) and isinstance(primary.get(key), dict):
+                DataFetcherManager._merge_missing_mapping(primary[key], value)
+            elif primary.get(key) in (None, "", [], {}):
+                primary[key] = value
+        return primary
+
+    def _get_cn_fundamental_bundle(self, stock_code: str, config: Any) -> Dict[str, Any]:
+        """Merge normalized fundamentals in configured provider order."""
+        financial_priorities = [
+            item.strip().lower()
+            for item in getattr(config, "financial_source_priority", "tushare,iwencai,akshare_em").split(",")
+            if item.strip()
+        ]
+        governance_priorities = [
+            item.strip().lower()
+            for item in getattr(config, "governance_source_priority", "iwencai,tushare,akshare_em").split(",")
+            if item.strip()
+        ]
+        merged: Dict[str, Any] = {
+            "status": "not_supported", "growth": {}, "earnings": {}, "institution": {},
+            "source_chain": [], "errors": [],
+        }
+        candidates: Dict[str, Dict[str, Any]] = {}
+        tried_akshare = False
+        for source in dict.fromkeys(financial_priorities + governance_priorities):
+            try:
+                if source == "iwencai":
+                    adapter = self._get_iwencai_adapter()
+                    if adapter is None:
+                        continue
+                    candidate = adapter.get_fundamental_bundle(stock_code)
+                elif source in {"akshare", "akshare_em", "eastmoney", "efinance"}:
+                    if tried_akshare:
+                        continue
+                    tried_akshare = True
+                    candidate = self._fundamental_adapter.get_fundamental_bundle(stock_code)
+                else:
+                    # Current fetcher contracts do not expose a normalized
+                    # fundamental bundle for this provider yet.
+                    continue
+            except Exception as exc:
+                merged["errors"].append(f"{source}:{type(exc).__name__}")
+                continue
+            if not isinstance(candidate, dict):
+                continue
+            candidates[source] = candidate
+            merged["source_chain"].extend(candidate.get("source_chain") or [])
+            merged["errors"].extend(candidate.get("errors") or [])
+        for source in financial_priorities:
+            candidate = candidates.get(source, {})
+            for block in ("growth", "earnings"):
+                payload = candidate.get(block)
+                if isinstance(payload, dict):
+                    self._merge_missing_mapping(merged[block], payload)
+        for source in governance_priorities:
+            payload = candidates.get(source, {}).get("institution")
+            if isinstance(payload, dict):
+                self._merge_missing_mapping(merged["institution"], payload)
+        if any(merged[block] for block in ("growth", "earnings", "institution")):
+            merged["status"] = "partial"
+        return merged
 
     def _ensure_concurrency_guards(self) -> None:
         """Lazily initialize thread-safety primitives for test scaffolds using __new__."""
@@ -1295,6 +1379,32 @@ class DataFetcherManager:
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+        if market == "cn":
+            from src.config import get_config
+
+            configured_order = [
+                item.strip().lower()
+                for item in getattr(get_config(), "daily_source_priority", "").split(",")
+                if item.strip() and item.strip().lower() != "local"
+            ]
+            token_to_fetcher = {
+                "tushare": "TushareFetcher",
+                "tickflow": "TickFlowFetcher",
+                "longbridge": "LongbridgeFetcher",
+                "tencent": "TencentFetcher",
+                "eastmoney": "AkshareFetcher",
+                "akshare": "AkshareFetcher",
+                "efinance": "EfinanceFetcher",
+                "yfinance": "YfinanceFetcher",
+                "baostock": "BaostockFetcher",
+                "pytdx": "PytdxFetcher",
+            }
+            rank: Dict[str, int] = {}
+            for token in configured_order:
+                name = token_to_fetcher.get(token)
+                if name is not None and name not in rank:
+                    rank[name] = len(rank)
+            fetchers.sort(key=lambda fetcher: (rank.get(fetcher.name, len(rank)), fetcher.priority))
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:
@@ -1902,6 +2012,28 @@ class DataFetcherManager:
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+
+                elif source == "iwencai":
+                    iwencai = self._get_iwencai_adapter()
+                    if iwencai is not None:
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider="iwencai",
+                            operation="get_realtime_quote",
+                        )
+                        quote = iwencai.get_realtime_quote(stock_code)
+
+                elif source == "eastmoney_browser":
+                    # Browser transport is applied transparently to AkShare EM.
+                    if getattr(config, "eastmoney_browser_enabled", False):
+                        fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
+                        if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                            record_provider_run_started(
+                                data_type="realtime_quote",
+                                provider="eastmoney_browser",
+                                operation="get_realtime_quote",
+                            )
+                            quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em")
 
                 provider_name = fetcher.name if fetcher is not None else source
                 
@@ -3223,7 +3355,7 @@ class DataFetcherManager:
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
             bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                lambda: self._get_cn_fundamental_bundle(stock_code, config),
                 bundle_timeout,
                 "fundamental_bundle",
             )
@@ -3438,8 +3570,62 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
                 ["fundamental stage timeout"],
             )
+        def _fetch_capital_flow_by_priority() -> Dict[str, Any]:
+            priorities = [
+                item.strip().lower()
+                for item in getattr(
+                    config,
+                    "capital_flow_source_priority",
+                    "iwencai,eastmoney_browser,akshare_em,efinance",
+                ).split(",")
+                if item.strip()
+            ]
+            merged: Dict[str, Any] = {
+                "status": "not_supported",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [],
+                "errors": [],
+            }
+            tried_eastmoney = False
+            for source in priorities:
+                try:
+                    if source == "iwencai":
+                        adapter = self._get_iwencai_adapter()
+                        if adapter is None:
+                            continue
+                        candidate = adapter.get_capital_flow(stock_code)
+                    elif source in {"eastmoney_browser", "eastmoney", "akshare_em", "efinance", "akshare"}:
+                        # The existing adapter capability-probes these transports;
+                        # avoid repeating the same upstream request under aliases.
+                        if tried_eastmoney:
+                            continue
+                        tried_eastmoney = True
+                        candidate = self._fundamental_adapter.get_capital_flow(stock_code)
+                    else:
+                        continue
+                except Exception as exc:
+                    merged["errors"].append(f"{source}:{type(exc).__name__}")
+                    continue
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_flow = candidate.get("stock_flow") or {}
+                for key in ("main_net_inflow", "inflow_5d", "inflow_10d"):
+                    if merged["stock_flow"].get(key) is None and candidate_flow.get(key) is not None:
+                        merged["stock_flow"][key] = candidate_flow[key]
+                rankings = candidate.get("sector_rankings") or {}
+                if not merged["sector_rankings"]["top"] and rankings.get("top"):
+                    merged["sector_rankings"]["top"] = rankings["top"]
+                if not merged["sector_rankings"]["bottom"] and rankings.get("bottom"):
+                    merged["sector_rankings"]["bottom"] = rankings["bottom"]
+                merged["source_chain"].extend(candidate.get("source_chain") or [])
+                merged["errors"].extend(candidate.get("errors") or [])
+            if any(value is not None for value in merged["stock_flow"].values()) or any(merged["sector_rankings"].values()):
+                merged["status"] = "partial"
+            return merged
+
         payload, err, cost_ms = self._run_with_retry(
-            lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+            _fetch_capital_flow_by_priority,
             timeout,
             "capital_flow",
         )
