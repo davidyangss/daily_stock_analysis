@@ -127,6 +127,33 @@ def _is_etf_code(stock_code: str) -> bool:
     return code.startswith(etf_prefixes) and len(code) == 6
 
 
+def _parse_em_browser_klines(klines: list) -> "pd.DataFrame":
+    """将东财 K 线原始字符串列表转换为 CYQ 计算器所需 DataFrame。
+
+    每条格式：date,open,close,high,low,volume,amount,amplitude,chg_pct,chg_amt,turnover_pct
+    turnover_pct 是百分比（3.09 表示 3.09%），转换为小数 ratio 后传给计算器。
+    """
+    rows = []
+    for line in klines:
+        if not isinstance(line, str):
+            raise ValueError("eastmoney browser kline row must be a string")
+        parts = line.split(",")
+        if len(parts) != 11:
+            raise ValueError("eastmoney browser kline row must contain 11 fields")
+        try:
+            rows.append({
+                "date":     parts[0].strip(),
+                "open":     float(parts[1]),
+                "close":    float(parts[2]),
+                "high":     float(parts[3]),
+                "low":      float(parts[4]),
+                "turnover": float(parts[10]) / 100.0,  # % → ratio
+            })
+        except (ValueError, IndexError) as exc:
+            raise ValueError("eastmoney browser kline row contains invalid values") from exc
+    return pd.DataFrame(rows)
+
+
 def _calculate_chip_distribution_from_history(
     stock_code: str,
     history: pd.DataFrame,
@@ -530,7 +557,11 @@ class AkshareFetcher(BaseFetcher):
         self._last_request_time: Optional[float] = None
         self._history_call_timeout = _AKSHARE_HISTORY_CALL_TIMEOUT
         # 东财补丁开启才执行打补丁操作
-        if get_config().enable_eastmoney_patch:
+        config = get_config()
+        if (
+            getattr(config, "enable_eastmoney_patch", False)
+            or getattr(config, "eastmoney_browser_enabled", False)
+        ):
             eastmoney_patch()
     
     def _set_random_user_agent(self) -> None:
@@ -1814,7 +1845,30 @@ class AkshareFetcher(BaseFetcher):
         if _is_etf_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是 ETF/指数，无筹码分布数据")
             return None
-        
+
+        # ── 东财持久浏览器（优先级最高，配置关闭时跳过）──────────────────────
+        if get_config().eastmoney_browser_enabled and get_config().enable_chip_distribution:
+            try:
+                from src.services.eastmoney_browser_service import EastmoneyBrowserService
+                _svc = EastmoneyBrowserService.get_instance()
+                _klines = _svc.fetch_kline(stock_code, lmt=730)
+                if _klines:
+                    _df = _parse_em_browser_klines(_klines)
+                    chip = _calculate_chip_distribution_from_history(
+                        stock_code, _df, "eastmoney_browser"
+                    )
+                    logger.info(
+                        f"[筹码分布] {stock_code} eastmoney_browser 成功: "
+                        f"日期={chip.date}, 平均成本={chip.avg_cost}"
+                    )
+                    return chip
+            except Exception as _exc:
+                logger.info(
+                    f"[筹码分布] {stock_code} eastmoney_browser 不可用，降级: "
+                    f"{type(_exc).__name__}"
+                )
+        # ─────────────────────────────────────────────────────────────────────
+
         errors = []
         try:
             self._set_random_user_agent()

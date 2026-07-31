@@ -289,9 +289,26 @@ async def app_lifespan(app: FastAPI):
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
     _schedule_stock_index_background_refresh(app, "startup")
+    # 东财持久浏览器服务（后台线程启动，不阻塞 FastAPI）
+    from src.config import get_config as _get_config
+    _browser_config = _get_config()
+    if getattr(_browser_config, "eastmoney_browser_enabled", False) is True:
+        import threading as _threading
+        from src.services.eastmoney_browser_service import EastmoneyBrowserService as _BrowserSvc
+        _threading.Thread(
+            target=_BrowserSvc.get_instance().start,
+            name="eastmoney-browser-startup",
+            daemon=True,
+        ).start()
+        logger.info("[app_lifespan] 东财持久浏览器服务启动中（后台）")
     try:
         yield
     finally:
+        try:
+            from src.services.eastmoney_browser_service import EastmoneyBrowserService as _BrowserSvc
+            _BrowserSvc.get_instance().stop()
+        except Exception:
+            pass
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

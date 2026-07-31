@@ -6,7 +6,12 @@
 
 下次继续开发时，应先阅读本文并核对当前代码、运行环境和东财页面现状，不要直接复用聊天记录中的 Cookie、请求时间戳或一次性 curl。
 
-本文是功能设计，不表示该能力已经实现。当前可用基线为：
+本文同时记录功能边界和当前实现约束。当前实现覆盖筹码分布 K 线，并在功能启用时
+统一代理 AkShare 发往 `*.eastmoney.com` 和 `*.eastmoneyfutures.com` 的 GET/POST 请求；
+AkShare 中残留的 HTTP 地址会在进入浏览器前升级为 HTTPS。代理复用 AkShare
+原有参数构造和 DataFrame 解析，不导出 Chrome Cookie，也不代理非东财请求。
+
+实现基线为当前分支的东财持久浏览器提交；历史筹码 fallback 基线为：
 
 ```text
 commit: 21d0efe7 feat: add fallback chip distribution sources
@@ -80,9 +85,10 @@ https://push2his.eastmoney.com/api/qt/stock/kline/get
 2. 用户只在真实浏览器页面中手动登录。
 3. 账号密码、验证码和 Cookie 不经过应用 API 或日志。
 4. 筹码取数时由浏览器上下文直接 `fetch` 东财 K 线端点。
-5. 返回内容经过严格 Schema、行数、字段和大小校验。
-6. 浏览器路径失败时继续使用已提交的新浪、腾讯 fallback。
-7. 登录失效、浏览器崩溃和接口风控不得阻断主分析流程。
+5. AkShare 的其他东财 GET/POST 请求通过同一浏览器 worker 执行。
+6. 返回内容经过域名、方法和大小校验；筹码 K 线额外执行严格 Schema 校验。
+7. 浏览器路径失败时继续使用项目既有的数据源 fallback。
+8. 登录失效、浏览器崩溃和接口风控不得阻断主分析流程。
 
 ### 4.2 非目标
 
@@ -121,6 +127,18 @@ https://push2his.eastmoney.com/api/qt/stock/kline/get
 
 浏览器服务只返回经过白名单转换的行情字段，不返回 Cookie、Local Storage、页面 HTML 或账户信息。
 
+### 5.3 AkShare 兼容代理
+
+AkShare 的东财函数最终通过 `requests.Session.request` 发出请求。启用浏览器能力后，
+统一请求补丁只拦截 hostname 属于 `eastmoney.com` 或 `eastmoneyfutures.com` 的请求：
+
+- 只允许 GET 和 POST；
+- URL、请求体和响应体有大小上限；
+- 丢弃调用方的 Cookie、Authorization、API key 等敏感请求头及浏览器禁止设置的传输头；
+- Cookie 由 Chrome context 自动附带，不复制到 Python；
+- 将状态码、响应头和正文封装为兼容 `requests.Response` 的对象，交回 AkShare 原解析代码；
+- 浏览器或登录不可用时抛出连接错误，由现有数据源管理器执行 fallback，不绕回裸 Requests。
+
 ### 5.2 浏览器选择
 
 实现前应做一次短验证：
@@ -137,14 +155,20 @@ https://push2his.eastmoney.com/api/qt/stock/kline/get
 ```text
 EASTMONEY_BROWSER_ENABLED=false
 EASTMONEY_BROWSER_PROFILE_DIR=<仓库外路径>
+EASTMONEY_BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
 EASTMONEY_BROWSER_HEADLESS=false
+EASTMONEY_BROWSER_CDP_PORT=9227
 EASTMONEY_BROWSER_REQUEST_TIMEOUT=12
 EASTMONEY_BROWSER_IDLE_TIMEOUT=1800
+EASTMONEY_BROWSER_SESSION_REFRESH_INTERVAL=600
+EASTMONEY_BROWSER_FAILURE_COOLDOWN=300
 ```
 
 规则：
 
 - 默认关闭，保持现有行为。
+- 首次登录必须使用可见浏览器（`EASTMONEY_BROWSER_HEADLESS=false`）。
+- Chrome/Chromium 二进制不会随 Python `playwright` 包自动安装；部署环境必须显式安装并配置路径。
 - `PROFILE_DIR` 不得位于仓库、静态目录或可下载目录。
 - 创建目录时权限为 `0700`。
 - 不新增 `EASTMONEY_COOKIE` 这类保存完整 Cookie 字符串的配置。
@@ -172,11 +196,14 @@ stopped
 
 1. 服务启动不应阻塞 FastAPI startup；浏览器按需或后台启动。
 2. 同一时刻只允许一个浏览器启动流程。
-3. K 线请求通过有界队列或锁串行化，避免页面上下文并发失控。
+3. K 线请求通过有界队列串行化；Playwright 创建、登录检测、请求和关闭始终在同一专用线程。
 4. 浏览器进程异常退出后可有限次数重启，不无限重启。
 5. 登录失效标记为 `login_required`，不自动提交登录表单。
 6. 请求超时立即降级，不让浏览器拖垮分析任务。
 7. 服务退出时正常关闭浏览器进程，保留 Profile。
+8. CLI、调度等非 FastAPI 入口在首次筹码请求时按需启动同一服务。
+9. ready 状态按 `EASTMONEY_BROWSER_SESSION_REFRESH_INTERVAL` 周期刷新东财首页，
+   刷新后立即复检登录状态；设为 `0` 时禁用主动会话刷新。
 
 ## 8. 登录交互
 
@@ -235,7 +262,8 @@ https://push2his.eastmoney.com/api/qt/stock/kline/get
 
 兼容要求：
 
-- `ENABLE_CHIP_DISTRIBUTION=false` 时不启动或调用浏览器筹码能力。
+- `ENABLE_CHIP_DISTRIBUTION=false` 时不调用浏览器筹码能力；若浏览器总开关已启用，
+  服务仍可为 AkShare 的其他东财接口运行。
 - 浏览器失败必须被 provider diagnostics 记录为低敏失败类型。
 - 不支持的市场和 ETF 仍直接返回 `None`，不启动浏览器。
 - 全部渠道失败仍 fail-open，报告明确筹码未纳入判断。
@@ -247,6 +275,8 @@ https://push2his.eastmoney.com/api/qt/stock/kline/get
 - 成功缓存键：股票代码、最新交易日、算法版本、数据源。
 - 同一股票同一交易日不重复请求和计算。
 - 登录失效不按普通网络错误无限重试。
+- ready 状态下的首页刷新与业务请求共用浏览器 worker，不并发操作 Page；成功刷新视为浏览器活动，
+  因此刷新间隔小于空闲超时时会保持 Chrome 常驻。
 - 浏览器连续失败达到阈值后进入冷却，直接使用新浪/腾讯。
 - 单只股票请求失败不应重启整个浏览器。
 - 全局并发默认 1；批量分析时优先命中缓存。
