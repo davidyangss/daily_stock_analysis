@@ -1052,10 +1052,20 @@ class Config:
     eastmoney_browser_enabled: bool = False
     # Profile 目录（仓库外路径，建议权限 0700）；留空时浏览器路径不可用
     eastmoney_browser_profile_dir: str = ""
+    # Chrome/Chromium 可执行文件；留空时使用 CHROME_PATH 或系统默认路径
+    eastmoney_browser_executable_path: str = ""
+    # 是否使用无头模式；首次手动登录时必须关闭
+    eastmoney_browser_headless: bool = False
+    # 仅监听 localhost 的 Chrome DevTools 端口
+    eastmoney_browser_cdp_port: int = 9227
     # K 线单次请求超时（秒）
     eastmoney_browser_request_timeout: int = 12
     # 浏览器空闲超时（秒），超时后进入 degraded 状态
     eastmoney_browser_idle_timeout: int = 1800
+    # 登录首页会话刷新间隔（秒）；设为 0 时禁用主动刷新
+    eastmoney_browser_session_refresh_interval: int = 600
+    # 连续失败进入 degraded 后的重启冷却时间（秒）
+    eastmoney_browser_failure_cooldown: int = 300
     # 实时行情数据源优先级（逗号分隔）
     # 推荐顺序：tencent > akshare_sina > efinance > akshare_em > tushare
     # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
@@ -2043,6 +2053,12 @@ class Config:
             # 东财持久浏览器
             eastmoney_browser_enabled=os.getenv('EASTMONEY_BROWSER_ENABLED', 'false').lower() == 'true',
             eastmoney_browser_profile_dir=os.getenv('EASTMONEY_BROWSER_PROFILE_DIR', ''),
+            eastmoney_browser_executable_path=os.getenv('EASTMONEY_BROWSER_EXECUTABLE_PATH', ''),
+            eastmoney_browser_headless=os.getenv('EASTMONEY_BROWSER_HEADLESS', 'false').lower() == 'true',
+            eastmoney_browser_cdp_port=parse_env_int(
+                os.getenv('EASTMONEY_BROWSER_CDP_PORT'), 9227,
+                field_name='EASTMONEY_BROWSER_CDP_PORT', minimum=1024, maximum=65535,
+            ),
             eastmoney_browser_request_timeout=parse_env_int(
                 os.getenv('EASTMONEY_BROWSER_REQUEST_TIMEOUT'), 12,
                 field_name='EASTMONEY_BROWSER_REQUEST_TIMEOUT', minimum=1,
@@ -2050,6 +2066,14 @@ class Config:
             eastmoney_browser_idle_timeout=parse_env_int(
                 os.getenv('EASTMONEY_BROWSER_IDLE_TIMEOUT'), 1800,
                 field_name='EASTMONEY_BROWSER_IDLE_TIMEOUT', minimum=0,
+            ),
+            eastmoney_browser_session_refresh_interval=parse_env_int(
+                os.getenv('EASTMONEY_BROWSER_SESSION_REFRESH_INTERVAL'), 600,
+                field_name='EASTMONEY_BROWSER_SESSION_REFRESH_INTERVAL', minimum=0,
+            ),
+            eastmoney_browser_failure_cooldown=parse_env_int(
+                os.getenv('EASTMONEY_BROWSER_FAILURE_COOLDOWN'), 300,
+                field_name='EASTMONEY_BROWSER_FAILURE_COOLDOWN', minimum=0,
             ),
             # 实时行情数据源优先级：
             # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）

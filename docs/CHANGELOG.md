@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 东财持久浏览器在 ready 状态下按配置周期刷新登录后的东财首页，主动延长服务端会话并复检登录 Cookie；刷新和业务请求继续由同一 worker 串行执行
+- [改进] AkShare 发往 `*.eastmoney.com` / `*.eastmoneyfutures.com` 的 GET/POST 请求在东财浏览器启用时统一经已登录 Chrome 上下文执行，旧 HTTP 地址自动升级 HTTPS，保留 AkShare 原解析逻辑且不向 Requests 导出 Cookie，浏览器不可用时继续由现有 provider fallback 降级
+- [修复] 收敛东财持久浏览器筹码链路：Playwright 生命周期与请求统一到专用线程，通过有界队列串行化批量请求，支持非 Web 入口按需启动、登录会话复检、失败冷却恢复、严格 K 线校验和可配置 Chrome 路径
 - [新功能] 东财持久浏览器服务骨架（Phase 1）：新增 EastmoneyBrowserService 状态机、BrowserAdapter 抽象接口与 FakeBrowserAdapter，配置项 EASTMONEY_BROWSER_ENABLED / PROFILE_DIR / REQUEST_TIMEOUT / IDLE_TIMEOUT，默认关闭，不影响现有筹码链路
 - [新功能] 东财持久浏览器 Phase 2：实现 PlaywrightBrowserAdapter（CDP 模式），Chrome 以原生 TLS 指纹启动后由 Playwright connect_over_cdp 接管，page.goto 直接访问 K 线 API，smoke test 验证 rc=0 klines=10
 - [新功能] 东财持久浏览器 Phase 3：将 eastmoney_browser 接入筹码分布链路，作为第1优先级来源；新增 _parse_em_browser_klines 解析器；EASTMONEY_BROWSER_ENABLED=false 时完全跳过，不影响现有 AkShare/Sina/Tencent 链路

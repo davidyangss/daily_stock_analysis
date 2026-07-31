@@ -135,9 +135,11 @@ def _parse_em_browser_klines(klines: list) -> "pd.DataFrame":
     """
     rows = []
     for line in klines:
+        if not isinstance(line, str):
+            raise ValueError("eastmoney browser kline row must be a string")
         parts = line.split(",")
-        if len(parts) < 11:
-            continue
+        if len(parts) != 11:
+            raise ValueError("eastmoney browser kline row must contain 11 fields")
         try:
             rows.append({
                 "date":     parts[0].strip(),
@@ -147,8 +149,8 @@ def _parse_em_browser_klines(klines: list) -> "pd.DataFrame":
                 "low":      float(parts[4]),
                 "turnover": float(parts[10]) / 100.0,  # % → ratio
             })
-        except (ValueError, IndexError):
-            continue
+        except (ValueError, IndexError) as exc:
+            raise ValueError("eastmoney browser kline row contains invalid values") from exc
     return pd.DataFrame(rows)
 
 
@@ -555,7 +557,11 @@ class AkshareFetcher(BaseFetcher):
         self._last_request_time: Optional[float] = None
         self._history_call_timeout = _AKSHARE_HISTORY_CALL_TIMEOUT
         # 东财补丁开启才执行打补丁操作
-        if get_config().enable_eastmoney_patch:
+        config = get_config()
+        if (
+            getattr(config, "enable_eastmoney_patch", False)
+            or getattr(config, "eastmoney_browser_enabled", False)
+        ):
             eastmoney_patch()
     
     def _set_random_user_agent(self) -> None:

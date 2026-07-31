@@ -7,6 +7,7 @@ import requests
 import json
 import uuid
 import logging
+from urllib.parse import urlparse
 from fake_useragent import UserAgent
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,17 @@ class PatchSign:
 
 
 _patch_sign = PatchSign()
+
+
+def _eastmoney_browser_url(url):
+    """返回浏览器代理使用的 HTTPS URL；非东财 URL 返回 None。"""
+    parsed = urlparse(url or "")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    is_target = parsed.scheme in {"http", "https"} and any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in ("eastmoney.com", "eastmoneyfutures.com")
+    )
+    return parsed._replace(scheme="https").geturl() if is_target else None
 
 
 def _get_nid(user_agent):
@@ -152,16 +164,15 @@ def eastmoney_patch():
         return
 
     def patched_request(self, method, url, **kwargs):
-        # 排除非目标域名
-        is_target = any(
-            d in (url or "")
-            for d in [
-                "fund.eastmoney.com",
-                "push2.eastmoney.com",
-                "push2his.eastmoney.com",
-            ]
-        )
-        if not is_target:
+        browser_url = _eastmoney_browser_url(url)
+        if browser_url is None:
+            return original_request(self, method, url, **kwargs)
+        from src.config import get_config
+
+        config = get_config()
+        if getattr(config, "eastmoney_browser_enabled", False):
+            return _browser_request(method, browser_url, kwargs)
+        if not getattr(config, "enable_eastmoney_patch", False):
             return original_request(self, method, url, **kwargs)
         # 获取一个随机的 User-Agent
         user_agent = ua.random
@@ -180,3 +191,43 @@ def eastmoney_patch():
     # 全局替换 Session 的 request 入口
     requests.Session.request = patched_request
     _patch_sign.set_patch(True)
+
+
+def _browser_request(method, url, kwargs):
+    """将 AkShare 的东财请求转换为浏览器请求并返回 requests.Response。"""
+    prepared = requests.Request(
+        method=method,
+        url=url,
+        params=kwargs.get("params"),
+        headers=kwargs.get("headers"),
+        data=kwargs.get("data"),
+        json=kwargs.get("json"),
+    ).prepare()
+    body = prepared.body
+    if isinstance(body, bytes):
+        try:
+            body = body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise requests.ConnectionError("东财浏览器代理不支持二进制请求体") from exc
+    elif body is not None and not isinstance(body, str):
+        body = str(body)
+
+    from src.services.eastmoney_browser_service import EastmoneyBrowserService
+
+    proxy_response = EastmoneyBrowserService.get_instance().fetch_http(
+        method=prepared.method,
+        url=prepared.url,
+        headers=dict(prepared.headers),
+        body=body,
+    )
+    if proxy_response is None:
+        raise requests.ConnectionError("东财浏览器代理不可用")
+
+    response = requests.Response()
+    response.status_code = proxy_response["status_code"]
+    response.headers = requests.structures.CaseInsensitiveDict(proxy_response["headers"])
+    response.url = proxy_response["url"]
+    response.request = prepared
+    response.encoding = requests.utils.get_encoding_from_headers(response.headers) or "utf-8"
+    response._content = proxy_response["body"].encode(response.encoding, errors="replace")
+    return response
