@@ -54,6 +54,7 @@ class TestFundamentalContext(unittest.TestCase):
                 "gross_margin": 89.7,
             },
             "earnings": {"financial_report": {"report_date": "2026-03-31"}},
+            "institution": {},
             "source_chain": ["growth:iwencai"],
             "errors": [],
         }
@@ -62,14 +63,20 @@ class TestFundamentalContext(unittest.TestCase):
                 patch.object(
                     manager._fundamental_adapter,
                     "get_fundamental_bundle",
-                    side_effect=AssertionError("complete result must not fan out"),
+                    return_value={
+                        "earnings": {"quick_report_summary": "业绩快报摘要"},
+                        "institution": {"top10_holder_change": "十大股东持股变化摘要"},
+                        "source_chain": ["supplement:akshare_em"],
+                        "errors": [],
+                    },
                 ) as fallback:
             bundle = manager._get_cn_fundamental_bundle("600519", cfg)
 
-        fallback.assert_not_called()
+        fallback.assert_called_once_with("600519")
         self.assertEqual(bundle["growth"]["revenue_yoy"], 6.5)
         self.assertEqual(bundle["growth"]["gross_margin"], 89.7)
-        self.assertEqual(bundle["source_chain"], ["growth:iwencai"])
+        self.assertEqual(bundle["earnings"]["quick_report_summary"], "业绩快报摘要")
+        self.assertEqual(bundle["institution"]["top10_holder_change"], "十大股东持股变化摘要")
 
     def test_cn_fundamentals_fill_only_missing_fields_from_fallback(self) -> None:
         manager = DataFetcherManager(fetchers=[])

@@ -575,6 +575,24 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
         self.assertEqual(summary["status_label"], "未知")
         self.assertEqual(summary["query_id"], "legacy-query")
 
+    def test_notification_failure_does_not_expose_internal_failed_status_as_reason(self) -> None:
+        diagnostics = _diagnostic_snapshot()
+        diagnostics["notification_runs"] = [{
+            "channel": "report",
+            "status": "failed",
+            "success": False,
+        }]
+
+        summary = build_run_diagnostic_summary(
+            context_snapshot={"diagnostics": diagnostics},
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        message = summary["components"]["notification"]["message"]
+        self.assertEqual(message, "通知失败：通知渠道未返回具体错误，请检查通知配置和服务日志")
+        self.assertNotIn("通知失败：failed", message)
+
     def test_history_service_and_endpoint_return_diagnostic_summary(self) -> None:
         context_snapshot = {
             "diagnostics": _diagnostic_snapshot(),

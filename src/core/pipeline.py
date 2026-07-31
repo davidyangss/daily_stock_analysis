@@ -3427,11 +3427,13 @@ class StockAnalysisPipeline:
                     channel="report",
                     status="success" if sent else "failed",
                     success=sent,
+                    error_message=None if sent else "通知渠道未返回具体错误，请检查通知配置和服务日志",
                 )
                 record_notification_run(
                     channel="report",
                     status="success" if sent else "failed",
                     success=sent,
+                    error_message=None if sent else "通知渠道未返回具体错误，请检查通知配置和服务日志",
                 )
                 self._refresh_saved_diagnostic_snapshot(
                     result=result,
@@ -3541,17 +3543,20 @@ class StockAnalysisPipeline:
                     error_message: Optional[Exception] = None,
                     target_results: Optional[List[AnalysisResult]] = None,
                 ) -> None:
+                    effective_error = error_message
+                    if not success and effective_error is None:
+                        effective_error = "通知渠道未返回具体错误，请检查通知配置和服务日志"
                     notification_run = self._build_notification_run_snapshot(
                         channel=channel_label,
                         status="success" if success else "failed",
                         success=success,
-                        error_message=error_message,
+                        error_message=effective_error,
                     )
                     record_notification_run(
                         channel=channel_label,
                         status="success" if success else "failed",
                         success=success,
-                        error_message=error_message,
+                        error_message=effective_error,
                     )
                     self._refresh_saved_diagnostic_snapshot(
                         results=results if target_results is None else target_results,

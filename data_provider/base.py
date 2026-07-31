@@ -697,13 +697,22 @@ class DataFetcherManager:
 
     @staticmethod
     def _has_complete_financial_strategy_fields(bundle: Dict[str, Any]) -> bool:
-        """Return whether the strategy's required A-share financial fields are complete."""
+        """Return whether report-visible A-share fundamental fields are complete."""
         growth = bundle.get("growth")
-        if not isinstance(growth, dict):
+        earnings = bundle.get("earnings")
+        institution = bundle.get("institution")
+        if not all(isinstance(block, dict) for block in (growth, earnings, institution)):
             return False
-        return all(
+        growth_complete = all(
             growth.get(key) is not None and growth.get(key) != ""
             for key in ("revenue_yoy", "net_profit_yoy", "roe", "gross_margin")
+        )
+        return growth_complete and all(
+            value not in (None, "", [], {})
+            for value in (
+                earnings.get("quick_report_summary"),
+                institution.get("top10_holder_change"),
+            )
         )
 
     @staticmethod
@@ -731,11 +740,9 @@ class DataFetcherManager:
             "source_chain": [], "errors": [],
         }
         tried_akshare = False
-        # Financial fields drive this request.  Each provider is merged as soon
-        # as it succeeds so a slower fallback cannot discard an earlier result.
-        # Institution data returned by a consulted provider is retained as an
-        # opportunistic supplement, but never causes further provider fan-out
-        # after all strategy-required financial fields are present.
+        # Merge every consulted provider immediately so a slower fallback cannot
+        # discard earlier results. Stop only after the report-visible financial,
+        # earnings and governance contract is complete.
         provider_order = list(dict.fromkeys(financial_priorities + governance_priorities))
         for source in provider_order:
             try:

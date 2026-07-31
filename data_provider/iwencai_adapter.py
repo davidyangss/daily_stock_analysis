@@ -15,7 +15,7 @@ import secrets
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .realtime_types import RealtimeSource, UnifiedRealtimeQuote
 
@@ -119,6 +119,80 @@ def _dated_metric_date(row: Mapping[str, Any], aliases: Iterable[str]) -> Option
     return max(dates) if dates else None
 
 
+def _text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if text.lower() in {"", "-", "--", "none", "null", "nan"} else text
+
+
+def _display_number(value: float) -> str:
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
+def _quick_report_summary(row: Mapping[str, Any]) -> Optional[str]:
+    """Build a summary only when the payload proves it came from a quick report."""
+    provenance = " ".join(
+        f"{key} {_text(value)}" for key, value in row.items()
+        if "来源" in str(key) or "说明" in str(key) or "报告类型" in str(key)
+    )
+    quick_keys = " ".join(str(key) for key in row if "快报" in str(key))
+    if "快报" not in f"{quick_keys} {provenance}":
+        return None
+
+    report_date = _text(_pick(row, ("业绩快报公告日期", "公告日期", "报告日期", "最新报告期")))
+    revenue = _number(_pick(row, ("业绩快报营业收入", "营业收入")))
+    revenue_yoy = _number(_pick(row, ("业绩快报营业收入同比增长率", "营业收入同比增长率")))
+    profit = _number(_pick(row, ("业绩快报归母净利润", "业绩快报净利润", "归母净利润")))
+    profit_yoy = _number(_pick(row, ("业绩快报归母净利润同比增长率", "归母净利润同比增长率")))
+    parts = []
+    if revenue is not None:
+        parts.append(f"营业收入{_display_number(revenue)}元")
+    if revenue_yoy is not None:
+        parts.append(f"营收同比{revenue_yoy:g}%")
+    if profit is not None:
+        parts.append(f"归母净利润{_display_number(profit)}元")
+    if profit_yoy is not None:
+        parts.append(f"归母净利润同比{profit_yoy:g}%")
+    if not parts:
+        return None
+    return f"{report_date + '：' if report_date else ''}{'，'.join(parts)}"
+
+
+def _top10_holder_change_summary(rows: Iterable[Mapping[str, Any]]) -> Optional[str]:
+    """Normalize iWencai's multi-row top-shareholder change response."""
+    changes = []
+    for row in rows:
+        change_type = _text(_pick(row, ("持股变动类型", "变动类型")))
+        quantity_change = _number(_pick(row, ("持股数量变动", "持股数变动")))
+        ratio_change = _number(_pick(row, ("持股比例变动", "持股占比变动")))
+        if not change_type and quantity_change is None and ratio_change is None:
+            continue
+        changes.append({
+            "date": _text(_pick(row, ("公告日期", "报告日期", "截止日期"))),
+            "type": change_type,
+            "quantity": quantity_change,
+            "ratio": ratio_change,
+        })
+    if not changes:
+        return None
+
+    latest_date = max((item["date"] for item in changes if item["date"]), default="")
+    latest = [item for item in changes if not latest_date or item["date"] in {"", latest_date}]
+    type_counts: Dict[str, int] = {}
+    for item in latest:
+        if item["type"]:
+            type_counts[item["type"]] = type_counts.get(item["type"], 0) + 1
+    parts = [f"{name}{count}名" for name, count in type_counts.items()]
+    quantities = [item["quantity"] for item in latest if item["quantity"] is not None]
+    if quantities:
+        parts.append(f"已披露持股数量变动合计{_display_number(sum(quantities))}股")
+    ratios = [item["ratio"] for item in latest if item["ratio"] is not None]
+    if ratios:
+        parts.append(f"已披露持股比例变动合计{_display_number(sum(ratios))}个百分点")
+    if not parts:
+        return None
+    return f"{latest_date + '：' if latest_date else ''}{'，'.join(parts)}"
+
+
 class IwencaiAdapter:
     """Small fail-open client for the official iWencai SkillHub gateway."""
 
@@ -174,6 +248,13 @@ class IwencaiAdapter:
             if isinstance(row, Mapping) and _code_matches(row, stock_code):
                 return row
         return None
+
+    @staticmethod
+    def _stock_rows(result: Mapping[str, Any], stock_code: str) -> List[Mapping[str, Any]]:
+        return [
+            row for row in result.get("datas", [])
+            if isinstance(row, Mapping) and _code_matches(row, stock_code)
+        ]
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         query = (
@@ -243,7 +324,7 @@ class IwencaiAdapter:
         query = (
             f"{stock_code} 最新报告期 营业收入 营业收入同比增长率 归母净利润 "
             "归母净利润同比增长率 净资产收益率 毛利率 经营活动现金流量净额 "
-            "股东户数变化 前十大股东持股变化"
+            "股东户数变化"
         )
         row = self._stock_row(self.query(query, skill_id="hithink-finance-query", limit=3), stock_code)
         if not row:
@@ -273,11 +354,42 @@ class IwencaiAdapter:
             "shareholder_count_change": _number(_pick(row, (
                 "总户数较上期变动", "总户数较上期增长率", "股东户数变化", "股东户数增减",
             ))),
-            "top10_holder_change": _number(_pick(row, ("前十大股东持股变化", "十大股东持股变化"))),
         }
+        earnings = (
+            {"financial_report": financial_report}
+            if any(value is not None for value in financial_report.values()) else {}
+        )
+        errors = []
+        quick_query = (
+            f"{stock_code} 最新业绩快报 业绩快报营业收入 业绩快报归母净利润 "
+            "业绩快报营业收入同比增长率 业绩快报归母净利润同比增长率 业绩快报公告日期"
+        )
+        try:
+            quick_row = self._stock_row(
+                self.query(quick_query, skill_id="hithink-finance-query", limit=3), stock_code
+            )
+            quick_summary = _quick_report_summary(quick_row or {})
+        except Exception as exc:
+            quick_summary = None
+            errors.append(f"earnings_quick:iwencai:{type(exc).__name__}")
+        # Keep this query deliberately narrow. Adding requested output columns
+        # makes iWencai reinterpret it as the current top-10 holding total and
+        # drops the change-detail rows.
+        top10_query = f"{stock_code} 前十大股东持股数量变动"
+        try:
+            top10_rows = self._stock_rows(
+                self.query(top10_query, skill_id="hithink-finance-query", limit=10), stock_code
+            )
+            top10_summary = _top10_holder_change_summary(top10_rows)
+        except Exception as exc:
+            top10_summary = None
+            errors.append(f"top10:iwencai:{type(exc).__name__}")
+        if quick_summary:
+            earnings["quick_report_summary"] = quick_summary
+        if top10_summary:
+            institution["top10_holder_change"] = top10_summary
         growth = {key: value for key, value in growth.items() if value is not None}
         institution = {key: value for key, value in institution.items() if value is not None}
-        earnings = {"financial_report": financial_report} if any(value is not None for value in financial_report.values()) else {}
         has_data = bool(growth or earnings or institution)
         return {
             "status": "partial" if has_data else "not_supported",
@@ -285,5 +397,5 @@ class IwencaiAdapter:
             "earnings": earnings,
             "institution": institution,
             "source_chain": [{"provider": "iwencai", "result": "partial", "duration_ms": 0}] if has_data else [],
-            "errors": [],
+            "errors": errors,
         }

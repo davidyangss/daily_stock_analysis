@@ -95,10 +95,50 @@ def test_fundamental_bundle_maps_real_dated_financial_columns() -> None:
         "经营活动产生的现金流量净额[20260331]": 10_000_000,
         "总户数较上期变动[20260731]": -1234,
     }]}
-    with patch.object(adapter, "query", return_value=payload):
+    top10_payload = {"datas": [
+        {"股票代码": "600519", "公告日期": "20260428", "持股变动类型": "减持", "持股数量变动": -100},
+        {"股票代码": "600519", "公告日期": "20260428", "持股变动类型": "新进", "持股比例变动": 0.5},
+    ]}
+    with patch.object(adapter, "query", side_effect=[payload, {"datas": []}, top10_payload]):
         result = adapter.get_fundamental_bundle("600519")
 
     report = result["earnings"]["financial_report"]
     assert report["report_date"] == "20260331"
     assert report["operating_cash_flow"] == 10_000_000
     assert result["institution"]["shareholder_count_change"] == -1234
+    assert result["institution"]["top10_holder_change"] == (
+        "20260428：减持1名，新进1名，已披露持股数量变动合计-100股，"
+        "已披露持股比例变动合计0.5个百分点"
+    )
+
+
+def test_fundamental_bundle_maps_proven_quick_report_without_mislabeling_regular_report() -> None:
+    adapter = IwencaiAdapter("secret")
+    financial = {"datas": [{"股票代码": "300170", "营业收入同比增长率": 6.3}]}
+    quick = {"datas": [{
+        "股票代码": "300170",
+        "业绩快报公告日期": "20260227",
+        "业绩快报营业收入": 3_000_000_000,
+        "业绩快报归母净利润": 200_000_000,
+        "营业收入来源说明": "数据来源于2025年度业绩快报",
+    }]}
+    with patch.object(adapter, "query", side_effect=[financial, quick, {"datas": []}]):
+        result = adapter.get_fundamental_bundle("300170")
+
+    assert result["earnings"]["quick_report_summary"] == (
+        "20260227：营业收入3,000,000,000元，归母净利润200,000,000元"
+    )
+
+
+def test_top10_query_stays_narrow_to_preserve_change_detail_semantics() -> None:
+    adapter = IwencaiAdapter("secret")
+    queries = []
+
+    def fake_query(query, **_kwargs):
+        queries.append(query)
+        return {"datas": [{"股票代码": "300170", "营业收入同比增长率": 6.3}]}
+
+    with patch.object(adapter, "query", side_effect=fake_query):
+        adapter.get_fundamental_bundle("300170")
+
+    assert queries[-1] == "300170 前十大股东持股数量变动"

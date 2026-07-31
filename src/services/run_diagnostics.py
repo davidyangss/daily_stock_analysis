@@ -818,6 +818,19 @@ def _history_flow_event(
     }
 
 
+def _notification_failure_reason(error_message: Any, status: Any) -> str:
+    error = sanitize_diagnostic_text(error_message, max_length=160)
+    if error:
+        return error
+    normalized_status = str(status or "").strip().lower()
+    status_messages = {
+        "failed": "通知渠道未返回具体错误，请检查通知配置和服务日志",
+        "all_failed": "所有通知渠道均发送失败，请检查通知配置和服务日志",
+        "no_channel": "当前通知路由没有可用渠道",
+    }
+    return status_messages.get(normalized_status, "未知错误")
+
+
 def _notification_flow_event(
     context: RunDiagnosticContext,
     run: NotificationRun,
@@ -836,7 +849,7 @@ def _notification_flow_event(
         message = f"{channel} 通知跳过"
     else:
         title = "通知失败"
-        message = f"{channel} 通知失败：{run.error_message_sanitized or run.status or '未知错误'}"
+        message = f"{channel} 通知失败：{_notification_failure_reason(run.error_message_sanitized, run.status)}"
     return {
         "timestamp": run.created_at,
         "severity": "success" if status == "success" else ("warning" if status == "skipped" else "danger"),
@@ -1403,7 +1416,7 @@ def _notification_component(diagnostics: Dict[str, Any]) -> RunDiagnosticCompone
         "notification",
         label,
         "failed",
-        f"通知失败：{last_failure.get('error_message_sanitized') or last_failure.get('status') or '未知错误'}",
+        f"通知失败：{_notification_failure_reason(last_failure.get('error_message_sanitized'), last_failure.get('status'))}",
         {"channels": channels},
     )
 

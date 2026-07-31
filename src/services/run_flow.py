@@ -1183,7 +1183,14 @@ def _notification_run_message(channel: str, run: Dict[str, Any], status: str) ->
     if status == "skipped":
         return f"{channel} 通知跳过"
     if status == "failed":
-        error = _safe_text(run.get("error_message_sanitized") or run.get("status"), max_length=160)
+        error = _safe_text(run.get("error_message_sanitized"), max_length=160)
+        if not error:
+            raw_status = str(run.get("status") or "").strip().lower()
+            error = {
+                "failed": "通知渠道未返回具体错误，请检查通知配置和服务日志",
+                "all_failed": "所有通知渠道均发送失败，请检查通知配置和服务日志",
+                "no_channel": "当前通知路由没有可用渠道",
+            }.get(raw_status, "未知错误")
         return f"{channel} 通知失败：{error or '未知错误'}"
     return f"{channel} 通知结果未知"
 

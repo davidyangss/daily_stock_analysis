@@ -1299,6 +1299,21 @@ class RunFlowTestCase(unittest.TestCase):
         self.assertIn("<redacted>", payload)
         self.assertIn("<redacted-path>", payload)
 
+    def test_run_flow_notification_failure_uses_actionable_fallback_message(self) -> None:
+        diagnostics = _diagnostics()
+        diagnostics["notification_runs"] = [{
+            "channel": "report",
+            "status": "failed",
+            "success": False,
+        }]
+        snapshot = build_history_run_flow_snapshot(
+            _history_record(context_snapshot={"diagnostics": diagnostics})
+        )
+
+        notification = next(node for node in snapshot.nodes if node.id.startswith("notification_report"))
+        self.assertIn("请检查通知配置和服务日志", notification.message)
+        self.assertNotIn("通知失败：failed", notification.message)
+
 
 if __name__ == "__main__":
     unittest.main()
