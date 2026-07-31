@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 新增可选同花顺问财 OpenAPI 数据源，支持实时行情、主力资金和 A 股基本面归一化补缺；默认关闭，失败时按能力独立优先级 fail-open 降级
 - [文档] 新增分析与策略数据源优先级说明，明确实时、日线、资金、财务、治理、事件、板块、新闻、公告、研报、宏观和筹码的数据来源、默认顺序与口径边界
+- [修复] 基本面与主力资金按数据源优先级逐字段补缺，保留高优先级有效值，并在策略必需字段完整后立即停止低优先级请求，避免可选补充源超时丢失已取得数据
 - [改进] 东财持久浏览器在 ready 状态下按配置周期刷新登录后的东财首页，主动延长服务端会话并复检登录 Cookie；刷新和业务请求继续由同一 worker 串行执行
 - [改进] AkShare 发往 `*.eastmoney.com` / `*.eastmoneyfutures.com` 的 GET/POST 请求在东财浏览器启用时统一经已登录 Chrome 上下文执行，旧 HTTP 地址自动升级 HTTPS，保留 AkShare 原解析逻辑且不向 Requests 导出 Cookie，浏览器不可用时继续由现有 provider fallback 降级
 - [修复] 收敛东财持久浏览器筹码链路：Playwright 生命周期与请求统一到专用线程，通过有界队列串行化批量请求，支持非 Web 入口按需启动、登录会话复检、失败冷却恢复、严格 K 线校验和可配置 Chrome 路径

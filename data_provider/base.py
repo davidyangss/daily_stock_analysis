@@ -687,12 +687,32 @@ class DataFetcherManager:
 
     @staticmethod
     def _merge_missing_mapping(primary: Dict[str, Any], supplement: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill only missing values, preserving valid values from higher-priority sources."""
         for key, value in supplement.items():
             if isinstance(value, dict) and isinstance(primary.get(key), dict):
                 DataFetcherManager._merge_missing_mapping(primary[key], value)
             elif primary.get(key) in (None, "", [], {}):
                 primary[key] = value
         return primary
+
+    @staticmethod
+    def _has_complete_financial_strategy_fields(bundle: Dict[str, Any]) -> bool:
+        """Return whether the strategy's required A-share financial fields are complete."""
+        growth = bundle.get("growth")
+        if not isinstance(growth, dict):
+            return False
+        return all(
+            growth.get(key) is not None and growth.get(key) != ""
+            for key in ("revenue_yoy", "net_profit_yoy", "roe", "gross_margin")
+        )
+
+    @staticmethod
+    def _has_complete_capital_flow(stock_flow: Dict[str, Any]) -> bool:
+        """Return whether all strategy-required individual-stock flow windows exist."""
+        return all(
+            stock_flow.get(key) is not None and stock_flow.get(key) != ""
+            for key in ("main_net_inflow", "inflow_5d", "inflow_10d")
+        )
 
     def _get_cn_fundamental_bundle(self, stock_code: str, config: Any) -> Dict[str, Any]:
         """Merge normalized fundamentals in configured provider order."""
@@ -710,9 +730,14 @@ class DataFetcherManager:
             "status": "not_supported", "growth": {}, "earnings": {}, "institution": {},
             "source_chain": [], "errors": [],
         }
-        candidates: Dict[str, Dict[str, Any]] = {}
         tried_akshare = False
-        for source in dict.fromkeys(financial_priorities + governance_priorities):
+        # Financial fields drive this request.  Each provider is merged as soon
+        # as it succeeds so a slower fallback cannot discard an earlier result.
+        # Institution data returned by a consulted provider is retained as an
+        # opportunistic supplement, but never causes further provider fan-out
+        # after all strategy-required financial fields are present.
+        provider_order = list(dict.fromkeys(financial_priorities + governance_priorities))
+        for source in provider_order:
             try:
                 if source == "iwencai":
                     adapter = self._get_iwencai_adapter()
@@ -733,19 +758,14 @@ class DataFetcherManager:
                 continue
             if not isinstance(candidate, dict):
                 continue
-            candidates[source] = candidate
-            merged["source_chain"].extend(candidate.get("source_chain") or [])
-            merged["errors"].extend(candidate.get("errors") or [])
-        for source in financial_priorities:
-            candidate = candidates.get(source, {})
-            for block in ("growth", "earnings"):
+            for block in ("growth", "earnings", "institution"):
                 payload = candidate.get(block)
                 if isinstance(payload, dict):
                     self._merge_missing_mapping(merged[block], payload)
-        for source in governance_priorities:
-            payload = candidates.get(source, {}).get("institution")
-            if isinstance(payload, dict):
-                self._merge_missing_mapping(merged["institution"], payload)
+            merged["source_chain"].extend(candidate.get("source_chain") or [])
+            merged["errors"].extend(candidate.get("errors") or [])
+            if self._has_complete_financial_strategy_fields(merged):
+                break
         if any(merged[block] for block in ("growth", "earnings", "institution")):
             merged["status"] = "partial"
         return merged
@@ -3620,6 +3640,8 @@ class DataFetcherManager:
                     merged["sector_rankings"]["bottom"] = rankings["bottom"]
                 merged["source_chain"].extend(candidate.get("source_chain") or [])
                 merged["errors"].extend(candidate.get("errors") or [])
+                if self._has_complete_capital_flow(merged["stock_flow"]):
+                    break
             if any(value is not None for value in merged["stock_flow"].values()) or any(merged["sector_rankings"].values()):
                 merged["status"] = "partial"
             return merged

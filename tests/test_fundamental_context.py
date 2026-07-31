@@ -9,7 +9,7 @@ import time
 import unittest
 from threading import BoundedSemaphore, Event
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -39,6 +39,149 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def test_cn_fundamentals_stop_after_complete_higher_priority_source(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            financial_source_priority="iwencai,akshare_em",
+            governance_source_priority="iwencai,akshare_em",
+        )
+        iwencai = MagicMock()
+        iwencai.get_fundamental_bundle.return_value = {
+            "growth": {
+                "revenue_yoy": 6.5,
+                "net_profit_yoy": 1.4,
+                "roe": 10.5,
+                "gross_margin": 89.7,
+            },
+            "earnings": {"financial_report": {"report_date": "2026-03-31"}},
+            "source_chain": ["growth:iwencai"],
+            "errors": [],
+        }
+
+        with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_fundamental_bundle",
+                    side_effect=AssertionError("complete result must not fan out"),
+                ) as fallback:
+            bundle = manager._get_cn_fundamental_bundle("600519", cfg)
+
+        fallback.assert_not_called()
+        self.assertEqual(bundle["growth"]["revenue_yoy"], 6.5)
+        self.assertEqual(bundle["growth"]["gross_margin"], 89.7)
+        self.assertEqual(bundle["source_chain"], ["growth:iwencai"])
+
+    def test_cn_fundamentals_fill_only_missing_fields_from_fallback(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            financial_source_priority="iwencai,akshare_em",
+            governance_source_priority="iwencai,akshare_em",
+        )
+        iwencai = MagicMock()
+        iwencai.get_fundamental_bundle.return_value = {
+            "growth": {
+                "revenue_yoy": 6.5,
+                "net_profit_yoy": None,
+                "roe": 10.5,
+                "gross_margin": None,
+            },
+            "source_chain": ["growth:iwencai"],
+            "errors": [],
+        }
+        fallback_bundle = {
+            "growth": {
+                "revenue_yoy": 999.0,
+                "net_profit_yoy": 1.4,
+                "roe": 999.0,
+                "gross_margin": 89.7,
+            },
+            "source_chain": ["growth:akshare_em"],
+            "errors": [],
+        }
+
+        with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_fundamental_bundle",
+                    return_value=fallback_bundle,
+                ) as fallback:
+            bundle = manager._get_cn_fundamental_bundle("600519", cfg)
+
+        fallback.assert_called_once_with("600519")
+        self.assertEqual(bundle["growth"], {
+            "revenue_yoy": 6.5,
+            "net_profit_yoy": 1.4,
+            "roe": 10.5,
+            "gross_margin": 89.7,
+        })
+
+    def test_capital_flow_stops_when_higher_priority_windows_are_complete(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            capital_flow_source_priority="iwencai,akshare_em",
+            fundamental_fetch_timeout_seconds=1.0,
+            fundamental_retry_max=1,
+        )
+        iwencai = MagicMock()
+        iwencai.get_capital_flow.return_value = {
+            "status": "partial",
+            "stock_flow": {
+                "main_net_inflow": 1.0,
+                "inflow_5d": 2.0,
+                "inflow_10d": 3.0,
+            },
+            "source_chain": ["capital_flow:iwencai"],
+            "errors": [],
+        }
+
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_capital_flow",
+                    side_effect=AssertionError("complete result must not fan out"),
+                ) as fallback:
+            context = manager.get_capital_flow_context("600519")
+
+        fallback.assert_not_called()
+        self.assertEqual(context["status"], "ok")
+        self.assertEqual(context["data"]["stock_flow"]["inflow_10d"], 3.0)
+
+    def test_capital_flow_fallback_fills_missing_windows_without_overwrite(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            capital_flow_source_priority="iwencai,akshare_em",
+            fundamental_fetch_timeout_seconds=1.0,
+            fundamental_retry_max=1,
+        )
+        iwencai = MagicMock()
+        iwencai.get_capital_flow.return_value = {
+            "stock_flow": {"main_net_inflow": 1.0, "inflow_5d": None, "inflow_10d": None},
+            "source_chain": ["capital_flow:iwencai"],
+            "errors": [],
+        }
+        fallback_payload = {
+            "stock_flow": {"main_net_inflow": 999.0, "inflow_5d": 2.0, "inflow_10d": 3.0},
+            "source_chain": ["capital_flow:akshare_em"],
+            "errors": [],
+        }
+
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_capital_flow",
+                    return_value=fallback_payload,
+                ) as fallback:
+            context = manager.get_capital_flow_context("600519")
+
+        fallback.assert_called_once_with("600519")
+        self.assertEqual(context["data"]["stock_flow"], {
+            "main_net_inflow": 1.0,
+            "inflow_5d": 2.0,
+            "inflow_10d": 3.0,
+        })
+
     def test_offshore_market_returns_not_supported_when_adapter_empty(self) -> None:
         """When yfinance adapter has no data, offshore (US/HK) status is not_supported.
 
