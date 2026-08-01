@@ -46,7 +46,7 @@ export const ShellHeader: React.FC<ShellHeaderProps> = ({ onOpenNav }) => {
 
         <h1
           data-testid="shell-current-title"
-          className="pointer-events-none absolute inset-x-16 top-1/2 -translate-y-1/2 truncate text-center text-sm font-bold text-[hsl(var(--primary))] drop-shadow-sm sm:inset-x-40 sm:text-base"
+          className="pointer-events-none absolute inset-x-16 top-1/2 -translate-y-1/2 truncate text-center text-sm font-semibold text-secondary-text sm:inset-x-40 sm:text-base"
         >
           {current ? t(current.title) : t('layout.appFallbackTitle')}
         </h1>

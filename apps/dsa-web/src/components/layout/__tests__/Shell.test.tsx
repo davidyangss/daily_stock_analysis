@@ -82,7 +82,7 @@ describe('Shell', () => {
     );
 
     expect(screen.getByTestId('shell-current-title')).toHaveTextContent('问股');
-    expect(screen.getByTestId('shell-current-title').className).toContain('text-[hsl(var(--primary))]');
+    expect(screen.getByTestId('shell-current-title')).toHaveClass('text-secondary-text');
     fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }));
     fireEvent.click(screen.getByRole('button', { name: '退出' }));
 
