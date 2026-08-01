@@ -738,6 +738,33 @@ class Config:
     alphasift_enabled: bool = False
     alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
 
+    # === TradingAgents-style trader analysis integration ===
+    trader_analysis_enabled: bool = False
+    trader_analysis_max_concurrency: int = 1
+    trader_analysis_queue_limit: int = 8
+    trader_analysis_task_timeout_seconds: int = 900
+    trader_analysis_provider_timeout_seconds: int = 20
+    trader_analysis_results_dir: str = "data/trader_analysis"
+    trader_analysis_checkpoint_db: str = "data/trader_analysis/checkpoints.sqlite"
+    trader_analysis_min_daily_bars: int = 30
+    trader_analysis_stale_threshold_seconds: int = 86400
+    trader_analysis_tradingagents_version: str = "0.3.1"
+    trader_analysis_tradingagents_commit: str = ""
+    trader_analysis_llm_provider: str = ""
+    trader_analysis_quick_model: str = ""
+    trader_analysis_deep_model: str = ""
+    trader_analysis_llm_backend_url: str = ""
+    trader_analysis_model_market: str = ""
+    trader_analysis_model_sentiment: str = ""
+    trader_analysis_model_news: str = ""
+    trader_analysis_model_fundamentals: str = ""
+    trader_analysis_model_research_debate: str = ""
+    trader_analysis_model_research_manager: str = ""
+    trader_analysis_model_trader: str = ""
+    trader_analysis_model_risk_debate: str = ""
+    trader_analysis_model_portfolio_manager: str = ""
+    trader_analysis_trace_content_max_chars: int = 65536
+
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
@@ -2188,6 +2215,75 @@ class Config:
                 DEFAULT_ALPHASIFT_INSTALL_SPEC
                 if os.getenv('ALPHASIFT_INSTALL_SPEC') is None
                 else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
+            ),
+            trader_analysis_enabled=parse_env_bool(os.getenv('TRADER_ANALYSIS_ENABLED'), default=False),
+            trader_analysis_max_concurrency=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_MAX_CONCURRENCY'),
+                1,
+                field_name='TRADER_ANALYSIS_MAX_CONCURRENCY',
+                minimum=1,
+                maximum=4,
+            ),
+            trader_analysis_queue_limit=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_QUEUE_LIMIT'),
+                8,
+                field_name='TRADER_ANALYSIS_QUEUE_LIMIT',
+                minimum=1,
+                maximum=100,
+            ),
+            trader_analysis_task_timeout_seconds=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_TASK_TIMEOUT_SECONDS'),
+                900,
+                field_name='TRADER_ANALYSIS_TASK_TIMEOUT_SECONDS',
+                minimum=60,
+            ),
+            trader_analysis_provider_timeout_seconds=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_PROVIDER_TIMEOUT_SECONDS'),
+                20,
+                field_name='TRADER_ANALYSIS_PROVIDER_TIMEOUT_SECONDS',
+                minimum=3,
+            ),
+            trader_analysis_results_dir=(
+                os.getenv('TRADER_ANALYSIS_RESULTS_DIR', 'data/trader_analysis').strip()
+                or 'data/trader_analysis'
+            ),
+            trader_analysis_checkpoint_db=(
+                os.getenv('TRADER_ANALYSIS_CHECKPOINT_DB', 'data/trader_analysis/checkpoints.sqlite').strip()
+                or 'data/trader_analysis/checkpoints.sqlite'
+            ),
+            trader_analysis_min_daily_bars=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_MIN_DAILY_BARS'),
+                30,
+                field_name='TRADER_ANALYSIS_MIN_DAILY_BARS',
+                minimum=30,
+            ),
+            trader_analysis_stale_threshold_seconds=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_STALE_THRESHOLD_SECONDS'),
+                86400,
+                field_name='TRADER_ANALYSIS_STALE_THRESHOLD_SECONDS',
+                minimum=60,
+            ),
+            trader_analysis_tradingagents_version=(
+                os.getenv('TRADER_ANALYSIS_TRADINGAGENTS_VERSION', '0.3.1').strip()
+                or '0.3.1'
+            ),
+            trader_analysis_tradingagents_commit=os.getenv('TRADER_ANALYSIS_TRADINGAGENTS_COMMIT', '').strip(),
+            trader_analysis_llm_provider=os.getenv('TRADER_ANALYSIS_LLM_PROVIDER', '').strip(),
+            trader_analysis_quick_model=os.getenv('TRADER_ANALYSIS_QUICK_MODEL', '').strip(),
+            trader_analysis_deep_model=os.getenv('TRADER_ANALYSIS_DEEP_MODEL', '').strip(),
+            trader_analysis_llm_backend_url=os.getenv('TRADER_ANALYSIS_LLM_BACKEND_URL', '').strip(),
+            trader_analysis_model_market=os.getenv('TRADER_ANALYSIS_MODEL_MARKET', '').strip(),
+            trader_analysis_model_sentiment=os.getenv('TRADER_ANALYSIS_MODEL_SENTIMENT', '').strip(),
+            trader_analysis_model_news=os.getenv('TRADER_ANALYSIS_MODEL_NEWS', '').strip(),
+            trader_analysis_model_fundamentals=os.getenv('TRADER_ANALYSIS_MODEL_FUNDAMENTALS', '').strip(),
+            trader_analysis_model_research_debate=os.getenv('TRADER_ANALYSIS_MODEL_RESEARCH_DEBATE', '').strip(),
+            trader_analysis_model_research_manager=os.getenv('TRADER_ANALYSIS_MODEL_RESEARCH_MANAGER', '').strip(),
+            trader_analysis_model_trader=os.getenv('TRADER_ANALYSIS_MODEL_TRADER', '').strip(),
+            trader_analysis_model_risk_debate=os.getenv('TRADER_ANALYSIS_MODEL_RISK_DEBATE', '').strip(),
+            trader_analysis_model_portfolio_manager=os.getenv('TRADER_ANALYSIS_MODEL_PORTFOLIO_MANAGER', '').strip(),
+            trader_analysis_trace_content_max_chars=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS'), 65536,
+                field_name='TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS', minimum=1024, maximum=1048576,
             ),
         )
     

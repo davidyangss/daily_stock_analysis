@@ -25,6 +25,7 @@ from api.v1.endpoints import (
     portfolio,
     stocks,
     system_config,
+    trader_analysis,
     usage,
 )
 
@@ -96,6 +97,12 @@ router.include_router(
     decision_signals.router,
     prefix="/decision-signals",
     tags=["DecisionSignals"]
+)
+
+router.include_router(
+    trader_analysis.router,
+    prefix="/trader-analysis",
+    tags=["TraderAnalysis"]
 )
 
 router.include_router(

@@ -80,6 +80,20 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",
+    # Experimental server-only TradingAgents integration. Role deployment
+    # routes may indirectly reference credentials and are intentionally not
+    # editable through the general Web settings surface.
+    "TRADER_ANALYSIS_ENABLED",
+    "TRADER_ANALYSIS_MAX_CONCURRENCY",
+    "TRADER_ANALYSIS_QUEUE_LIMIT",
+    "TRADER_ANALYSIS_TASK_TIMEOUT_SECONDS",
+    "TRADER_ANALYSIS_PROVIDER_TIMEOUT_SECONDS",
+    "TRADER_ANALYSIS_RESULTS_DIR",
+    "TRADER_ANALYSIS_CHECKPOINT_DB",
+    "TRADER_ANALYSIS_MIN_DAILY_BARS",
+    "TRADER_ANALYSIS_STALE_THRESHOLD_SECONDS",
+    "TRADER_ANALYSIS_TRADINGAGENTS_VERSION",
+    "TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {

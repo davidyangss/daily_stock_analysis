@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 交易员分析支持按九类角色使用 LiteLLM deployment 名称独立路由，并持久化脱敏的 LLM、工具与证据分析过程时间线
+- [新功能] 新增默认关闭的独立交易员分析入口，以 run-scoped DSA toolkit 驱动原版 TradingAgents Graph，提供 A 股 point-in-time 证据门控、异步任务、checkpoint/memory、独立持久化、API 与 Web 报告，不写入现有策略分析历史
+
 - [修复] 以问财真实多行返回覆盖十大股东变动归一化，并区分未发现独立业绩快报与上游查询失败，避免报告将正常无披露误示为抓取故障
 
 - [修复] Web/API 重启时端口预检复用 Uvicorn 的地址复用语义，避免旧连接处于 TIME_WAIT 时误报端口占用；显式 Web 模式启动失败后退出非零，防止服务静默退化为仅调度器
