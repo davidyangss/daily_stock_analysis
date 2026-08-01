@@ -11,6 +11,8 @@ from typing import Any, Callable
 from langchain_core.callbacks import BaseCallbackHandler
 
 from src.llm.local_cli_backend import redact_diagnostic_text
+from src.llm.usage import normalize_litellm_usage
+from src.storage import persist_llm_usage
 
 SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "cookie", "token", "password", "secret", "headers"}
 
@@ -42,11 +44,20 @@ class RoleTraceCallback(BaseCallbackHandler):
     raise_error = False
     run_inline = True
 
-    def __init__(self, *, role: str, route: Any, emit: Callable[..., None], content_limit: int) -> None:
+    def __init__(
+        self,
+        *,
+        role: str,
+        route: Any,
+        emit: Callable[..., None],
+        content_limit: int,
+        stock_code: str | None = None,
+    ) -> None:
         self.role = role
         self.route = route
         self.emit = emit
         self.content_limit = content_limit
+        self.stock_code = stock_code
         self._started: dict[str, float] = {}
         self._inputs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
@@ -85,6 +96,14 @@ class RoleTraceCallback(BaseCallbackHandler):
             "usage": getattr(response, "llm_output", None),
             "duration_ms": round((time.monotonic() - started) * 1000) if started else None,
         })
+        usage = _extract_langchain_usage(response)
+        if usage is not None:
+            persist_llm_usage(
+                normalize_litellm_usage(usage, model=self.route.model, provider=self.route.provider),
+                self.route.model,
+                call_type="trader_analysis",
+                stock_code=self.stock_code,
+            )
 
     def on_llm_error(self, error, *, run_id, **kwargs) -> None:
         operation_id = str(run_id)
@@ -97,3 +116,24 @@ class RoleTraceCallback(BaseCallbackHandler):
             "error": {"type": type(error).__name__, "message": str(error)},
             "duration_ms": round((time.monotonic() - started) * 1000) if started else None,
         })
+
+
+def _extract_langchain_usage(response: Any) -> Any:
+    """Extract provider token counts from common LangChain result shapes."""
+    llm_output = getattr(response, "llm_output", None)
+    if isinstance(llm_output, dict):
+        for key in ("token_usage", "usage"):
+            usage = llm_output.get(key)
+            if usage is not None:
+                return usage
+
+    generations = getattr(response, "generations", None)
+    if isinstance(generations, list):
+        for group in generations:
+            items = group if isinstance(group, list) else [group]
+            for generation in items:
+                message = getattr(generation, "message", None)
+                usage = getattr(message, "usage_metadata", None)
+                if usage is not None:
+                    return usage
+    return None

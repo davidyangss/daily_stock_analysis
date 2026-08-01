@@ -34,6 +34,13 @@ const dashboardResponse = {
       completion_tokens: 80,
       total_tokens: 100,
     },
+    {
+      call_type: 'trader_analysis',
+      calls: 1,
+      prompt_tokens: 10,
+      completion_tokens: 20,
+      total_tokens: 30,
+    },
   ],
   by_model: [
     {
@@ -107,6 +114,7 @@ describe('TokenUsagePage', () => {
     expect(await screen.findByText('400')).toBeInTheDocument();
     expect(screen.getAllByText('openai/gpt-test')).toHaveLength(2);
     expect(screen.getAllByText('个股分析')).toHaveLength(2);
+    expect(screen.getByText('交易员分析')).toBeInTheDocument();
     expect(screen.getByText(/600519/)).toBeInTheDocument();
     expect(get).toHaveBeenCalledWith('/api/v1/usage/dashboard', {
       params: { period: 'month', limit: 50 },

@@ -65,6 +65,7 @@ class TradingAgentsGraphRunner:
                 # run for the same symbol/date.
                 return f"{super()._run_signature(asset_type)}|dsa_run={run_id}"
 
+        self._usage_stock_code = instrument.symbol
         role_llms = self._build_role_llms(trace_emit)
         graph = DsaTradingAgentsGraph(
             selected_analysts=("market", "social", "news", "fundamentals"),
@@ -151,6 +152,7 @@ class TradingAgentsGraphRunner:
         from src.trader_analysis.trace import RoleTraceCallback
 
         clients: dict[str, Any] = {}
+        usage_stock_code = getattr(self, "_usage_stock_code", None)
         for role, route in self.config.model_routes.items():
             client_provider = _tradingagents_provider(route.provider, route.base_url)
             kwargs: dict[str, Any] = {
@@ -159,13 +161,13 @@ class TradingAgentsGraphRunner:
             }
             if route.api_key:
                 kwargs["api_key"] = route.api_key
-            if trace_emit is not None:
-                kwargs["callbacks"] = [RoleTraceCallback(
-                    role=role,
-                    route=route,
-                    emit=trace_emit,
-                    content_limit=self.config.trace_content_max_chars,
-                )]
+            kwargs["callbacks"] = [RoleTraceCallback(
+                role=role,
+                route=route,
+                emit=trace_emit or (lambda **_values: None),
+                content_limit=self.config.trace_content_max_chars,
+                stock_code=usage_stock_code,
+            )]
             clients[role] = create_llm_client(
                 provider=client_provider,
                 model=route.model,

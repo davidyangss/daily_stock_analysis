@@ -130,14 +130,23 @@ def test_repository_round_trips_runs_and_events(tmp_path: Path) -> None:
     assert reloaded.symbol == "600519"
 
 
-def test_role_trace_completion_contains_correlated_input_and_output() -> None:
+def test_role_trace_completion_contains_correlated_input_output_and_persists_usage(monkeypatch) -> None:
     class Response:
-        llm_output = {"tokens": 12}
+        llm_output = {
+            "token_usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+        }
 
         def model_dump(self, mode="json"):
             return {"generations": [[{"text": "持有"}]]}
 
     emitted = []
+    persisted = []
+    monkeypatch.setattr(
+        "src.trader_analysis.trace.persist_llm_usage",
+        lambda usage, model, call_type, stock_code=None: persisted.append(
+            (usage, model, call_type, stock_code)
+        ),
+    )
     callback = RoleTraceCallback(
         role="market",
         route=SimpleNamespace(
@@ -145,6 +154,7 @@ def test_role_trace_completion_contains_correlated_input_and_output() -> None:
         ),
         emit=lambda **values: emitted.append(values),
         content_limit=4096,
+        stock_code="600519",
     )
     run_id = "llm-operation-1"
 
@@ -156,7 +166,40 @@ def test_role_trace_completion_contains_correlated_input_and_output() -> None:
     assert completed["operation_id"] == run_id
     assert completed["input"]["messages"][0][0]["content"] == "分析 600519"
     assert completed["output"]["response"]["generations"][0][0]["text"] == "持有"
-    assert completed["usage"] == {"tokens": 12}
+    assert completed["usage"] == Response.llm_output
+    usage, model, call_type, stock_code = persisted[0]
+    assert usage["prompt_tokens"] == 10
+    assert usage["completion_tokens"] == 2
+    assert usage["total_tokens"] == 12
+    assert (model, call_type, stock_code) == ("market-model", "trader_analysis", "600519")
+
+
+def test_role_trace_does_not_persist_missing_usage(monkeypatch) -> None:
+    class Response:
+        llm_output = {"model_name": "market-model"}
+        generations = []
+
+        def model_dump(self, mode="json"):
+            return {"generations": []}
+
+    persisted = []
+    monkeypatch.setattr(
+        "src.trader_analysis.trace.persist_llm_usage",
+        lambda *args, **kwargs: persisted.append((args, kwargs)),
+    )
+    callback = RoleTraceCallback(
+        role="market",
+        route=SimpleNamespace(
+            deployment_name="market-route", provider="openai", model="market-model",
+        ),
+        emit=lambda **values: None,
+        content_limit=4096,
+        stock_code="600519",
+    )
+
+    callback.on_llm_end(Response(), run_id="llm-operation-without-usage")
+
+    assert persisted == []
 
 
 def test_custom_openai_gateway_uses_openai_compatible_client() -> None:
