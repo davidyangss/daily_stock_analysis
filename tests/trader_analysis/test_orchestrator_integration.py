@@ -119,6 +119,29 @@ def test_repository_round_trips_runs_and_events(tmp_path: Path) -> None:
     assert reloaded.symbol == "600519"
 
 
+def test_repository_lists_durable_runs_newest_first_and_filters_status(tmp_path: Path) -> None:
+    repository = TraderAnalysisRepository(tmp_path)
+    repository.save_run(TraderAnalysisRun(
+        run_id="older",
+        task_status=TraderTaskStatus.COMPLETED,
+        symbol="600519",
+        trade_date=date(2026, 7, 30),
+        created_at=datetime(2026, 7, 30, 10, 0),
+    ))
+    repository.save_run(TraderAnalysisRun(
+        run_id="newer",
+        task_status=TraderTaskStatus.RUNNING,
+        symbol="000001",
+        trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 7, 31, 10, 0),
+    ))
+
+    reloaded = TraderAnalysisRepository(tmp_path)
+
+    assert [run.run_id for run in reloaded.list_runs()] == ["newer", "older"]
+    assert [run.run_id for run in reloaded.list_runs(statuses=["completed"])] == ["older"]
+
+
 def test_config_maps_existing_dsa_litellm_route_without_model_hardcoding(tmp_path: Path) -> None:
     app_config = SimpleNamespace(
         trader_analysis_enabled=True,

@@ -82,6 +82,19 @@ class TraderAnalysisTaskService:
     def get(self, run_id: str) -> Optional[TraderAnalysisRun]:
         return self.repository.get_run(run_id)
 
+    def configure(self, app_config: Config) -> None:
+        service_config = TraderAnalysisConfig.from_app_config(app_config)
+        self.repository.configure(service_config.results_dir)
+
+    def list_runs(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[TraderAnalysisRun]:
+        return self.repository.list_runs(statuses=statuses, offset=offset, limit=limit)
+
     def events(self, run_id: str, after: int = 0) -> list[TraderAnalysisEvent]:
         return self.repository.list_events(run_id, after=after)
 

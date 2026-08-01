@@ -80,6 +80,17 @@ describe('traderAnalysisApi', () => {
     expect(events[0].runId).toBe('run-1');
   });
 
+  it('lists durable trader-analysis runs', async () => {
+    get.mockResolvedValueOnce({ data: [runPayload] });
+
+    const result = await traderAnalysisApi.listRuns({ taskStatus: ['running'], limit: 25 });
+
+    expect(get).toHaveBeenCalledWith('/api/v1/trader-analysis/runs', {
+      params: { task_status: ['running'], offset: 0, limit: 25 },
+    });
+    expect(result[0].runId).toBe('run-1');
+  });
+
   it('cancels runs on the versioned API path', async () => {
     post.mockResolvedValueOnce({ data: { ...runPayload, task_status: 'cancelled' } });
 

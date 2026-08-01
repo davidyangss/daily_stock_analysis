@@ -41,6 +41,7 @@ TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 ## API
 
 - `POST /api/v1/trader-analysis/runs`：创建单只 A 股交易员分析运行。
+- `GET /api/v1/trader-analysis/runs?task_status=running&offset=0&limit=100`：按创建时间倒序查询持久化任务列表；`task_status` 可重复传入以筛选多个状态。
 - `GET /api/v1/trader-analysis/runs/{run_id}`：查询状态、质量摘要、错误和报告。
 - `GET /api/v1/trader-analysis/runs/{run_id}/events?after=0`：查询安全事件快照。
 - `GET /api/v1/trader-analysis/runs/{run_id}/trace?after=0`：查询脱敏的分析过程时间线。
@@ -70,6 +71,7 @@ TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 - Sentiment 第一阶段使用已核验新闻；StockTwits/Reddit 对 A 股明确标为不可用并降低置信度。
 - 历史日期不会读取当前实时价、当前新闻或缺少公告可得日期的当前财务数据；当 point-in-time 证据不足时返回 `insufficient_evidence`。
 - 运行、事件、分角色报告、质量摘要、版本元数据和独立 `trace.json` 持久化到 `TRADER_ANALYSIS_RESULTS_DIR/runs/<run_id>/`，不写入 `analysis_history`。
+- Web 的“交易员分析任务”列表会读取上述独立任务域；选择历史任务后可继续查看当前阶段、角色进度、数据质量、关联报告及脱敏后的 LLM/工具交互。当前任务列表只包含交易员分析，不合并现有策略分析任务。
 - trace 记录阶段、角色 LLM 请求/响应、deployment 路由、工具参数/结果、实际消费的 evidence、耗时和错误；敏感键及常见 token 会脱敏，单项内容按配置截断，且不会混入正式报告。
 - checkpoint 与 decision memory 保持原版语义；历史决策收益回看使用 DSA canonical 日线，不访问 yfinance。
 - 队列达到 `TRADER_ANALYSIS_QUEUE_LIMIT` 时创建接口返回 HTTP 429。任务超时或取消后不会发布正常最终报告。

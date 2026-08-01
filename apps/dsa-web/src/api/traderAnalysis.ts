@@ -3,6 +3,17 @@ import { toCamelCase } from './utils';
 import type { TraderAnalysisEvent, TraderAnalysisRun, TraderAnalysisTraceEvent } from '../types/traderAnalysis';
 
 export const traderAnalysisApi = {
+  async listRuns(params?: { taskStatus?: string[]; offset?: number; limit?: number }): Promise<TraderAnalysisRun[]> {
+    const response = await apiClient.get('/api/v1/trader-analysis/runs', {
+      params: {
+        task_status: params?.taskStatus,
+        offset: params?.offset ?? 0,
+        limit: params?.limit ?? 100,
+      },
+    });
+    return toCamelCase(response.data) as TraderAnalysisRun[];
+  },
+
   async createRun(payload: { symbol: string; tradeDate: string }): Promise<TraderAnalysisRun> {
     const response = await apiClient.post('/api/v1/trader-analysis/runs', {
       symbol: payload.symbol,

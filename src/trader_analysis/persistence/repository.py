@@ -7,7 +7,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from src.trader_analysis.schemas.result import TraderAnalysisEvent, TraderAnalysisRun
 from src.trader_analysis.schemas.trace import TraderAnalysisTraceEvent
@@ -45,6 +45,35 @@ class TraderAnalysisRepository:
                     run = TraderAnalysisRun.model_validate(payload)
                     self._runs[run_id] = run
             return run.model_copy(deep=True) if run else None
+
+    def list_runs(
+        self,
+        *,
+        statuses: Optional[Sequence[str]] = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[TraderAnalysisRun]:
+        """Return durable runs newest-first, including runs from earlier processes."""
+        with self._lock:
+            if self._results_dir is not None:
+                runs_directory = self._results_dir / "runs"
+                if runs_directory.is_dir():
+                    for directory in runs_directory.iterdir():
+                        if not directory.is_dir() or directory.name in self._runs:
+                            continue
+                        payload = self._read(directory.name, "run.json")
+                        if payload is not None:
+                            run = TraderAnalysisRun.model_validate(payload)
+                            self._runs[run.run_id] = run
+
+            allowed = set(statuses or [])
+            runs = [
+                run.model_copy(deep=True)
+                for run in self._runs.values()
+                if not allowed or run.task_status.value in allowed
+            ]
+            runs.sort(key=lambda run: (run.created_at, run.run_id), reverse=True)
+            return runs[offset:offset + limit]
 
     def append_event(self, event: TraderAnalysisEvent) -> TraderAnalysisEvent:
         with self._lock:
