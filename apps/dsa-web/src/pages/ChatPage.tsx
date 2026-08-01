@@ -658,6 +658,7 @@ const ChatPage: React.FC = () => {
       return;
     }
 
+    handleStartNewChat();
     const hydrationToken = ++followUpHydrationTokenRef.current;
     setInput(buildFollowUpPrompt(stock, name));
     setActiveStockCode(stock);
@@ -687,7 +688,7 @@ const ChatPage: React.FC = () => {
       }
     });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [handleStartNewChat, searchParams, setSearchParams]);
 
   const handleSend = useCallback(
     async (

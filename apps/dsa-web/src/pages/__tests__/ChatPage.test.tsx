@@ -1952,6 +1952,19 @@ describe('ChatPage', () => {
     expect(await screen.findByRole('heading', { name: '问股' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/分析 600519/)).toHaveValue('');
     expect(historyApi.getDetail).not.toHaveBeenCalled();
+    expect(mockStartNewChat).not.toHaveBeenCalled();
+  });
+
+  it('starts a new conversation when opening a report follow-up', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat?stock=600519&name=%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0&recordId=1']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByDisplayValue('请深入分析 贵州茅台(600519)')).toBeInTheDocument();
+    expect(mockStartNewChat).toHaveBeenCalledTimes(1);
+    expect(mockSwitchSession).not.toHaveBeenCalled();
   });
 
   it('reprocesses follow-up query params when navigating to the same chat route again', async () => {
