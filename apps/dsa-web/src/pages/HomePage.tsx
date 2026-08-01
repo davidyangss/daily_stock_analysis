@@ -238,6 +238,17 @@ const HomePage: React.FC = () => {
   }, []);
 
   useEffect(() => stopMarketReviewPolling, [stopMarketReviewPolling]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [sidebarOpen]);
+
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
 
   const {
@@ -1278,7 +1289,7 @@ const HomePage: React.FC = () => {
   return (
     <div
       data-testid="home-dashboard"
-      className="flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
+      className="flex h-[calc(100dvh-3.5rem)] w-full flex-col overflow-hidden md:flex-row"
     >
       <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
         <header className="relative z-30 flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
@@ -1470,10 +1481,10 @@ const HomePage: React.FC = () => {
           </div>
 
           {sidebarOpen ? (
-            <div className="fixed inset-0 z-40 md:hidden" onClick={() => setSidebarOpen(false)}>
+            <div className="fixed inset-0 z-40 overscroll-contain md:hidden" onClick={() => setSidebarOpen(false)}>
               <div className="page-drawer-overlay absolute inset-0" />
               <div
-                className="dashboard-card absolute bottom-0 left-0 top-0 flex w-72 flex-col overflow-hidden !rounded-none !rounded-r-xl p-3 shadow-2xl"
+                className="dashboard-card fixed inset-y-0 left-0 flex h-[100dvh] min-h-0 w-72 touch-pan-y flex-col overflow-hidden overscroll-contain !rounded-none !rounded-r-xl p-3 shadow-2xl"
                 onClick={(event) => event.stopPropagation()}
               >
                 {sidebarContent}

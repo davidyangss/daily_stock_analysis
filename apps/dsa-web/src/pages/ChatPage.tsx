@@ -241,6 +241,7 @@ const ChatPage: React.FC = () => {
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const isMountedRef = useRef(true);
   const sendToastTimerRef = useRef<number | null>(null);
   const followUpHydrationTokenRef = useRef(0);
@@ -248,6 +249,22 @@ const ChatPage: React.FC = () => {
   const shouldStickToBottomRef = useRef(true);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>('auto');
   const agentStatusRequestIdRef = useRef(0);
+
+  const resizeChatInput = useCallback(() => {
+    const textarea = chatInputRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+  }, []);
+
+  useEffect(() => {
+    resizeChatInput();
+  }, [input, resizeChatInput]);
+
+  useEffect(() => {
+    window.addEventListener('resize', resizeChatInput);
+    return () => window.removeEventListener('resize', resizeChatInput);
+  }, [resizeChatInput]);
 
   // Get localized text (default to Chinese)
   const text = getReportText('zh');
@@ -1038,7 +1055,7 @@ const ChatPage: React.FC = () => {
   return (
     <div
       data-testid="chat-workspace"
-      className="flex h-[calc(100vh-5rem)] w-full min-w-0 gap-4 overflow-hidden sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
+      className="flex h-[calc(100dvh-3.5rem)] w-full min-w-0 gap-4 overflow-hidden"
     >
       {/* Desktop sidebar */}
       <div className="hidden h-full w-64 flex-shrink-0 flex-col overflow-hidden rounded-[1.25rem] border border-white/8 bg-card/82 shadow-soft-card md:flex">
@@ -1661,18 +1678,17 @@ const ChatPage: React.FC = () => {
 
               <div className="flex items-end gap-3">
                 <textarea
+                  ref={chatInputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="例如：分析 600519 / 茅台现在适合买入吗？ (Enter 发送, Shift+Enter 换行)"
                   disabled={loading || !agentAvailable}
                   rows={1}
-                  className="input-surface input-focus-glow flex-1 min-h-[44px] max-h-[200px] rounded-xl border bg-transparent px-4 py-2.5 text-sm transition-all focus:outline-none resize-none disabled:cursor-not-allowed disabled:opacity-60"
+                  className="input-surface input-focus-glow min-h-[84px] max-h-[200px] flex-1 resize-none rounded-xl border bg-transparent px-4 py-2.5 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-[44px]"
                   style={{ height: 'auto' }}
-                  onInput={(e) => {
-                    const t = e.target as HTMLTextAreaElement;
-                    t.style.height = 'auto';
-                    t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
+                  onInput={() => {
+                    resizeChatInput();
                   }}
                 />
                 {loading && agentStatus?.backend === 'codex_app_server' ? (

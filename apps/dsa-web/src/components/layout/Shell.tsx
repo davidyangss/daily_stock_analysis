@@ -1,10 +1,9 @@
 import type React from 'react';
-import { useEffect, useState } from 'react';
-import { Menu } from 'lucide-react';
+import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Drawer } from '../common/Drawer';
 import { SidebarNav } from './SidebarNav';
-import { cn } from '../../utils/cn';
+import { ShellHeader } from './ShellHeader';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 type ShellProps = {
@@ -12,66 +11,28 @@ type ShellProps = {
 };
 
 export const Shell: React.FC<ShellProps> = ({ children }) => {
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const collapsed = false;
+  const [menuOpen, setMenuOpen] = useState(false);
   const { t } = useUiLanguage();
 
-  useEffect(() => {
-    if (!mobileOpen) {
-      return undefined;
-    }
-
-    const handleResize = () => {
-      if (window.innerWidth >= 1024) {
-        setMobileOpen(false);
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-    };
-  }, [mobileOpen]);
-
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="pointer-events-none fixed left-3 top-3 z-40 lg:hidden">
-        <button
-          type="button"
-          onClick={() => setMobileOpen(true)}
-          className="pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/85 text-secondary-text shadow-soft-card backdrop-blur-md transition-colors hover:bg-hover hover:text-foreground"
-          aria-label={t('layout.openNav')}
-        >
-          <Menu className="h-5 w-5" />
-        </button>
-      </div>
+    <div className="min-h-[100dvh] bg-background text-foreground">
+      <ShellHeader onOpenNav={() => setMenuOpen(true)} />
 
-      <div className="mx-auto flex min-h-screen w-full max-w-[1680px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
-        <aside
-          className={cn(
-            'sticky top-3 z-40 hidden shrink-0 overflow-visible rounded-[1.5rem] border border-[var(--shell-sidebar-border)] bg-card/72 p-2.5 shadow-soft-card backdrop-blur-sm transition-[width] duration-200 lg:flex',
-            'max-h-[calc(100vh-1.5rem)] self-start sm:top-4 sm:max-h-[calc(100vh-2rem)]',
-            collapsed ? 'w-[64px]' : 'w-[136px]'
-          )}
-          aria-label={t('layout.desktopSidebar')}
-        >
-          <SidebarNav collapsed={collapsed} variant="rail" onNavigate={() => setMobileOpen(false)} />
-        </aside>
-
-        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pl-3 lg:pt-0 touch-pan-y">
+      <div className="mx-auto w-full max-w-[1680px] sm:px-4 lg:px-5">
+        <main className="min-h-0 min-w-0 touch-pan-y">
           {children ?? <Outlet />}
         </main>
       </div>
 
       <Drawer
-        isOpen={mobileOpen}
-        onClose={() => setMobileOpen(false)}
+        isOpen={menuOpen}
+        onClose={() => setMenuOpen(false)}
         title={t('layout.navMenu')}
         width="max-w-xs"
         zIndex={90}
         side="left"
       >
-        <SidebarNav onNavigate={() => setMobileOpen(false)} />
+        <SidebarNav onNavigate={() => setMenuOpen(false)} />
       </Drawer>
     </div>
   );

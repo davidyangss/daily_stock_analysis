@@ -81,10 +81,27 @@ describe('Shell', () => {
       </MemoryRouter>
     );
 
+    expect(screen.getByTestId('shell-current-title')).toHaveTextContent('问股');
+    expect(screen.getByTestId('shell-current-title').className).toContain('text-[hsl(var(--primary))]');
+    fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }));
     fireEvent.click(screen.getByRole('button', { name: '退出' }));
 
     expect(await screen.findByRole('heading', { name: '退出登录' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '确认退出' }));
     expect(mockLogout).toHaveBeenCalled();
+  });
+
+  it('normalizes trailing slashes when displaying the selected menu title', () => {
+    render(
+      <MemoryRouter initialEntries={['/trader-analysis/']}>
+        <ThemeProvider>
+          <Shell>
+            <div>page content</div>
+          </Shell>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    expect(screen.getByTestId('shell-current-title')).toHaveTextContent('交易员分析');
   });
 });

@@ -292,8 +292,8 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
               </div>
             </div>
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-border/60 bg-card/30">
-              <table className="w-full table-fixed text-left text-sm">
+            <div className="mt-4 overflow-x-auto overscroll-x-contain rounded-xl border border-border/60 bg-card/30 touch-pan-x">
+              <table className="w-full min-w-[900px] table-fixed text-left text-sm">
                 <colgroup>
                   <col className="w-[15%]" />
                   <col className="w-[11%]" />

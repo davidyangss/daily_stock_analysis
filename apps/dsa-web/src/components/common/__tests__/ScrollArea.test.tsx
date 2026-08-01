@@ -17,6 +17,8 @@ describe('ScrollArea', () => {
     const viewport = screen.getByTestId('scroll-area-viewport');
     expect(viewport).toBeInTheDocument();
     expect(viewport).toHaveClass('inner-viewport');
+    expect(viewport).toHaveClass('overscroll-y-contain', 'touch-pan-y');
+    expect(viewport).toHaveClass('[-webkit-overflow-scrolling:touch]');
     expect(viewport).toHaveTextContent('scroll content');
     expect(viewport.parentElement).toHaveClass('outer-shell');
   });

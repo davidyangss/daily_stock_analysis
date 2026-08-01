@@ -127,6 +127,18 @@ describe('SidebarNav', () => {
     expect(screen.getByRole('button', { name: '切换主题(折叠)' })).toBeInTheDocument();
   });
 
+  it('does not mark the language action as the active navigation item', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const languageButton = screen.getByRole('button', { name: '切换界面语言' });
+    expect(languageButton).not.toHaveClass('font-medium');
+    expect(languageButton.className).not.toContain('var(--nav-active-bg)');
+  });
+
   it('renders the alerts navigation item and marks it active', () => {
     render(
       <MemoryRouter initialEntries={['/alerts']}>

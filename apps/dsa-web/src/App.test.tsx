@@ -175,6 +175,7 @@ describe('App routing behavior', () => {
       render(<App />);
 
       expect(await screen.findByRole('heading', { name: '页面加载失败' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }));
       expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: '重新加载页面' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: '返回首页' })).toBeInTheDocument();

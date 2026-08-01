@@ -258,8 +258,7 @@ describe('HomePage', () => {
 
     const dashboard = await screen.findByTestId('home-dashboard');
     expect(dashboard).toBeInTheDocument();
-    expect(dashboard.className).toContain('h-[calc(100vh-5rem)]');
-    expect(dashboard.className).toContain('lg:h-[calc(100vh-2rem)]');
+    expect(dashboard.className).toContain('h-[calc(100dvh-3.5rem)]');
     expect(dashboard.firstElementChild?.className).toContain('min-h-0');
     expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
     expect(screen.getByTestId('home-dashboard-scroll')).toBeInTheDocument();
@@ -1838,13 +1837,15 @@ describe('HomePage', () => {
     fireEvent.click(trigger);
 
     expect(container.querySelector('.page-drawer-overlay')).toBeTruthy();
-    expect(container.querySelector('.dashboard-card')).toBeTruthy();
+    expect(container.querySelector('.dashboard-card')).toHaveClass('h-[100dvh]', 'min-h-0');
+    expect(document.body.style.overflow).toBe('hidden');
 
     fireEvent.click(container.querySelector('.fixed.inset-0.z-40') as HTMLElement);
 
     await waitFor(() => {
       expect(container.querySelector('.page-drawer-overlay')).toBeFalsy();
     });
+    expect(document.body.style.overflow).toBe('');
   });
 
   it('keeps same-stock history range controls in empty result state and allows switching back', async () => {

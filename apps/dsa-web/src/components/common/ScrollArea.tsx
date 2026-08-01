@@ -24,7 +24,7 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
         ref={viewportRef}
         data-testid={testId}
         onScroll={onScroll}
-        className={cn('h-full overflow-y-auto custom-scrollbar', viewportClassName)}
+        className={cn('h-full overflow-y-auto overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] custom-scrollbar', viewportClassName)}
       >
         {children}
       </div>
