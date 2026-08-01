@@ -5,8 +5,6 @@ import { Outlet } from 'react-router-dom';
 import { Drawer } from '../common/Drawer';
 import { SidebarNav } from './SidebarNav';
 import { cn } from '../../utils/cn';
-import { ThemeToggle } from '../theme/ThemeToggle';
-import { UiLanguageToggle } from '../i18n/UiLanguageToggle';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 type ShellProps = {
@@ -37,7 +35,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3 lg:hidden">
+      <div className="pointer-events-none fixed left-3 top-3 z-40 lg:hidden">
         <button
           type="button"
           onClick={() => setMobileOpen(true)}
@@ -46,10 +44,6 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
         >
           <Menu className="h-5 w-5" />
         </button>
-        <div className="pointer-events-auto flex items-center gap-2">
-          <UiLanguageToggle />
-          <ThemeToggle />
-        </div>
       </div>
 
       <div className="mx-auto flex min-h-screen w-full max-w-[1680px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">

@@ -178,7 +178,7 @@ const TraderAnalysisPage: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-0 py-6 sm:px-6 lg:px-8">
       <section className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
         <form onSubmit={submit} className="rounded-lg border border-border bg-card p-4 shadow-sm">
           <div className="mb-4 flex items-center gap-2">

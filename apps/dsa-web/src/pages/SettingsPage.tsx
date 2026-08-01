@@ -1472,7 +1472,7 @@ const SettingsPage: React.FC = () => {
   );
 
   return (
-    <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
+    <div className="settings-page min-h-full px-0 pb-6 pt-4 md:px-6">
       <div className="mb-4 rounded-lg border settings-border bg-card/90 px-4 py-4 shadow-soft-card backdrop-blur-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">

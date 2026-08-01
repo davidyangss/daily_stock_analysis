@@ -957,7 +957,7 @@ const PortfolioPage: React.FC = () => {
     : null;
 
   return (
-    <div className="portfolio-page min-h-screen space-y-4 p-4 md:p-6">
+    <div className="portfolio-page min-h-screen space-y-4 px-0 py-4 md:p-6">
       <section className="space-y-3">
         <div className="space-y-2">
           <h1 className="text-xl md:text-2xl font-semibold text-foreground">{text.title}</h1>

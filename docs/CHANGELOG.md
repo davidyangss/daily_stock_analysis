@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Web 移动端页面内容宽度与顶部菜单区域对齐，移除遮挡页面标签的顶部语言及主题悬浮入口，同时保持移动端侧栏菜单左对齐、桌面端侧栏菜单居中
 - [新功能] 交易员分析支持按九类角色使用 LiteLLM deployment 名称独立路由，并持久化脱敏的 LLM、工具与证据分析过程时间线
 - [新功能] 新增默认关闭的独立交易员分析入口，以 run-scoped DSA toolkit 驱动原版 TradingAgents Graph，提供 A 股 point-in-time 证据门控、异步任务、checkpoint/memory、独立持久化、API 与 Web 报告，不写入现有策略分析历史
 
