@@ -49,7 +49,22 @@ class MarketEvidenceAdapter:
         issues: List[EvidenceIssue] = []
         provider = None
         try:
-            df = self.manager.get_daily_data(symbol, end_date=trade_date.isoformat(), days=max(260, min_daily_bars))
+            daily_result = self.manager.get_daily_data(
+                symbol,
+                end_date=trade_date.isoformat(),
+                days=max(260, min_daily_bars),
+                # A newly listed stock cannot satisfy the preferred history
+                # length through provider fallback. Accept the first usable
+                # canonical series and let the evidence policy grade its depth.
+                min_rows=1,
+            )
+            # DataFetcherManager returns (frame, provider).  Keep accepting a
+            # bare frame as well so injected adapters and older integrations
+            # remain compatible.
+            if isinstance(daily_result, tuple):
+                df, provider = daily_result
+            else:
+                df = daily_result
         except Exception as exc:
             return self._envelope(
                 run_id,
@@ -87,12 +102,12 @@ class MarketEvidenceAdapter:
                 }],
             )
 
-        normalized = self._normalize_daily_frame(df, trade_date)
+        normalized = self._normalize_daily_frame(df, trade_date, provider=provider)
         rows = normalized["rows"]
         provider = normalized["provider"]
         issues.extend(normalized["issues"])
 
-        if len(rows) < min_daily_bars:
+        if len(rows) < 3:
             issues.append(EvidenceIssue(
                 code="insufficient_daily_history",
                 severity=EvidenceIssueSeverity.BLOCKING,
@@ -102,6 +117,20 @@ class MarketEvidenceAdapter:
                 expected={"min_daily_bars": min_daily_bars},
                 observed={"trading_days": len(rows)},
                 retriable=True,
+            ))
+        elif len(rows) < min_daily_bars:
+            issues.append(EvidenceIssue(
+                code="limited_daily_history",
+                severity=EvidenceIssueSeverity.WARNING,
+                capability=capability,
+                provider=provider,
+                message=(
+                    f"当前标的截至分析日仅有 {len(rows)} 个交易日历史，"
+                    f"少于建议的 {min_daily_bars} 个交易日；技术指标与趋势结论必须降级解释"
+                ),
+                expected={"preferred_daily_bars": min_daily_bars},
+                observed={"trading_days": len(rows)},
+                retriable=False,
             ))
 
         status = EvidenceStatus.OK
@@ -231,15 +260,21 @@ class MarketEvidenceAdapter:
             payload=payload,
         )
 
-    def _normalize_daily_frame(self, df: pd.DataFrame, trade_date: date) -> Dict[str, Any]:
+    def _normalize_daily_frame(
+        self,
+        df: pd.DataFrame,
+        trade_date: date,
+        *,
+        provider: Optional[str] = None,
+    ) -> Dict[str, Any]:
         frame = df.copy()
         columns = {str(column).lower(): column for column in frame.columns}
         date_column = columns.get("date") or columns.get("trade_date")
         provider_column = columns.get("data_source") or columns.get("source") or columns.get("provider")
-        provider = None
         if provider_column and not frame.empty:
             provider_values = frame[provider_column].dropna()
-            provider = str(provider_values.iloc[-1]) if not provider_values.empty else None
+            if not provider_values.empty:
+                provider = str(provider_values.iloc[-1])
 
         issues: List[EvidenceIssue] = []
         required = ["open", "high", "low", "close"]
@@ -272,7 +307,7 @@ class MarketEvidenceAdapter:
             if None in (open_price, high, low, close) or min(open_price, high, low, close) <= 0:
                 issues.append(EvidenceIssue(
                     code="provider_invalid_payload",
-                    severity=EvidenceIssueSeverity.BLOCKING,
+                    severity=EvidenceIssueSeverity.WARNING,
                     capability="market_daily_bars",
                     provider=provider,
                     message="日线 OHLC 存在空值或非正数",
@@ -282,7 +317,7 @@ class MarketEvidenceAdapter:
             if low > min(open_price, close) or high < max(open_price, close):
                 issues.append(EvidenceIssue(
                     code="provider_invalid_payload",
-                    severity=EvidenceIssueSeverity.BLOCKING,
+                    severity=EvidenceIssueSeverity.WARNING,
                     capability="market_daily_bars",
                     provider=provider,
                     message="日线 OHLC 不满足 low <= open/close <= high",

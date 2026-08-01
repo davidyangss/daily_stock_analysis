@@ -1,13 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Ban, CheckCircle2, CircleDot, ListTodo, Play, RefreshCw, ShieldAlert, Square } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Ban, CheckCircle2, CircleDot, Download, ListTodo, Play, RefreshCw, ShieldAlert, Square } from 'lucide-react';
 import { ApiErrorAlert } from '../components/common';
+import { ReportMarkdownBody } from '../components/report/ReportMarkdownBody';
+import { StepDetails } from '../components/trader-analysis/StepDetails';
+import { TraderRunFlowGraph } from '../components/trader-analysis/TraderRunFlowGraph';
 import { traderAnalysisApi } from '../api/traderAnalysis';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
-import type { TraderAnalysisRun, TraderAnalysisTraceEvent } from '../types/traderAnalysis';
+import type { TraderAnalysisEvent, TraderAnalysisRun, TraderAnalysisTraceEvent } from '../types/traderAnalysis';
 
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
 const roleSteps = ['市场分析师', '情绪分析师', '新闻分析师', '基本面分析师', '多空研究辩论', '交易员', '风险委员会', '投资组合经理'];
 const roleKeys = ['market', 'sentiment', 'news', 'fundamentals', 'research_debate', 'trader', 'risk_debate', 'portfolio_manager'];
+const runsPageSize = 5;
 const today = () => new Date().toISOString().slice(0, 10);
 
 const displayLabels: Record<string, string> = {
@@ -17,6 +21,10 @@ const displayLabels: Record<string, string> = {
   graph_running: '多角色分析',
   provider_error: '数据源调用失败', provider_empty: '数据源未返回数据', provider_invalid_payload: '数据源返回异常数据',
   insufficient_daily_history: '历史日线不足', identity_mismatch: '证券代码不匹配', verified_snapshot_unavailable: '无法确认价格快照',
+  historical_fundamentals_not_point_in_time: '历史基本面数据不满足时点要求',
+  historical_news_not_point_in_time: '历史新闻数据不满足时点要求',
+  social_sources_unavailable: '社交情绪数据源不可用',
+  limited_daily_history: '新股历史较短', 'evidence.started': '证据获取开始', 'evidence.completed': '证据获取完成',
   llm_start: '模型开始', llm_end: '模型完成', llm_error: '模型错误', tool_start: '工具开始', tool_end: '工具完成', tool_error: '工具错误',
   'run.created': '任务已创建', 'preflight.started': '数据预检开始', 'preflight.completed': '数据预检完成',
   'graph.started': '多角色分析开始', 'graph.completed': '多角色分析完成', 'run.failed': '任务失败', 'run.cancelled': '任务已取消',
@@ -24,6 +32,13 @@ const displayLabels: Record<string, string> = {
   'tool.started': '工具调用开始', 'tool.completed': '工具调用完成', 'tool.failed': '工具调用失败',
   market: '市场分析师', sentiment: '情绪分析师', news: '新闻分析师', fundamentals: '基本面分析师',
   research_debate: '多空研究辩论', research_manager: '研究经理', trader: '交易员', risk_debate: '风险委员会', portfolio_manager: '投资组合经理',
+};
+const reportLabels: Record<string, string> = {
+  market: '📈 市场技术分析', sentiment: '💭 市场情绪分析', news: '📰 新闻事件分析', fundamentals: '💰 基本面分析',
+  bull_researcher: '🐂 多头研究员', bear_researcher: '🐻 空头研究员', research_decision: '🔬 研究经理决策',
+  trader_plan: '💼 交易员计划', aggressive_analyst: '⚡ 激进分析师', conservative_analyst: '🛡️ 保守分析师',
+  neutral_analyst: '⚖️ 中性分析师', portfolio_manager: '👔 投资组合经理', final_decision: '🎯 最终交易决策',
+  investment_advice: '📋 投资建议', data_quality: '🧾 数据质量与分析限制',
 };
 const displayLabel = (value?: string | null) => value ? (displayLabels[value] || value) : '-';
 
@@ -34,14 +49,12 @@ const statusTone = (status?: string | null) => {
   return 'text-secondary-text';
 };
 
-const fetchAllRuns = async () => {
-  const pageSize = 200;
-  const allRuns: TraderAnalysisRun[] = [];
-  for (let offset = 0; ; offset += pageSize) {
-    const page = await traderAnalysisApi.listRuns({ offset, limit: pageSize });
-    allRuns.push(...page);
-    if (page.length < pageSize) return allRuns;
-  }
+const fetchRunsPage = async (page: number) => {
+  const items = await traderAnalysisApi.listRuns({
+    offset: (page - 1) * runsPageSize,
+    limit: runsPageSize + 1,
+  });
+  return { items: items.slice(0, runsPageSize), hasNextPage: items.length > runsPageSize };
 };
 
 const TraderAnalysisPage: React.FC = () => {
@@ -49,18 +62,51 @@ const TraderAnalysisPage: React.FC = () => {
   const [tradeDate, setTradeDate] = useState(today());
   const [run, setRun] = useState<TraderAnalysisRun | null>(null);
   const [runs, setRuns] = useState<TraderAnalysisRun[]>([]);
+  const [runsPage, setRunsPage] = useState(1);
+  const [hasNextRunsPage, setHasNextRunsPage] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [events, setEvents] = useState<TraderAnalysisEvent[]>([]);
   const [trace, setTrace] = useState<TraderAnalysisTraceEvent[]>([]);
-  const isTerminal = run ? terminalStatuses.has(run.taskStatus) : true;
+  const [debugExpanded, setDebugExpanded] = useState(false);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [loadingTrace, setLoadingTrace] = useState(false);
+  const [runFlowExpanded, setRunFlowExpanded] = useState(false);
+  const [traceExpanded, setTraceExpanded] = useState(false);
+  const [activeReportKind, setActiveReportKind] = useState<string | null>(null);
+  const selectedRunIdRef = useRef<string | null>(null);
+  const loadEvents = async (runId: string) => {
+    setLoadingEvents(true);
+    try {
+      const latestEvents = await traderAnalysisApi.getEvents(runId);
+      if (selectedRunIdRef.current === runId) setEvents(latestEvents);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      if (selectedRunIdRef.current === runId) setLoadingEvents(false);
+    }
+  };
 
-  const loadRuns = async (selectFirst = false) => {
+  const loadTrace = async (runId: string) => {
+    setLoadingTrace(true);
+    try {
+      const latestTrace = await traderAnalysisApi.getTrace(runId);
+      if (selectedRunIdRef.current === runId) setTrace(latestTrace);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      if (selectedRunIdRef.current === runId) setLoadingTrace(false);
+    }
+  };
+
+  const loadRuns = async (selectFirst = false, page = runsPage) => {
     setLoadingRuns(true);
     try {
-      const items = await fetchAllRuns();
+      const { items, hasNextPage } = await fetchRunsPage(page);
       setRuns(items);
+      setHasNextRunsPage(hasNextPage);
       if (selectFirst && !run && items.length) await selectRun(items[0]);
     } catch (err) {
       setError(getParsedApiError(err));
@@ -71,14 +117,24 @@ const TraderAnalysisPage: React.FC = () => {
 
   const selectRun = async (selected: TraderAnalysisRun) => {
     setError(null);
+    selectedRunIdRef.current = selected.runId;
     setRun(selected);
+    setActiveReportKind(selected.reports[0]?.kind ?? null);
+    setSymbol(selected.symbol);
+    setTradeDate(selected.tradeDate);
+    setEvents([]);
+    setTrace([]);
     try {
       const [latest, latestTrace] = await Promise.all([
         traderAnalysisApi.getRun(selected.runId),
-        traderAnalysisApi.getTrace(selected.runId),
+        runFlowExpanded || traceExpanded ? traderAnalysisApi.getTrace(selected.runId) : Promise.resolve(null),
       ]);
       setRun(latest);
-      setTrace(latestTrace);
+      if (latestTrace) setTrace(latestTrace);
+      setActiveReportKind((current) => latest.reports.some((report) => report.kind === current) ? current : (latest.reports[0]?.kind ?? null));
+      setSymbol(latest.symbol);
+      setTradeDate(latest.tradeDate);
+      if (debugExpanded) void loadEvents(latest.runId);
     } catch (err) {
       setError(getParsedApiError(err));
     }
@@ -91,8 +147,11 @@ const TraderAnalysisPage: React.FC = () => {
     let active = true;
     const timer = window.setInterval(async () => {
       try {
-        const items = await fetchAllRuns();
-        if (active) setRuns(items);
+        const page = await fetchRunsPage(runsPage);
+        if (active) {
+          setRuns(page.items);
+          setHasNextRunsPage(page.hasNextPage);
+        }
       } catch (err) {
         if (active) setError(getParsedApiError(err));
       }
@@ -101,7 +160,7 @@ const TraderAnalysisPage: React.FC = () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [runs]);
+  }, [runs, runsPage]);
 
   useEffect(() => {
     if (!run || terminalStatuses.has(run.taskStatus)) return;
@@ -109,9 +168,15 @@ const TraderAnalysisPage: React.FC = () => {
     const timer = window.setInterval(async () => {
       try {
         setPolling(true);
-        const [latest, latestTrace] = await Promise.all([traderAnalysisApi.getRun(run.runId), traderAnalysisApi.getTrace(run.runId)]);
+        const [latest, latestEvents, latestTrace] = await Promise.all([
+          traderAnalysisApi.getRun(run.runId),
+          debugExpanded ? traderAnalysisApi.getEvents(run.runId) : Promise.resolve(null),
+          runFlowExpanded || traceExpanded ? traderAnalysisApi.getTrace(run.runId) : Promise.resolve(null),
+        ]);
         if (active) {
-          setRun(latest); setTrace(latestTrace);
+          setRun(latest);
+          if (latestEvents) setEvents(latestEvents);
+          if (latestTrace) setTrace(latestTrace);
           setRuns((items) => items.map((item) => item.runId === latest.runId ? latest : item));
         }
       } catch (err) {
@@ -124,7 +189,7 @@ const TraderAnalysisPage: React.FC = () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [run]);
+  }, [run, debugExpanded, runFlowExpanded, traceExpanded]);
 
   const qualityIssues = useMemo(() => {
     if (!run) return [];
@@ -132,10 +197,33 @@ const TraderAnalysisPage: React.FC = () => {
   }, [run]);
 
   const roleProgress = useMemo(() => {
-    const completed = new Set(trace.filter((item) => item.eventType === 'llm.completed' && item.role).map((item) => item.role as string));
-    const active = [...trace].reverse().find((item) => item.eventType === 'llm.started' && item.role && !completed.has(item.role))?.role;
+    const persisted = run?.metadata.role_progress;
+    const progress = persisted && typeof persisted === 'object' && !Array.isArray(persisted)
+      ? persisted as Record<string, unknown>
+      : {};
+    const completed = new Set(Object.entries(progress).filter(([, status]) => status === 'completed').map(([role]) => role));
+    const active = Object.entries(progress).find(([, status]) => status === 'running')?.[0];
+    if (run?.taskStatus === 'completed' && completed.size === 0) roleKeys.forEach((role) => completed.add(role));
     return { completed, active };
+  }, [run]);
+
+  const analysisSteps = useMemo(() => {
+    const relevant = trace.filter((item) => item.eventType.startsWith('llm.') || item.eventType.startsWith('tool.'));
+    const terminalOperations = new Set(relevant
+      .filter((item) => item.eventType.endsWith('.completed') || item.eventType.endsWith('.failed'))
+      .map((item) => item.payload.operationId)
+      .filter((value): value is string => typeof value === 'string'));
+    return relevant.filter((item) => !(
+      item.eventType.endsWith('.started')
+      && typeof item.payload.operationId === 'string'
+      && terminalOperations.has(item.payload.operationId)
+    ));
   }, [trace]);
+
+  const activeReport = useMemo(() => {
+    if (!run?.reports.length) return null;
+    return run.reports.find((report) => report.kind === activeReportKind) ?? run.reports[0];
+  }, [activeReportKind, run]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -143,9 +231,17 @@ const TraderAnalysisPage: React.FC = () => {
     setError(null);
     try {
       setTrace([]);
+      setEvents([]);
       const created = await traderAnalysisApi.createRun({ symbol, tradeDate });
+      selectedRunIdRef.current = created.runId;
       setRun(created);
-      setRuns((items) => [created, ...items.filter((item) => item.runId !== created.runId)]);
+      setActiveReportKind(created.reports[0]?.kind ?? null);
+      if (debugExpanded) void loadEvents(created.runId);
+      if (runFlowExpanded || traceExpanded) void loadTrace(created.runId);
+      setRunsPage(1);
+      const firstPage = await fetchRunsPage(1);
+      setRuns(firstPage.items);
+      setHasNextRunsPage(firstPage.hasNextPage);
     } catch (err) {
       setError(getParsedApiError(err));
     } finally {
@@ -153,24 +249,30 @@ const TraderAnalysisPage: React.FC = () => {
     }
   };
 
-  const refresh = async () => {
-    if (!run) return;
+  const refresh = async (runId: string) => {
     setError(null);
     try {
-      const [latest, latestTrace] = await Promise.all([traderAnalysisApi.getRun(run.runId), traderAnalysisApi.getTrace(run.runId)]);
-      setRun(latest); setTrace(latestTrace);
+      const [latest, latestEvents, latestTrace] = await Promise.all([
+        traderAnalysisApi.getRun(runId),
+        debugExpanded && selectedRunIdRef.current === runId ? traderAnalysisApi.getEvents(runId) : Promise.resolve(null),
+        runFlowExpanded || traceExpanded ? traderAnalysisApi.getTrace(runId) : Promise.resolve(null),
+      ]);
+      if (selectedRunIdRef.current === runId) {
+        setRun(latest);
+        if (latestEvents) setEvents(latestEvents);
+        if (latestTrace) setTrace(latestTrace);
+      }
       setRuns((items) => items.map((item) => item.runId === latest.runId ? latest : item));
     } catch (err) {
       setError(getParsedApiError(err));
     }
   };
 
-  const cancel = async () => {
-    if (!run) return;
+  const cancel = async (runId: string) => {
     setError(null);
     try {
-      const cancelled = await traderAnalysisApi.cancelRun(run.runId);
-      setRun(cancelled);
+      const cancelled = await traderAnalysisApi.cancelRun(runId);
+      if (selectedRunIdRef.current === runId) setRun(cancelled);
       setRuns((items) => items.map((item) => item.runId === cancelled.runId ? cancelled : item));
     } catch (err) {
       setError(getParsedApiError(err));
@@ -199,14 +301,6 @@ const TraderAnalysisPage: React.FC = () => {
             <button type="submit" className="btn-primary inline-flex items-center gap-2" disabled={submitting}>
               <Play className="h-4 w-4" />
               {submitting ? '提交中' : '开始分析'}
-            </button>
-            <button type="button" className="btn-secondary inline-flex items-center gap-2" disabled={!run} onClick={refresh}>
-              <RefreshCw className={`h-4 w-4 ${polling ? 'animate-spin' : ''}`} />
-              刷新
-            </button>
-            <button type="button" className="btn-secondary inline-flex items-center gap-2" disabled={!run || isTerminal} onClick={cancel}>
-              <Square className="h-4 w-4" />
-              取消
             </button>
           </div>
         </form>
@@ -240,16 +334,16 @@ const TraderAnalysisPage: React.FC = () => {
               <p className="text-xs text-secondary-text">任务状态、报告和模型交互会持久保留，点击任务可继续查看。</p>
             </div>
           </div>
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadRuns()} disabled={loadingRuns}>
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadRuns(false, runsPage)} disabled={loadingRuns}>
             <RefreshCw className={`h-4 w-4 ${loadingRuns ? 'animate-spin' : ''}`} />
             刷新列表
           </button>
         </div>
         {runs.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
+            <table className="w-full min-w-[920px] text-left text-sm">
               <thead className="border-b border-border text-xs text-secondary-text">
-                <tr><th className="px-3 py-2 font-medium">标的</th><th className="px-3 py-2 font-medium">分析日期</th><th className="px-3 py-2 font-medium">任务状态</th><th className="px-3 py-2 font-medium">当前阶段</th><th className="px-3 py-2 font-medium">创建时间</th><th className="px-3 py-2 font-medium">结果</th></tr>
+                <tr><th className="px-3 py-2 font-medium">任务 ID</th><th className="px-3 py-2 font-medium">标的</th><th className="px-3 py-2 font-medium">分析日期</th><th className="px-3 py-2 font-medium">任务状态</th><th className="px-3 py-2 font-medium">当前阶段</th><th className="px-3 py-2 font-medium">报告内容</th><th className="px-3 py-2 font-medium">结果</th><th className="px-3 py-2 font-medium">操作</th></tr>
               </thead>
               <tbody>
                 {runs.map((item) => (
@@ -258,23 +352,68 @@ const TraderAnalysisPage: React.FC = () => {
                     className={`cursor-pointer border-b border-border/70 transition-colors hover:bg-muted/60 ${run?.runId === item.runId ? 'bg-primary/5' : ''}`}
                     onClick={() => void selectRun(item)}
                   >
+                    <td className="px-3 py-3 font-mono text-xs text-secondary-text">{item.runId}</td>
                     <td className="px-3 py-3"><div className="font-medium text-foreground">{item.instrument?.name || item.symbol}</div><div className="font-mono text-xs text-secondary-text">{item.symbol}</div></td>
                     <td className="px-3 py-3 text-secondary-text">{item.tradeDate}</td>
                     <td className="px-3 py-3"><span className="rounded-full bg-muted px-2 py-1 text-xs font-medium text-foreground">{displayLabel(item.taskStatus)}</span></td>
                     <td className="px-3 py-3 text-secondary-text">{displayLabel(item.currentStage)}</td>
-                    <td className="px-3 py-3 text-secondary-text">{new Date(item.createdAt).toLocaleString()}</td>
+                    <td className="max-w-sm px-3 py-3 text-secondary-text">
+                      {item.reports.length ? <div className="space-y-1">{item.reports.slice(0, 3).map((report) => (
+                        <div key={report.kind}><span className="font-medium text-foreground">{reportLabels[report.kind] || report.title}</span><span className="ml-1 line-clamp-1">{report.content.slice(0, 80)}</span></div>
+                      ))}{item.reports.length > 3 ? <span className="text-xs">另有 {item.reports.length - 3} 个报告模块</span> : null}</div> : '尚未生成报告'}
+                    </td>
                     <td className={`px-3 py-3 font-medium ${statusTone(item.analysisStatus)}`}>{displayLabel(item.analysisStatus)}</td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn-secondary inline-flex items-center gap-1 px-2 py-1 text-xs" aria-label={`刷新任务 ${item.runId}`} onClick={(event) => { event.stopPropagation(); void refresh(item.runId); }}>
+                          <RefreshCw className="h-3.5 w-3.5" />刷新
+                        </button>
+                        <button type="button" className="btn-secondary inline-flex items-center gap-1 px-2 py-1 text-xs" aria-label={`取消任务 ${item.runId}`} disabled={terminalStatuses.has(item.taskStatus)} onClick={(event) => { event.stopPropagation(); void cancel(item.runId); }}>
+                          <Square className="h-3.5 w-3.5" />取消
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : <p className="rounded-md border border-dashed border-border p-6 text-center text-sm text-secondary-text">{loadingRuns ? '正在加载任务…' : '暂无交易员分析任务，请在上方创建第一个任务。'}</p>}
+        <div className="mt-4 flex items-center justify-end gap-3 border-t border-border pt-3">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={loadingRuns || runsPage === 1}
+            onClick={() => {
+              const previousPage = runsPage - 1;
+              setRunsPage(previousPage);
+              void loadRuns(false, previousPage);
+            }}
+          >
+            上一页
+          </button>
+          <span className="text-sm text-secondary-text">第 {runsPage} 页</span>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={loadingRuns || !hasNextRunsPage}
+            onClick={() => {
+              const nextPage = runsPage + 1;
+              setRunsPage(nextPage);
+              void loadRuns(false, nextPage);
+            }}
+          >
+            下一页
+          </button>
+        </div>
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <h2 className="mb-3 text-base font-semibold text-foreground">角色流程</h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div><h2 className="text-base font-semibold text-foreground">运行状态 / 角色流程</h2><p className="mt-1 text-xs text-secondary-text">跟随当前选中的任务实时更新。</p></div>
+            {run ? <span className={`text-sm font-semibold ${statusTone(run.analysisStatus)}`}>{displayLabel(run.taskStatus)} · {displayLabel(run.currentStage)}</span> : null}
+          </div>
           <ol className="grid gap-2">
             {roleSteps.map((step, index) => {
               const role = roleKeys[index];
@@ -317,6 +456,27 @@ const TraderAnalysisPage: React.FC = () => {
         </div>
       </section>
 
+      {run ? (
+        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const expanded = event.currentTarget.open;
+          setRunFlowExpanded(expanded);
+          if (expanded) void loadTrace(run.runId);
+        }}>
+          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+            运行流
+            <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载完整流程图</span>
+          </summary>
+          {runFlowExpanded ? <div className="mt-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-secondary-text">完整展示证据预检、多角色并行分析、研究与风险决策及报告输出流程。</p>
+              {polling ? <span className="inline-flex items-center gap-1 text-xs text-secondary-text"><RefreshCw className="h-3.5 w-3.5 animate-spin" />更新中</span> : null}
+            </div>
+            <TraderRunFlowGraph run={run} trace={trace} loading={loadingTrace} />
+          </div> : null}
+        </details>
+      ) : null}
+
       {run?.error ? (
         <section className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           <h2 className="mb-2 font-semibold">错误</h2>
@@ -327,23 +487,83 @@ const TraderAnalysisPage: React.FC = () => {
 
       {run?.reports.length ? (
         <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <h2 className="mb-3 text-base font-semibold text-foreground">报告</h2>
-          <div className="space-y-4">
-            {run.reports.map((report) => (
-              <article key={report.kind} className="rounded-md border border-border bg-background p-4">
-                <h3 className="mb-2 font-semibold text-foreground">{report.title}</h3>
-                <pre className="whitespace-pre-wrap text-sm leading-6 text-secondary-text">{report.content}</pre>
-              </article>
-            ))}
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div><h2 className="text-base font-semibold text-foreground">完整分析报告</h2><p className="mt-1 text-xs text-secondary-text">各角色原始报告均以 Markdown 完整显示。</p></div>
+            <a className="btn-primary inline-flex items-center gap-2" href={`/api/v1/trader-analysis/runs/${encodeURIComponent(run.runId)}/download/markdown`} download={`${run.symbol}_分析报告_${run.tradeDate}.md`}>
+              <Download className="h-4 w-4" />下载 Markdown
+            </a>
           </div>
+          <div className="sticky top-14 z-20 -mx-2 mb-4 border-y border-border bg-card/95 px-2 py-2 shadow-sm backdrop-blur">
+            <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="分析报告模块">
+              {run.reports.map((report) => {
+                const active = activeReport?.kind === report.kind;
+                return (
+                  <button
+                    key={report.kind}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`shrink-0 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-secondary-text hover:bg-muted hover:text-foreground'}`}
+                    onClick={() => setActiveReportKind(report.kind)}
+                  >
+                    {reportLabels[report.kind] || report.title}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {activeReport ? (
+            <article role="tabpanel" className="rounded-md border border-border bg-background p-4">
+              <h3 className="mb-3 text-base font-semibold text-foreground">{reportLabels[activeReport.kind] || activeReport.title}</h3>
+              <ReportMarkdownBody content={activeReport.content} />
+            </article>
+          ) : null}
         </section>
       ) : null}
 
       {run ? (
-        <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <h2 className="mb-3 text-base font-semibold text-foreground">分析过程</h2>
-          {trace.length ? <ol className="space-y-2">
-            {trace.map((item) => <li key={item.sequence} className="rounded-md border border-border bg-background p-3 text-sm">
+        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const expanded = event.currentTarget.open;
+          setDebugExpanded(expanded);
+          if (expanded) void loadEvents(run.runId);
+        }}>
+          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+            Debug 日志
+            <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载</span>
+          </summary>
+          <div className="mt-3">
+            <p className="mt-1 text-xs text-secondary-text">与任务 ID {run.runId} 关联的运行阶段、错误和状态事件。</p>
+          </div>
+          {loadingEvents ? <p className="mt-3 text-sm text-secondary-text">正在加载 Debug 日志…</p> : events.length ? <ol className="mt-3 space-y-2">
+            {events.map((item) => <li key={item.sequence} className="rounded-md border border-border bg-background p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-secondary-text">#{item.sequence}</span>
+                <span className="font-medium text-foreground">{displayLabel(item.eventType)}</span>
+                <span className="ml-auto text-xs text-secondary-text">{new Date(item.createdAt).toLocaleString()}</span>
+              </div>
+              {Object.keys(item.payload).length ? <details className="mt-2"><summary className="cursor-pointer text-xs text-secondary-text">查看事件数据</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-xs text-secondary-text">{JSON.stringify(item.payload, null, 2)}</pre></details> : null}
+            </li>)}
+          </ol> : <p className="text-sm text-secondary-text">当前任务尚未产生 Debug 日志。</p>}
+        </details>
+      ) : null}
+
+      {run ? (
+        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const expanded = event.currentTarget.open;
+          setTraceExpanded(expanded);
+          if (expanded) void loadTrace(run.runId);
+        }}>
+          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+            LLM 交互消息
+            <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载</span>
+          </summary>
+          <div className="mt-3">
+            <p className="mt-1 text-xs text-secondary-text">与任务 ID {run.runId} 关联的脱敏模型请求、响应和工具调用。</p>
+          </div>
+          {loadingTrace ? <p className="mt-3 text-sm text-secondary-text">正在加载 LLM 交互消息…</p> : analysisSteps.length ? <ol className="mt-3 space-y-2">
+            {analysisSteps.map((item) => <li key={item.sequence} className="rounded-md border border-border bg-background p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs text-secondary-text">#{item.sequence}</span>
                 <span className="font-medium text-foreground">{displayLabel(item.eventType)}</span>
@@ -351,10 +571,10 @@ const TraderAnalysisPage: React.FC = () => {
                 {item.deploymentName ? <span className="text-xs text-secondary-text">{item.deploymentName} · {item.provider}/{item.model}</span> : null}
                 <span className="ml-auto text-xs text-secondary-text">{new Date(item.createdAt).toLocaleString()}</span>
               </div>
-              {Object.keys(item.payload).length ? <details className="mt-2"><summary className="cursor-pointer text-xs text-secondary-text">查看输入 / 输出 / 数据</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-xs text-secondary-text">{JSON.stringify(item.payload, null, 2)}</pre></details> : null}
+              {Object.keys(item.payload).length ? <details className="mt-2"><summary className="cursor-pointer text-xs text-secondary-text">查看输入 / 输出 / 执行信息</summary><div className="mt-2"><StepDetails payload={item.payload} /></div></details> : null}
             </li>)}
-          </ol> : <p className="text-sm text-secondary-text">分析过程尚未产生；运行开始后会显示阶段、模型交互、工具与证据。</p>}
-        </section>
+          </ol> : <p className="text-sm text-secondary-text">分析过程尚未产生；运行开始后会显示模型与工具步骤的详细输入输出。</p>}
+        </details>
       ) : null}
     </div>
   );

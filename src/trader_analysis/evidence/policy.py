@@ -24,6 +24,9 @@ def evaluate_overall_status(ledger: EvidenceLedger) -> str:
 
     if usable_optional >= 2:
         return "degraded" if ledger.warnings else "complete"
-    if usable_optional == 1:
-        return "degraded"
-    return "insufficient_evidence"
+    # Core point-in-time market evidence is sufficient to run the graph in a
+    # constrained mode. Optional evidence gaps must remain visible in the
+    # quality report and keep the result degraded, but must not suppress every
+    # analyst report for historical dates where look-ahead is intentionally
+    # prohibited.
+    return "degraded"

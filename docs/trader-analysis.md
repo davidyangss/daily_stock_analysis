@@ -11,7 +11,7 @@ TRADER_ANALYSIS_ENABLED=true
 TRADER_ANALYSIS_MAX_CONCURRENCY=1
 TRADER_ANALYSIS_QUEUE_LIMIT=8
 TRADER_ANALYSIS_TASK_TIMEOUT_SECONDS=900
-TRADER_ANALYSIS_PROVIDER_TIMEOUT_SECONDS=20
+TRADER_ANALYSIS_PROVIDER_TIMEOUT_SECONDS=120
 TRADER_ANALYSIS_RESULTS_DIR=data/trader_analysis
 TRADER_ANALYSIS_CHECKPOINT_DB=data/trader_analysis/checkpoints.sqlite
 TRADER_ANALYSIS_MIN_DAILY_BARS=30
@@ -70,8 +70,11 @@ TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 - 日线、确定性指标、快照、新闻、情绪和财务均先进入 canonical evidence ledger；阻断问题不会作为正常工具文本进入 Graph。
 - Sentiment 第一阶段使用已核验新闻；StockTwits/Reddit 对 A 股明确标为不可用并降低置信度。
 - 历史日期不会读取当前实时价、当前新闻或缺少公告可得日期的当前财务数据；当 point-in-time 证据不足时返回 `insufficient_evidence`。
-- 运行、事件、分角色报告、质量摘要、版本元数据和独立 `trace.json` 持久化到 `TRADER_ANALYSIS_RESULTS_DIR/runs/<run_id>/`，不写入 `analysis_history`。
-- Web 的“交易员分析任务”列表会读取上述独立任务域；选择历史任务后可继续查看当前阶段、角色进度、数据质量、关联报告及脱敏后的 LLM/工具交互。当前任务列表只包含交易员分析，不合并现有策略分析任务。
+- 新上市标的截至分析日已有至少 3 个有效交易日、但少于建议历史长度时，以 `limited_daily_history` 降级继续分析；报告必须明确短历史限制，不得把不成熟的技术指标解释成高置信度趋势。少于 3 个有效交易日仍阻断分析。
+- 历史分析具备日线与核验价格且无阻断问题时，即使新闻、财务和情绪因 point-in-time 约束不可用，也会以 `degraded` 运行 Graph 并生成各角色报告；缺失能力必须保留在数据质量报告中，不得使用当前数据回填历史上下文。
+- 运行、分角色报告、Debug 事件和脱敏后的 LLM/工具 trace 以 `run_id` 为外键持久化到 `TRADER_ANALYSIS_RESULTS_DIR/trader_analysis.sqlite3`；同时继续双写 `runs/<run_id>/` 下的 JSON 文件用于兼容回滚，升级时会把旧 JSON 任务懒迁移到 SQLite，不写入 `analysis_history`。
+- 完成后的 Web 列表显示报告正文摘要，报告区以 Markdown 展示市场、情绪、新闻、基本面、多空研究、交易员、三类风险分析、组合经理、最终决策和投资建议；`GET /api/v1/trader-analysis/runs/{run_id}/download/markdown` 下载同一份合并中文 Markdown 报告。
+- Web 的“交易员分析任务”列表会读取上述独立任务域；每个列表项可独立刷新或取消运行中的任务。角色摘要状态随任务响应更新，不依赖流程图是否打开；运行流默认折叠，仅在展开后加载与该任务关联的轨迹并渲染完整流程图，展示证据预检、四类并行分析、研究辩论与裁决、交易计划、风险辩论、组合决策和报告输出状态；Debug 日志仍按需加载。脱敏后的 LLM 与工具步骤按一次调用展示详细输入、输出、耗时或错误；完成后折叠同一次调用的“开始”记录，普通任务生命周期事件只保留在 Debug 日志中。当前任务列表只包含交易员分析，不合并现有策略分析任务。
 - trace 记录阶段、角色 LLM 请求/响应、deployment 路由、工具参数/结果、实际消费的 evidence、耗时和错误；敏感键及常见 token 会脱敏，单项内容按配置截断，且不会混入正式报告。
 - checkpoint 与 decision memory 保持原版语义；历史决策收益回看使用 DSA canonical 日线，不访问 yfinance。
 - 队列达到 `TRADER_ANALYSIS_QUEUE_LIMIT` 时创建接口返回 HTTP 429。任务超时或取消后不会发布正常最终报告。

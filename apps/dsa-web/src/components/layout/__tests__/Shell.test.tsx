@@ -103,5 +103,6 @@ describe('Shell', () => {
     );
 
     expect(screen.getByTestId('shell-current-title')).toHaveTextContent('交易员分析');
+    expect(screen.getByTestId('shell-current-title')).toHaveClass('text-lg', 'sm:text-xl');
   });
 });

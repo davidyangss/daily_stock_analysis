@@ -48,6 +48,7 @@ class RoleTraceCallback(BaseCallbackHandler):
         self.emit = emit
         self.content_limit = content_limit
         self._started: dict[str, float] = {}
+        self._inputs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def _event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -62,22 +63,37 @@ class RoleTraceCallback(BaseCallbackHandler):
         )
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs) -> None:
+        operation_id = str(run_id)
+        input_payload = {
+            "messages": messages,
+            "invocation_params": kwargs.get("invocation_params", {}),
+        }
         with self._lock:
-            self._started[str(run_id)] = time.monotonic()
-        self._event("llm.started", {"messages": messages, "invocation_params": kwargs.get("invocation_params", {})})
+            self._started[operation_id] = time.monotonic()
+            self._inputs[operation_id] = input_payload
+        self._event("llm.started", {"operation_id": operation_id, "input": input_payload})
 
     def on_llm_end(self, response, *, run_id, **kwargs) -> None:
-        started = self._started.pop(str(run_id), None)
+        operation_id = str(run_id)
+        with self._lock:
+            started = self._started.pop(operation_id, None)
+            input_payload = self._inputs.pop(operation_id, {})
         self._event("llm.completed", {
-            "response": response,
+            "operation_id": operation_id,
+            "input": input_payload,
+            "output": {"response": response},
             "usage": getattr(response, "llm_output", None),
             "duration_ms": round((time.monotonic() - started) * 1000) if started else None,
         })
 
     def on_llm_error(self, error, *, run_id, **kwargs) -> None:
-        started = self._started.pop(str(run_id), None)
+        operation_id = str(run_id)
+        with self._lock:
+            started = self._started.pop(operation_id, None)
+            input_payload = self._inputs.pop(operation_id, {})
         self._event("llm.failed", {
-            "error_type": type(error).__name__,
-            "error": str(error),
+            "operation_id": operation_id,
+            "input": input_payload,
+            "error": {"type": type(error).__name__, "message": str(error)},
             "duration_ms": round((time.monotonic() - started) * 1000) if started else None,
         })

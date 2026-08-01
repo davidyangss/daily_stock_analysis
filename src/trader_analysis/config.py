@@ -85,7 +85,7 @@ class TraderAnalysisConfig:
             max_concurrency=int(getattr(config, "trader_analysis_max_concurrency", 1)),
             queue_limit=int(getattr(config, "trader_analysis_queue_limit", 8)),
             task_timeout_seconds=int(getattr(config, "trader_analysis_task_timeout_seconds", 900)),
-            provider_timeout_seconds=int(getattr(config, "trader_analysis_provider_timeout_seconds", 20)),
+            provider_timeout_seconds=int(getattr(config, "trader_analysis_provider_timeout_seconds", 120)),
             results_dir=Path(str(getattr(config, "trader_analysis_results_dir", "data/trader_analysis"))),
             checkpoint_db=Path(str(getattr(
                 config,

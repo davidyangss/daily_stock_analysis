@@ -19,7 +19,7 @@ import random
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -671,6 +671,96 @@ class DataFetcherManager:
         self._fundamental_cache_lock = RLock()
         self._fundamental_timeout_worker_limit = 8
         self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
+
+    @staticmethod
+    def _daily_adjustment(provider: str) -> str:
+        if provider in {"TencentFetcher", "AkshareFetcher", "EfinanceFetcher", "BaostockFetcher"}:
+            return "qfq"
+        if provider == "YfinanceFetcher":
+            return "auto_adjust"
+        if provider in {"TushareFetcher", "PytdxFetcher", "TickFlowFetcher"}:
+            return "none"
+        return "unknown"
+
+    @staticmethod
+    def _market_data_repository():
+        from src.config import get_config
+        from src.repositories.market_data_repo import MarketDataRepository
+
+        config = get_config()
+        if not getattr(config, "market_data_cache_enabled", False):
+            return None
+        path = getattr(config, "market_data_database_path", "./data/market_data.db")
+        return MarketDataRepository(path)
+
+    def _load_cached_daily_data(
+        self,
+        *,
+        market: str,
+        stock_code: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        days: int,
+        min_rows: Optional[int],
+    ) -> Optional[Tuple[pd.DataFrame, str]]:
+        try:
+            requested_end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+            # Today's bar is provisional and must still come from a live provider.
+            if requested_end >= date.today():
+                return None
+            requested_start = (
+                datetime.strptime(start_date, "%Y-%m-%d").date()
+                if start_date else requested_end - timedelta(days=days * 2)
+            )
+            repository = self._market_data_repository()
+            if repository is None:
+                return None
+            frame, adjustment = repository.load_best_daily_bars(
+                market=market,
+                symbol=stock_code,
+                start_date=requested_start,
+                end_date=requested_end,
+            )
+            required = max(1, int(min_rows if min_rows is not None else days))
+            if frame.empty or len(frame) < required:
+                return None
+            last_date = pd.to_datetime(frame["date"], errors="coerce").max()
+            if pd.isna(last_date) or last_date.date() < requested_end - timedelta(days=7):
+                return None
+            logger.info(
+                "[日线缓存命中] %s market=%s adjustment=%s rows=%s",
+                stock_code, market, adjustment, len(frame),
+            )
+            return frame, "market_data_db"
+        except Exception as exc:
+            logger.warning("[日线缓存读取失败] %s: %s", stock_code, exc)
+            return None
+
+    def _persist_and_return_daily_data(
+        self,
+        df: pd.DataFrame,
+        *,
+        market: str,
+        stock_code: str,
+        provider: str,
+    ) -> Tuple[pd.DataFrame, str]:
+        try:
+            repository = self._market_data_repository()
+            if repository is None:
+                return df, provider
+            counts = repository.upsert_historical_bars(
+                df,
+                market=market,
+                symbol=stock_code,
+                adjustment=self._daily_adjustment(provider),
+                provider=provider,
+                before_date=date.today(),
+            )
+            logger.info("[日线历史入库] %s provider=%s result=%s", stock_code, provider, counts)
+        except Exception as exc:
+            # Cache persistence must not turn a successful provider call into an outage.
+            logger.warning("[日线历史入库失败] %s provider=%s: %s", stock_code, provider, exc)
+        return df, provider
 
     def _get_iwencai_adapter(self) -> Optional[IwencaiAdapter]:
         """Return the optional iWencai adapter without exposing its credential."""
@@ -1390,7 +1480,8 @@ class DataFetcherManager:
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        min_rows: Optional[int] = None,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -1407,6 +1498,7 @@ class DataFetcherManager:
             start_date: 开始日期
             end_date: 结束日期
             days: 获取天数
+            min_rows: 可选的最低记录数；当前来源不足时继续尝试后续来源
             
         Returns:
             Tuple[DataFrame, str]: (数据, 成功的数据源名称)
@@ -1421,6 +1513,7 @@ class DataFetcherManager:
 
         fetchers = self._get_fetchers_snapshot()
         errors = []
+        best_partial: Optional[Tuple[pd.DataFrame, str]] = None
         request_start = time.time()
 
         # 快速路径：美股使用专用数据源路由；港股先过滤不支持港股日线的数据源
@@ -1434,6 +1527,16 @@ class DataFetcherManager:
         is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
         is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
         market = "us" if is_us else "hk" if is_hk else "jp" if is_jp else "kr" if is_kr else "tw" if is_tw else "cn"
+        cached = self._load_cached_daily_data(
+            market=market,
+            stock_code=stock_code,
+            start_date=start_date,
+            end_date=end_date,
+            days=days,
+            min_rows=min_rows,
+        )
+        if cached is not None:
+            return cached
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
@@ -1533,7 +1636,12 @@ class DataFetcherManager:
                                 f"rows={len(df)}, elapsed={elapsed:.2f}s"
                             )
                             self._record_daily_source_success(fetcher, market)
-                            return df, fetcher.name
+                            return self._persist_and_return_daily_data(
+                                df,
+                                market=market,
+                                stock_code=stock_code,
+                                provider=fetcher.name,
+                            )
                         duration_ms = int((time.time() - attempt_start) * 1000)
                         record_provider_run(
                             data_type="daily_data",
@@ -1598,6 +1706,33 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
+                    if min_rows is not None and len(df) < min_rows:
+                        if best_partial is None or len(df) > len(best_partial[0]):
+                            best_partial = (df, fetcher.name)
+                        duration_ms = int((time.time() - attempt_start) * 1000)
+                        error_reason = f"insufficient rows: {len(df)} < {min_rows}"
+                        record_provider_run(
+                            data_type="daily_data",
+                            provider=fetcher.name,
+                            operation="get_daily_data",
+                            success=False,
+                            latency_ms=duration_ms,
+                            error_type="insufficient_rows",
+                            error_message=error_reason,
+                            fallback_to=fallback_to,
+                            record_count=len(df),
+                        )
+                        errors.append(f"[{fetcher.name}] {error_reason}")
+                        logger.warning(
+                            "[数据源记录不足 %s/%s] [%s] %s: rows=%s, min_rows=%s，继续切换",
+                            attempt,
+                            total_fetchers,
+                            fetcher.name,
+                            stock_code,
+                            len(df),
+                            min_rows,
+                        )
+                        continue
                     duration_ms = int((time.time() - attempt_start) * 1000)
                     record_provider_run(
                         data_type="daily_data",
@@ -1613,7 +1748,12 @@ class DataFetcherManager:
                         f"rows={len(df)}, elapsed={elapsed:.2f}s"
                     )
                     self._record_daily_source_success(fetcher, market)
-                    return df, fetcher.name
+                    return self._persist_and_return_daily_data(
+                        df,
+                        market=market,
+                        stock_code=stock_code,
+                        provider=fetcher.name,
+                    )
                 duration_ms = int((time.time() - attempt_start) * 1000)
                 record_provider_run(
                     data_type="daily_data",
@@ -1655,6 +1795,24 @@ class DataFetcherManager:
                 # 继续尝试下一个数据源
                 continue
         
+        # 所有数据源都未达到最低记录数时，返回记录最多的部分结果，
+        # 由上层按自身质量策略决定是否阻断。
+        if best_partial is not None:
+            df, provider_name = best_partial
+            logger.warning(
+                "[数据源部分结果] %s 所有来源均未达到 min_rows=%s，返回 [%s] rows=%s",
+                stock_code,
+                min_rows,
+                provider_name,
+                len(df),
+            )
+            return self._persist_and_return_daily_data(
+                df,
+                market=market,
+                stock_code=stock_code,
+                provider=provider_name,
+            )
+
         # 所有数据源都失败
         error_summary = f"所有数据源获取 {stock_code} 失败:\n" + "\n".join(errors)
         elapsed = time.time() - request_start

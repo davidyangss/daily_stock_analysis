@@ -743,7 +743,7 @@ class Config:
     trader_analysis_max_concurrency: int = 1
     trader_analysis_queue_limit: int = 8
     trader_analysis_task_timeout_seconds: int = 900
-    trader_analysis_provider_timeout_seconds: int = 20
+    trader_analysis_provider_timeout_seconds: int = 120
     trader_analysis_results_dir: str = "data/trader_analysis"
     trader_analysis_checkpoint_db: str = "data/trader_analysis/checkpoints.sqlite"
     trader_analysis_min_daily_bars: int = 30
@@ -1026,6 +1026,9 @@ class Config:
 
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
+    # 标准化历史行情独立 SQLite；与分析业务库分离，便于独立备份和迁移。
+    market_data_database_path: str = "./data/market_data.db"
+    market_data_cache_enabled: bool = True
     sqlite_wal_enabled: bool = True
     sqlite_busy_timeout_ms: int = 5000
     sqlite_write_retry_max: int = 3
@@ -2005,6 +2008,8 @@ class Config:
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            market_data_database_path=os.getenv('MARKET_DATA_DATABASE_PATH', './data/market_data.db'),
+            market_data_cache_enabled=parse_env_bool(os.getenv('MARKET_DATA_CACHE_ENABLED'), default=True),
             sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
             sqlite_busy_timeout_ms=parse_env_int(
                 os.getenv('SQLITE_BUSY_TIMEOUT_MS'),

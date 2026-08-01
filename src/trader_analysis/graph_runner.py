@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import inspect
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from src.trader_analysis.config import TraderAnalysisConfig
 from src.trader_analysis.schemas.instrument import InstrumentContext
@@ -30,6 +31,7 @@ class TradingAgentsGraphRunner:
         toolkit: DsaTradingAgentsToolkit,
         instrument: InstrumentContext,
         trade_date: str,
+        run_id: str,
         is_cancelled: Callable[[], bool] = lambda: False,
         trace_emit: Optional[Callable[..., None]] = None,
     ) -> tuple[dict, str]:
@@ -40,7 +42,6 @@ class TradingAgentsGraphRunner:
                 "installed TradingAgents lacks required data_toolkit/role_llms injection seams"
             )
         graph_config = self._graph_config()
-        graph_config["should_cancel"] = is_cancelled
 
         # Identity resolution is run-scoped and deterministic; this override only
         # replaces upstream yfinance identity lookup and does not alter graph shape.
@@ -52,8 +53,17 @@ class TradingAgentsGraphRunner:
                 return (
                     f"The instrument is `{identity.symbol}`; name={identity.name or identity.symbol}; "
                     f"exchange={identity.exchange}; market=China A-share; currency=CNY. "
-                    "Preserve this identity in every tool call and report."
+                    "Preserve this identity in every tool call and report. "
+                    "所有报告正文、标题、评级和结论必须使用简体中文；第一句话也必须使用中文，不得用英文段落或英文标题。"
+                    "市场技术分析不得以 `FINAL TRANSACTION PROPOSAL` 等英文固定短语开头；"
+                    "如确需标记最终交易建议，请写成 `最终交易建议：买入/持有/卖出`。"
                 )
+
+            def _run_signature(self, asset_type: str) -> str:
+                # An API run is an immutable execution attempt. Never resume a
+                # partially written LangGraph message sequence from another
+                # run for the same symbol/date.
+                return f"{super()._run_signature(asset_type)}|dsa_run={run_id}"
 
         role_llms = self._build_role_llms(trace_emit)
         graph = DsaTradingAgentsGraph(
@@ -63,6 +73,16 @@ class TradingAgentsGraphRunner:
             data_toolkit=toolkit,
             role_llms=role_llms,
         )
+        # Upstream deep-copies graph_config during construction. A bound
+        # threading.Event method contains an unpicklable lock, so attach the
+        # run-scoped cancellation callback only after that copy boundary.
+        graph.config["should_cancel"] = is_cancelled
+        # TradingAgents 0.3.1 only retains streamed state chunks inside its
+        # debug branch. Cancellation also selects streaming, so leaving debug
+        # false discards every chunk and produces an empty final state. Enable
+        # the upstream branch until the pinned dependency includes that
+        # one-line trace-append indentation fix.
+        graph.debug = True
         try:
             state, decision = graph.propagate(instrument.symbol, trade_date, asset_type="stock")
         except RuntimeError as exc:
@@ -111,7 +131,7 @@ class TradingAgentsGraphRunner:
             "quick_think_llm": quick_route.model,
             "deep_think_llm": deep_route.model,
             "backend_url": quick_route.base_url or None,
-            "output_language": "Chinese",
+            "output_language": "Simplified Chinese",
             "max_debate_rounds": 1,
             "max_risk_discuss_rounds": 1,
             "max_recur_limit": 100,
@@ -132,6 +152,7 @@ class TradingAgentsGraphRunner:
 
         clients: dict[str, Any] = {}
         for role, route in self.config.model_routes.items():
+            client_provider = _tradingagents_provider(route.provider, route.base_url)
             kwargs: dict[str, Any] = {
                 "timeout": self.config.provider_timeout_seconds,
                 "max_retries": 2,
@@ -146,7 +167,7 @@ class TradingAgentsGraphRunner:
                     content_limit=self.config.trace_content_max_chars,
                 )]
             clients[role] = create_llm_client(
-                provider=route.provider,
+                provider=client_provider,
                 model=route.model,
                 base_url=route.base_url or None,
                 **kwargs,
@@ -154,12 +175,12 @@ class TradingAgentsGraphRunner:
         return clients
 
 
-REPORT_FIELDS = (
-    ("market_report", "market", "Market Analyst"),
-    ("sentiment_report", "sentiment", "Sentiment Analyst"),
-    ("news_report", "news", "News Analyst"),
-    ("fundamentals_report", "fundamentals", "Fundamentals Analyst"),
-    ("investment_plan", "research_decision", "Research Manager"),
-    ("trader_investment_plan", "trader_plan", "Trader"),
-    ("final_trade_decision", "final_decision", "Portfolio Manager"),
-)
+def _tradingagents_provider(provider: str, base_url: str) -> str:
+    """Use the generic client for non-native OpenAI-compatible gateways."""
+    if provider.lower() != "openai" or not base_url:
+        return provider
+    parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
+    host = (parsed.hostname or "").lower()
+    if host == "api.openai.com" or host.endswith(".openai.com"):
+        return provider
+    return "openai_compatible"

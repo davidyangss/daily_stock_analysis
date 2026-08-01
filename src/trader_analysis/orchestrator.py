@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime
 from typing import Callable, Optional
@@ -21,15 +22,16 @@ from src.trader_analysis.schemas.result import (
     TraderTaskStatus,
 )
 from src.trader_analysis.graph_runner import (
-    REPORT_FIELDS,
     TradingAgentsConfigurationError,
     TradingAgentsCancelledError,
     TradingAgentsGraphRunner,
 )
+from src.trader_analysis.reporting import reports_from_state
 from src.trader_analysis.toolkit import DsaTradingAgentsToolkit
 
 
 EventSink = Callable[[str, dict], None]
+logger = logging.getLogger(__name__)
 
 
 class TraderAnalysisOrchestrator:
@@ -133,6 +135,10 @@ class TraderAnalysisOrchestrator:
         run.instrument = instrument
         ledger = create_ledger(run_id, instrument.symbol, trade_date)
 
+        emit("evidence.started", {"capability": "market_daily_bars", "input": {
+            "symbol": instrument.symbol, "trade_date": trade_date.isoformat(),
+            "preferred_daily_bars": self.config.min_daily_bars,
+        }})
         daily = self.market_adapter.fetch_daily_bars(
             run_id=run_id,
             symbol=instrument.symbol,
@@ -140,8 +146,16 @@ class TraderAnalysisOrchestrator:
             min_daily_bars=self.config.min_daily_bars,
         )
         ledger.add(daily)
+        emit("evidence.completed", {"capability": daily.capability, "output": {
+            "status": daily.status.value, "provider": daily.provider,
+            "trading_days": (daily.payload or {}).get("trading_days"),
+            "issue_codes": [issue.code for issue in daily.issues],
+        }})
         emit("quality.updated", {"capability": daily.capability, "status": daily.status.value})
 
+        emit("evidence.started", {"capability": "verified_market_snapshot", "input": {
+            "symbol": instrument.symbol, "trade_date": trade_date.isoformat(),
+        }})
         snapshot = self.market_adapter.fetch_snapshot(
             run_id=run_id,
             symbol=instrument.symbol,
@@ -149,8 +163,17 @@ class TraderAnalysisOrchestrator:
             daily_envelope=daily,
         )
         ledger.add(snapshot)
+        emit("evidence.completed", {"capability": snapshot.capability, "output": {
+            "status": snapshot.status.value, "provider": snapshot.provider,
+            "last_price": (snapshot.payload or {}).get("last_price"),
+            "price_kind": (snapshot.payload or {}).get("price_kind"),
+            "issue_codes": [issue.code for issue in snapshot.issues],
+        }})
         emit("quality.updated", {"capability": snapshot.capability, "status": snapshot.status.value})
 
+        emit("evidence.started", {"capability": "fundamentals", "input": {
+            "symbol": instrument.symbol, "trade_date": trade_date.isoformat(),
+        }})
         fundamentals = self.context_adapter.fetch_fundamentals(
             run_id=run_id,
             symbol=instrument.symbol,
@@ -158,8 +181,16 @@ class TraderAnalysisOrchestrator:
             timeout=self.config.provider_timeout_seconds,
         )
         ledger.add(fundamentals)
+        emit("evidence.completed", {"capability": fundamentals.capability, "output": {
+            "status": fundamentals.status.value, "provider": fundamentals.provider,
+            "issue_codes": [issue.code for issue in fundamentals.issues],
+        }})
         emit("quality.updated", {"capability": fundamentals.capability, "status": fundamentals.status.value})
 
+        emit("evidence.started", {"capability": "news", "input": {
+            "symbol": instrument.symbol, "name": instrument.name,
+            "trade_date": trade_date.isoformat(),
+        }})
         news = self.context_adapter.fetch_news(
             run_id=run_id,
             symbol=instrument.symbol,
@@ -167,8 +198,16 @@ class TraderAnalysisOrchestrator:
             trade_date=trade_date,
         )
         ledger.add(news)
+        emit("evidence.completed", {"capability": news.capability, "output": {
+            "status": news.status.value, "provider": news.provider,
+            "issue_codes": [issue.code for issue in news.issues],
+        }})
         emit("quality.updated", {"capability": news.capability, "status": news.status.value})
 
+        emit("evidence.started", {"capability": "sentiment", "input": {
+            "symbol": instrument.symbol, "trade_date": trade_date.isoformat(),
+            "news_evidence_id": news.evidence_id,
+        }})
         sentiment = self.context_adapter.build_sentiment(
             run_id=run_id,
             symbol=instrument.symbol,
@@ -176,6 +215,10 @@ class TraderAnalysisOrchestrator:
             news=news,
         )
         ledger.add(sentiment)
+        emit("evidence.completed", {"capability": sentiment.capability, "output": {
+            "status": sentiment.status.value, "provider": sentiment.provider,
+            "issue_codes": [issue.code for issue in sentiment.issues],
+        }})
         emit("quality.updated", {"capability": sentiment.capability, "status": sentiment.status.value})
 
         ledger.overall_status = evaluate_overall_status(ledger)  # type: ignore[assignment]
@@ -208,6 +251,7 @@ class TraderAnalysisOrchestrator:
                 toolkit=DsaTradingAgentsToolkit(ledger, trace_emit=trace_emit),
                 instrument=instrument,
                 trade_date=trade_date.isoformat(),
+                run_id=run_id,
                 is_cancelled=is_cancelled,
                 trace_emit=trace_emit,
             )
@@ -220,10 +264,11 @@ class TraderAnalysisOrchestrator:
         except TradingAgentsConfigurationError as exc:
             return self._failed(run, ledger, emit, "configuration_error", str(exc), "graph_configuration")
         except Exception as exc:
+            logger.exception("TradingAgents graph execution failed for run_id=%s", run_id)
             return self._failed(
                 run, ledger, emit, "graph_execution_failed",
                 "TradingAgents 多角色分析执行失败", "graph_execution",
-                details={"error_type": type(exc).__name__},
+                details={"error_type": type(exc).__name__, "error": str(exc)},
             )
 
         if is_cancelled():
@@ -233,11 +278,9 @@ class TraderAnalysisOrchestrator:
             emit("run.cancelled", {})
             return run
 
-        for field, kind, title in REPORT_FIELDS:
-            content = str(state.get(field) or "").strip()
-            if content:
-                run.reports.append(TraderAnalysisReport(kind=kind, title=title, content=content))
-                emit("report.written", {"kind": kind})
+        for report in reports_from_state(state):
+            run.reports.append(report)
+            emit("report.written", {"kind": report.kind})
         run.reports.append(TraderAnalysisReport(
             kind="data_quality",
             title="数据质量与分析限制",

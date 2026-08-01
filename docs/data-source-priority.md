@@ -82,6 +82,15 @@ EASTMONEY_BROWSER_ENABLED=false
 | 宏观 | `MACRO_SOURCE_PRIORITY` | `iwencai,tushare,financial_media` |
 | 筹码 | `CHIP_SOURCE_PRIORITY` | `eastmoney_browser,akshare_em,iwencai,local_estimate` |
 
+## 历史日线本地存储
+
+- 标准化历史日线默认启用并存入独立 SQLite：`MARKET_DATA_CACHE_ENABLED=true`、`MARKET_DATA_DATABASE_PATH=./data/market_data.db`，与分析业务库分离，不按月拆库。
+- 非今日的日线请求优先读取本地库；缓存数量不足、日期覆盖不足或不存在时，才按 `DAILY_SOURCE_PRIORITY` 请求远程来源。
+- 远程获取成功后仅将今日之前的数据幂等写入本地库；今日盘中数据保持临时状态，不固化为历史最终值。
+- 日线按 `market + symbol + adjustment + trade_date` 唯一保存，前复权、不复权及供应商自动复权序列不会静默混合。
+- 同一身份的数据发生变化时更新标准记录、增加 `revision`，并在 `daily_bar_observations` 保存本次插入或修订证据；完全相同的数据不重复写观察记录。
+- SQLite 启用 WAL、`busy_timeout` 与短写事务。后续达到明确容量或并发阈值时，可保持 Repository 接口不变迁移 PostgreSQL，或按年份/证券哈希分片；当前不采用月度文件分片。
+
 ## 问财数据契约和边界
 
 - 结构化查询使用 `POST https://openapi.iwencai.com/v1/query2data`。

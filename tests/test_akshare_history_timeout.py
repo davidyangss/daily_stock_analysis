@@ -140,6 +140,7 @@ def test_akshare_call_with_timeout_reaps_timed_out_worker_process() -> None:
 @pytest.mark.parametrize(
     ("method_name", "api_name", "call_name"),
     [
+        ("_fetch_stock_data_em", "stock_zh_a_hist", "ak.stock_zh_a_hist"),
         ("_fetch_stock_data_sina", "stock_zh_a_daily", "ak.stock_zh_a_daily"),
         ("_fetch_stock_data_tx", "stock_zh_a_hist_tx", "ak.stock_zh_a_hist_tx"),
     ],
@@ -183,11 +184,17 @@ def test_sina_and_tencent_history_calls_use_timeout_wrapper(
     assert captured["func"] is fake_api_func
     assert captured["timeout"] == 7
     assert captured["call_name"] == call_name
-    assert captured["kwargs"]["symbol"] == "sh605218"
+    expected_symbol = "605218" if method_name == "_fetch_stock_data_em" else "sh605218"
+    assert captured["kwargs"]["symbol"] == expected_symbol
     assert captured["kwargs"]["start_date"] == "20260501"
     assert captured["kwargs"]["end_date"] == "20260525"
     assert captured["kwargs"]["adjust"] == "qfq"
-    assert list(df.columns)[:7] == ["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额"]
+    if method_name == "_fetch_stock_data_em":
+        assert captured["kwargs"]["period"] == "daily"
+    if method_name == "_fetch_stock_data_em":
+        assert list(df.columns)[:7] == ["date", "open", "high", "low", "close", "volume", "amount"]
+    else:
+        assert list(df.columns)[:7] == ["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额"]
 
 
 def test_stock_data_falls_back_after_sina_timeout(monkeypatch) -> None:

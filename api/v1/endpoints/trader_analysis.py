@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from api.deps import get_config_dep
 from api.v1.schemas.trader_analysis import (
@@ -14,6 +16,7 @@ from api.v1.schemas.trader_analysis import (
 )
 from src.config import Config
 from src.trader_analysis.schemas.result import TraderTaskStatus
+from src.trader_analysis.reporting import render_run_markdown
 from src.trader_analysis.task_service import TraderAnalysisCapacityError, get_trader_analysis_task_service
 
 router = APIRouter()
@@ -101,6 +104,28 @@ def get_trader_analysis_trace(
     if service.get(run_id) is None:
         raise _not_found(run_id)
     return service.trace(run_id, after=after)
+
+
+@router.get("/runs/{run_id}/download/markdown")
+def download_trader_analysis_markdown(
+    run_id: str,
+    config: Config = Depends(get_config_dep),
+) -> Response:
+    run = _service(config).get(run_id)
+    if run is None:
+        raise _not_found(run_id)
+    if not run.reports:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "trader_analysis_report_not_ready", "message": "报告尚未生成，暂时不能下载"},
+        )
+    filename = f"{run.symbol}_分析报告_{run.trade_date.isoformat()}.md"
+    disposition = f"attachment; filename=trader-analysis-{run.symbol}.md; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=render_run_markdown(run),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.post("/runs/{run_id}/cancel", response_model=TraderAnalysisRun)

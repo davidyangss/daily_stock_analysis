@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from functools import wraps
 from typing import Any, Sequence
 
@@ -170,20 +171,28 @@ class DsaTradingAgentsToolkit:
         @wraps(original)
         def traced(*args, **kwargs):
             started = time.monotonic()
+            operation_id = str(uuid.uuid4())
+            input_payload = {"tool": name, "arguments": kwargs or args}
             if self.trace_emit:
-                self.trace_emit(event_type="tool.started", stage="tool", payload={"tool": name, "arguments": kwargs or args})
+                self.trace_emit(event_type="tool.started", stage="tool", payload={
+                    "operation_id": operation_id, "input": input_payload,
+                })
             try:
                 result = original(*args, **kwargs)
             except Exception as exc:
                 if self.trace_emit:
                     self.trace_emit(event_type="tool.failed", stage="tool", payload={
-                        "tool": name, "error_type": type(exc).__name__, "error": str(exc),
+                        "operation_id": operation_id,
+                        "input": input_payload,
+                        "error": {"type": type(exc).__name__, "message": str(exc)},
                         "duration_ms": round((time.monotonic() - started) * 1000),
                     })
                 raise
             if self.trace_emit:
                 self.trace_emit(event_type="tool.completed", stage="tool", payload={
-                    "tool": name, "result": result,
+                    "operation_id": operation_id,
+                    "input": input_payload,
+                    "output": {"result": result},
                     "duration_ms": round((time.monotonic() - started) * 1000),
                 })
             return result

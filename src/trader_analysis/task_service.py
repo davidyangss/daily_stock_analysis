@@ -59,6 +59,7 @@ class TraderAnalysisTaskService:
                 "self": f"/api/v1/trader-analysis/runs/{run_id}",
                 "events": f"/api/v1/trader-analysis/runs/{run_id}/events",
                 "trace": f"/api/v1/trader-analysis/runs/{run_id}/trace",
+                "markdown": f"/api/v1/trader-analysis/runs/{run_id}/download/markdown",
             },
             metadata={
                 "tradingagents_version": service_config.tradingagents_version,
@@ -144,8 +145,11 @@ class TraderAnalysisTaskService:
                 "self": f"/api/v1/trader-analysis/runs/{run_id}",
                 "events": f"/api/v1/trader-analysis/runs/{run_id}/events",
                 "trace": f"/api/v1/trader-analysis/runs/{run_id}/trace",
+                "markdown": f"/api/v1/trader-analysis/runs/{run_id}/download/markdown",
             }
-            self.repository.save_run(run)
+            persisted = self.repository.get_run(run_id)
+            if persisted is None or persisted.current_stage != "timeout":
+                self.repository.save_run(run)
         except Exception as exc:
             failed = self.repository.get_run(run_id)
             if failed is not None and failed.task_status != TraderTaskStatus.CANCELLED:
@@ -170,7 +174,24 @@ class TraderAnalysisTaskService:
 
     def _timeout(self, run_id: str, flag: threading.Event) -> None:
         flag.set()
-        self._emit(run_id, "run.timeout", {})
+        run = self.repository.get_run(run_id)
+        if run is not None and run.task_status not in {
+            TraderTaskStatus.COMPLETED,
+            TraderTaskStatus.FAILED,
+            TraderTaskStatus.CANCELLED,
+        }:
+            run.task_status = TraderTaskStatus.FAILED
+            run.current_stage = "timeout"
+            run.completed_at = datetime.now()
+            run.error = build_error(
+                code="task_timeout",
+                message="交易员分析任务超过最大执行时间",
+                stage="task_service",
+                run_id=run_id,
+                retriable=True,
+            )
+            self.repository.save_run(run)
+        self._emit(run_id, "run.timeout", {"timeout_seconds": "configured_task_timeout"})
 
     def _emit(self, run_id: str, event_type: str, payload: dict) -> TraderAnalysisEvent:
         with self._state_lock:
@@ -216,7 +237,23 @@ class TraderAnalysisTaskService:
             created_at=datetime.now(),
             **values,
         )
-        return self.repository.append_trace(event)
+        saved = self.repository.append_trace(event)
+        role = values.get("role")
+        event_type = values.get("event_type")
+        role_status = {
+            "llm.started": "running",
+            "llm.completed": "completed",
+            "llm.failed": "failed",
+        }.get(event_type)
+        if isinstance(role, str) and role and role_status is not None:
+            with self._state_lock:
+                run = self.repository.get_run(run_id)
+                if run is not None:
+                    progress = dict(run.metadata.get("role_progress") or {})
+                    progress[role] = role_status
+                    run.metadata["role_progress"] = progress
+                    self.repository.save_run(run)
+        return saved
 
 
 def get_trader_analysis_task_service() -> TraderAnalysisTaskService:

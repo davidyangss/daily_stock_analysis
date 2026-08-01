@@ -67,3 +67,11 @@ def test_quality_policy_marks_complete_when_core_and_two_optional_are_clean():
     ledger.add(_envelope("news"))
     ledger.add(_envelope("fundamentals"))
     assert evaluate_overall_status(ledger) == "complete"
+
+
+def test_quality_policy_allows_core_only_historical_analysis_as_degraded():
+    ledger = create_ledger("run-1", "688825", date(2026, 7, 29))
+    ledger.add(_envelope("market_daily_bars", EvidenceStatus.PARTIAL))
+    ledger.add(_envelope("verified_market_snapshot"))
+
+    assert evaluate_overall_status(ledger) == "degraded"

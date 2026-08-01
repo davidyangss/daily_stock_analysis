@@ -99,4 +99,10 @@ describe('traderAnalysisApi', () => {
     expect(post).toHaveBeenCalledWith('/api/v1/trader-analysis/runs/run%2F1/cancel');
     expect(result.taskStatus).toBe('cancelled');
   });
+
+  it('builds the encoded Markdown download URL', () => {
+    expect(traderAnalysisApi.markdownUrl('run/1')).toBe(
+      '/api/v1/trader-analysis/runs/run%2F1/download/markdown',
+    );
+  });
 });

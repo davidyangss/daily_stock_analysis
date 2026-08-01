@@ -411,6 +411,56 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             DataFetcherManager.reset_daily_source_health()
 
     @patch("src.config.get_config")
+    def test_daily_min_rows_continues_to_next_source(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace()
+        primary = MagicMock()
+        primary.name = "TencentFetcher"
+        primary.priority = 0
+        primary.get_daily_data.return_value = _make_daily_df().iloc[:2]
+
+        backup = MagicMock()
+        backup.name = "AkshareFetcher"
+        backup.priority = 1
+        backup.get_daily_data.return_value = pd.concat([_make_daily_df()] * 35, ignore_index=True)
+
+        manager = DataFetcherManager(fetchers=[primary, backup])
+        df, source = manager.get_daily_data(
+            "000001",
+            start_date="2026-01-01",
+            end_date="2026-05-08",
+            min_rows=30,
+        )
+
+        self.assertEqual(source, "AkshareFetcher")
+        self.assertGreaterEqual(len(df), 30)
+        primary.get_daily_data.assert_called_once()
+        backup.get_daily_data.assert_called_once()
+
+    @patch("src.config.get_config")
+    def test_daily_min_rows_returns_largest_partial_when_all_sources_are_short(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace()
+        primary = MagicMock()
+        primary.name = "TencentFetcher"
+        primary.priority = 0
+        primary.get_daily_data.return_value = pd.concat([_make_daily_df()] * 2, ignore_index=True)
+
+        backup = MagicMock()
+        backup.name = "AkshareFetcher"
+        backup.priority = 1
+        backup.get_daily_data.return_value = pd.concat([_make_daily_df()] * 5, ignore_index=True)
+
+        manager = DataFetcherManager(fetchers=[primary, backup])
+        df, source = manager.get_daily_data(
+            "000001",
+            start_date="2026-01-01",
+            end_date="2026-05-08",
+            min_rows=30,
+        )
+
+        self.assertEqual(source, "AkshareFetcher")
+        self.assertEqual(len(df), 5)
+
+    @patch("src.config.get_config")
     def test_daily_source_health_does_not_preconsume_half_open_fallback(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace()
         DataFetcherManager.reset_daily_source_health()

@@ -43,4 +43,8 @@ export const traderAnalysisApi = {
     const response = await apiClient.post(`/api/v1/trader-analysis/runs/${encodeURIComponent(runId)}/cancel`);
     return toCamelCase(response.data) as TraderAnalysisRun;
   },
+
+  markdownUrl(runId: string): string {
+    return `/api/v1/trader-analysis/runs/${encodeURIComponent(runId)}/download/markdown`;
+  },
 };
