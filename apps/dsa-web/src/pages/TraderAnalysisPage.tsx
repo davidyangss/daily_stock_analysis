@@ -9,10 +9,10 @@ import { getParsedApiError, type ParsedApiError } from '../api/error';
 import type { TraderAnalysisEvent, TraderAnalysisRun, TraderAnalysisTraceEvent } from '../types/traderAnalysis';
 
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
-const roleSteps = ['市场分析师', '情绪分析师', '新闻分析师', '基本面分析师', '多空研究辩论', '交易员', '风险委员会', '投资组合经理'];
-const roleKeys = ['market', 'sentiment', 'news', 'fundamentals', 'research_debate', 'trader', 'risk_debate', 'portfolio_manager'];
 const runsPageSize = 5;
 const today = () => new Date().toISOString().slice(0, 10);
+const stickySectionSummaryClass = 'sticky top-14 z-30 -mx-4 -mt-4 cursor-pointer list-inside border-b border-border bg-card/95 px-4 py-4 font-semibold text-foreground shadow-sm backdrop-blur';
+const collapsibleSectionClass = 'rounded-lg border border-border bg-card p-4 shadow-sm [&:not([open])]:pb-0';
 
 const displayLabels: Record<string, string> = {
   complete: '完整', degraded: '降级可用', insufficient_evidence: '证据不足',
@@ -196,17 +196,6 @@ const TraderAnalysisPage: React.FC = () => {
     return [...run.quality.blockingIssues, ...run.quality.warnings];
   }, [run]);
 
-  const roleProgress = useMemo(() => {
-    const persisted = run?.metadata.role_progress;
-    const progress = persisted && typeof persisted === 'object' && !Array.isArray(persisted)
-      ? persisted as Record<string, unknown>
-      : {};
-    const completed = new Set(Object.entries(progress).filter(([, status]) => status === 'completed').map(([role]) => role));
-    const active = Object.entries(progress).find(([, status]) => status === 'running')?.[0];
-    if (run?.taskStatus === 'completed' && completed.size === 0) roleKeys.forEach((role) => completed.add(role));
-    return { completed, active };
-  }, [run]);
-
   const analysisSteps = useMemo(() => {
     const relevant = trace.filter((item) => item.eventType.startsWith('llm.') || item.eventType.startsWith('tool.'));
     const terminalOperations = new Set(relevant
@@ -269,6 +258,7 @@ const TraderAnalysisPage: React.FC = () => {
   };
 
   const cancel = async (runId: string) => {
+    if (!window.confirm(`确定要取消交易员分析任务 ${runId} 吗？取消后当前分析将停止，且无法继续。`)) return;
     setError(null);
     try {
       const cancelled = await traderAnalysisApi.cancelRun(runId);
@@ -408,35 +398,15 @@ const TraderAnalysisPage: React.FC = () => {
         </div>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div><h2 className="text-base font-semibold text-foreground">运行状态 / 角色流程</h2><p className="mt-1 text-xs text-secondary-text">跟随当前选中的任务实时更新。</p></div>
-            {run ? <span className={`text-sm font-semibold ${statusTone(run.analysisStatus)}`}>{displayLabel(run.taskStatus)} · {displayLabel(run.currentStage)}</span> : null}
-          </div>
-          <ol className="grid gap-2">
-            {roleSteps.map((step, index) => {
-              const role = roleKeys[index];
-              const completed = roleProgress.completed.has(role);
-              const active = roleProgress.active === role;
-              return (
-              <li key={step} className={`flex items-center gap-3 rounded-md border px-3 py-2 text-sm ${active ? 'border-primary bg-primary/5' : 'border-border bg-background'}`}>
-                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs ${completed ? 'bg-emerald-100 text-emerald-700' : active ? 'bg-primary text-primary-foreground' : 'bg-muted text-secondary-text'}`}>{completed ? '✓' : index + 1}</span>
-                <span className="text-foreground">{step}</span>
-                <span className="ml-auto text-xs text-secondary-text">{completed ? '已完成' : active ? '进行中' : '等待中'}</span>
-              </li>
-              );
-            })}
-          </ol>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <div className="mb-3 flex items-center gap-2">
+      <details className="rounded-lg border border-border bg-card p-4 shadow-sm">
+          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+            <span className="inline-flex items-center gap-2">
             {run?.analysisStatus === 'insufficient_evidence' ? <Ban className="h-5 w-5 text-red-600" /> : run?.analysisStatus === 'degraded' ? <AlertTriangle className="h-5 w-5 text-amber-600" /> : <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
-            <h2 className="text-base font-semibold text-foreground">数据质量</h2>
-          </div>
+              <span className="text-base font-semibold text-slate-950 dark:text-slate-100">数据质量</span>
+            </span>
+          </summary>
           {run ? (
-            <div className="space-y-3 text-sm">
+            <div className="mt-3 space-y-3 text-sm">
               <p className="text-secondary-text">来源：{run.quality.providersUsed.length ? run.quality.providersUsed.join(', ') : '无'}</p>
               {qualityIssues.length ? (
                 <ul className="space-y-2">
@@ -452,48 +422,21 @@ const TraderAnalysisPage: React.FC = () => {
                 </ul>
               ) : <p className="text-secondary-text">暂无阻断问题或降级警告。</p>}
             </div>
-          ) : <p className="text-sm text-secondary-text">数据质量会始终显示在这里；证据不足时不会渲染成正常买卖建议。</p>}
-        </div>
-      </section>
-
-      {run ? (
-        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
-          if (event.target !== event.currentTarget) return;
-          const expanded = event.currentTarget.open;
-          setRunFlowExpanded(expanded);
-          if (expanded) void loadTrace(run.runId);
-        }}>
-          <summary className="cursor-pointer list-inside font-semibold text-foreground">
-            运行流
-            <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载完整流程图</span>
-          </summary>
-          {runFlowExpanded ? <div className="mt-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs text-secondary-text">完整展示证据预检、多角色并行分析、研究与风险决策及报告输出流程。</p>
-              {polling ? <span className="inline-flex items-center gap-1 text-xs text-secondary-text"><RefreshCw className="h-3.5 w-3.5 animate-spin" />更新中</span> : null}
-            </div>
-            <TraderRunFlowGraph run={run} trace={trace} loading={loadingTrace} />
-          </div> : null}
-        </details>
-      ) : null}
-
-      {run?.error ? (
-        <section className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-          <h2 className="mb-2 font-semibold">错误</h2>
-          <p>{displayLabel(run.error.code)}：{run.error.message}</p>
-          <p className="mt-1 font-mono text-xs">追踪编号：{run.error.traceId}</p>
-        </section>
-      ) : null}
+          ) : <p className="mt-3 text-sm text-secondary-text">数据质量会始终显示在这里；证据不足时不会渲染成正常买卖建议。</p>}
+      </details>
 
       {run?.reports.length ? (
-        <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <div><h2 className="text-base font-semibold text-foreground">完整分析报告</h2><p className="mt-1 text-xs text-secondary-text">各角色原始报告均以 Markdown 完整显示。</p></div>
+        <details className={collapsibleSectionClass}>
+          <summary className={stickySectionSummaryClass}>
+            完整分析报告
+            <span className="ml-2 text-xs font-normal text-secondary-text">各角色原始报告均以 Markdown 完整显示</span>
+          </summary>
+          <div className="mt-4 flex justify-end">
             <a className="btn-primary inline-flex items-center gap-2" href={`/api/v1/trader-analysis/runs/${encodeURIComponent(run.runId)}/download/markdown`} download={`${run.symbol}_分析报告_${run.tradeDate}.md`}>
               <Download className="h-4 w-4" />下载 Markdown
             </a>
           </div>
-          <div className="sticky top-14 z-20 -mx-2 mb-4 border-y border-border bg-card/95 px-2 py-2 shadow-sm backdrop-blur">
+          <div className="-mx-2 my-4 border-y border-border px-2 py-2">
             <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="分析报告模块">
               {run.reports.map((report) => {
                 const active = activeReport?.kind === report.kind;
@@ -518,17 +461,46 @@ const TraderAnalysisPage: React.FC = () => {
               <ReportMarkdownBody content={activeReport.content} />
             </article>
           ) : null}
+        </details>
+      ) : null}
+
+      {run ? (
+        <details className={collapsibleSectionClass} onToggle={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const expanded = event.currentTarget.open;
+          setRunFlowExpanded(expanded);
+          if (expanded) void loadTrace(run.runId);
+        }}>
+          <summary className={stickySectionSummaryClass}>
+            运行流
+            <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载完整流程图</span>
+          </summary>
+          {runFlowExpanded ? <div className="mt-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-secondary-text">完整展示证据预检、多角色并行分析、研究与风险决策及报告输出流程。</p>
+              {polling ? <span className="inline-flex items-center gap-1 text-xs text-secondary-text"><RefreshCw className="h-3.5 w-3.5 animate-spin" />更新中</span> : null}
+            </div>
+            <TraderRunFlowGraph run={run} trace={trace} loading={loadingTrace} />
+          </div> : null}
+        </details>
+      ) : null}
+
+      {run?.error ? (
+        <section className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <h2 className="mb-2 font-semibold">错误</h2>
+          <p>{displayLabel(run.error.code)}：{run.error.message}</p>
+          <p className="mt-1 font-mono text-xs">追踪编号：{run.error.traceId}</p>
         </section>
       ) : null}
 
       {run ? (
-        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
+        <details className={collapsibleSectionClass} onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
           const expanded = event.currentTarget.open;
           setDebugExpanded(expanded);
           if (expanded) void loadEvents(run.runId);
         }}>
-          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+          <summary className={stickySectionSummaryClass}>
             Debug 日志
             <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载</span>
           </summary>
@@ -549,13 +521,13 @@ const TraderAnalysisPage: React.FC = () => {
       ) : null}
 
       {run ? (
-        <details className="rounded-lg border border-border bg-card p-4 shadow-sm" onToggle={(event) => {
+        <details className={collapsibleSectionClass} onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
           const expanded = event.currentTarget.open;
           setTraceExpanded(expanded);
           if (expanded) void loadTrace(run.runId);
         }}>
-          <summary className="cursor-pointer list-inside font-semibold text-foreground">
+          <summary className={stickySectionSummaryClass}>
             LLM 交互消息
             <span className="ml-2 text-xs font-normal text-secondary-text">展开后加载</span>
           </summary>

@@ -60,6 +60,7 @@ describe('TraderAnalysisPage', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     mockListRuns.mockResolvedValue([firstRun, secondRun]);
     mockGetRun.mockImplementation(async (runId: string) => runId === firstRun.runId ? firstRun : secondRun);
     mockGetEvents.mockResolvedValue([{
@@ -93,9 +94,8 @@ describe('TraderAnalysisPage', () => {
     await waitFor(() => expect(symbolInput).toHaveValue(firstRun.symbol));
     expect(mockGetEvents).not.toHaveBeenCalled();
     expect(mockGetTrace).not.toHaveBeenCalled();
-    expect(screen.getByText('运行状态 / 角色流程')).toBeInTheDocument();
+    expect(screen.queryByText('运行状态 / 角色流程')).not.toBeInTheDocument();
     expect(screen.getByText('运行流')).toBeInTheDocument();
-    expect(screen.getAllByText('市场分析师').find((node) => node.closest('li'))?.closest('li')).toHaveTextContent('已完成');
     expect(screen.queryByTestId('run-flow-graph')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('运行流'));
@@ -122,6 +122,9 @@ describe('TraderAnalysisPage', () => {
     expect(traceDetails).toHaveAttribute('open');
     expect(mockGetTrace).toHaveBeenCalled();
 
+    const reportSummary = screen.getAllByText('完整分析报告').find((node) => node.closest('summary'));
+    expect(reportSummary).toBeDefined();
+    fireEvent.click(reportSummary!);
     expect(screen.getByRole('tabpanel')).toHaveTextContent('市场报告正文');
     fireEvent.click(screen.getByRole('tab', { name: '📰 新闻事件分析' }));
     expect(screen.getByRole('tabpanel')).toHaveTextContent('新闻报告正文');
@@ -134,6 +137,7 @@ describe('TraderAnalysisPage', () => {
       expect(symbolInput).toHaveValue(secondRun.symbol);
       expect(dateInput).toHaveValue(secondRun.tradeDate);
     });
+    fireEvent.click(screen.getByText('数据质量'));
     expect(screen.getByText('历史基本面数据不满足时点要求')).toBeInTheDocument();
     expect(screen.getByText('历史新闻数据不满足时点要求')).toBeInTheDocument();
     expect(screen.getByText('社交情绪数据源不可用')).toBeInTheDocument();
@@ -151,7 +155,53 @@ describe('TraderAnalysisPage', () => {
     await waitFor(() => expect(mockGetRun).toHaveBeenCalledWith(running.runId));
 
     fireEvent.click(screen.getByRole('button', { name: `取消任务 ${running.runId}` }));
+    expect(window.confirm).toHaveBeenCalledWith(`确定要取消交易员分析任务 ${running.runId} 吗？取消后当前分析将停止，且无法继续。`);
     await waitFor(() => expect(mockCancelRun).toHaveBeenCalledWith(running.runId));
+  });
+
+  it('keeps a running task when cancellation is not confirmed', async () => {
+    const running = { ...firstRun, taskStatus: 'running' as const, currentStage: 'graph_running' };
+    mockListRuns.mockResolvedValue([running]);
+    mockGetRun.mockResolvedValue(running);
+    vi.mocked(window.confirm).mockReturnValue(false);
+    render(<TraderAnalysisPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `取消任务 ${running.runId}` }));
+
+    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(mockCancelRun).not.toHaveBeenCalled();
+  });
+
+  it('collapses the complete report by default and keeps expanded section headers below the app header', async () => {
+    render(<TraderAnalysisPage />);
+
+    const reportSummary = await screen.findByText('完整分析报告');
+    const reportDetails = reportSummary.closest('details');
+    expect(reportDetails).not.toHaveAttribute('open');
+    fireEvent.click(reportSummary);
+    expect(reportDetails).toHaveAttribute('open');
+
+    for (const title of ['运行流', '完整分析报告', 'Debug 日志', 'LLM 交互消息']) {
+      const details = screen.getByText(title).closest('details');
+      expect(screen.getByText(title).closest('summary')).toHaveClass('sticky', 'top-14');
+      expect(details).toHaveClass('[&:not([open])]:pb-0');
+    }
+  });
+
+  it('collapses data quality by default and places the complete report before the run flow', async () => {
+    render(<TraderAnalysisPage />);
+
+    const qualitySummary = await screen.findByText('数据质量');
+    expect(qualitySummary).toHaveClass('font-semibold', 'text-slate-950', 'dark:text-slate-100');
+    const qualityDetails = qualitySummary.closest('details');
+    expect(qualityDetails).not.toHaveAttribute('open');
+    fireEvent.click(qualitySummary);
+    expect(qualityDetails).toHaveAttribute('open');
+
+    const reportSummary = screen.getByText('完整分析报告');
+    const runFlowSummary = screen.getByText('运行流');
+    expect(qualitySummary.compareDocumentPosition(reportSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(reportSummary.compareDocumentPosition(runFlowSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('covers the run-flow graph with a loading mask while trace is loading', async () => {

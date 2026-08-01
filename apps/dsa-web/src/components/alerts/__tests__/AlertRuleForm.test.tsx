@@ -34,6 +34,13 @@ describe('AlertRuleForm', () => {
     );
   }
 
+  it('constrains the form to the mobile viewport and provides horizontal touch scrolling as a fallback', () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    const card = screen.getByText('创建告警规则').closest('.terminal-card');
+    expect(card).toHaveClass('min-w-0', 'max-w-full', 'overflow-x-auto', 'touch-pan-x');
+  });
+
   it('submits a price_cross rule payload', async () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 

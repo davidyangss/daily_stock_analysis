@@ -1609,6 +1609,7 @@ describe('DecisionSignalsPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
     const dialog = await screen.findByRole('dialog');
+    expect(dialog.closest('[role="presentation"]')).toHaveStyle({ zIndex: '90' });
     expect(screen.getAllByText('贵州茅台')).toHaveLength(2);
     expect(within(dialog).getByText('趋势保持')).toBeInTheDocument();
     expect(within(dialog).getByText('#3001')).toBeInTheDocument();

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -673,6 +673,33 @@ describe('ChatPage', () => {
     expect(screen.queryByRole('button', { name: '导出会话' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '发送到已配置的通知机器人/邮箱' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '历史对话' })).toBeInTheDocument();
+  });
+
+  it('fixes the mobile Chat navigation below the shell header and vertically centers its desktop actions', async () => {
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: '请分析 600519' },
+      { id: 'assistant-1', role: 'assistant', content: '趋势偏强' },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const header = await screen.findByTestId('chat-page-header');
+    const navigation = screen.getByTestId('chat-header-nav');
+    expect(header).toHaveClass('pt-16', 'md:pt-0');
+    expect(navigation).toHaveClass('fixed', 'top-14', 'md:static', 'items-center');
+    expect(screen.getByRole('button', { name: '导出会话为 Markdown 文件' }).parentElement).toHaveClass('inline-flex', 'h-9', 'items-center');
+    expect(screen.getByRole('button', { name: '发送到已配置的通知机器人/邮箱' }).parentElement).toHaveClass('inline-flex', 'h-9', 'items-center');
+    expect(within(navigation).getByText('导出会话')).toHaveClass('hidden', 'sm:inline');
+    expect(within(navigation).getByText('发送')).toHaveClass('hidden', 'sm:inline');
+
+    fireEvent.click(screen.getByRole('button', { name: '历史对话' }));
+    const mobileSidebar = screen.getByTestId('chat-mobile-sidebar');
+    expect(mobileSidebar).toHaveClass('z-[90]');
+    expect(within(mobileSidebar).getByTestId('chat-session-list-scroll')).toHaveClass('overflow-y-auto', 'touch-pan-y');
   });
 
   it('exports the current session from the header action', async () => {

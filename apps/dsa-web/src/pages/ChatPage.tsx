@@ -1065,12 +1065,13 @@ const ChatPage: React.FC = () => {
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 md:hidden"
+          data-testid="chat-mobile-sidebar"
+          className="fixed inset-0 z-[90] md:hidden"
           onClick={() => setSidebarOpen(false)}
         >
           <div className="page-drawer-overlay absolute inset-0" />
           <div
-            className="absolute left-0 top-0 bottom-0 w-72 flex flex-col glass-card overflow-hidden border-r border-white/10 bg-card/90 shadow-2xl"
+            className="absolute bottom-0 left-0 top-0 flex min-h-0 w-72 touch-pan-y flex-col overflow-hidden overscroll-contain border-r border-white/10 bg-card/90 shadow-2xl glass-card"
             onClick={(e) => e.stopPropagation()}
           >
             {sidebarContent}
@@ -1092,8 +1093,14 @@ const ChatPage: React.FC = () => {
 
       {/* Main chat area */}
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="mb-4 flex-shrink-0 space-y-3">
-          <div className="flex items-start justify-between gap-4">
+        <header
+          data-testid="chat-page-header"
+          className="mb-4 flex-shrink-0 space-y-3 pt-16 md:pt-0"
+        >
+          <div
+            data-testid="chat-header-nav"
+            className="fixed inset-x-0 top-14 z-[70] flex min-h-14 items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-2 backdrop-blur-xl md:static md:min-h-0 md:gap-4 md:border-0 md:bg-transparent md:px-0 md:py-0 md:backdrop-blur-none"
+          >
             <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
               <button
                 onClick={() => setSidebarOpen(true)}
@@ -1115,7 +1122,7 @@ const ChatPage: React.FC = () => {
                 </svg>
               </button>
               <svg
-                className="w-6 h-6 text-cyan"
+                className="hidden h-6 w-6 text-cyan sm:block"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -1138,9 +1145,9 @@ const ChatPage: React.FC = () => {
               ) : null}
             </h1>
             {messages.length > 0 && (
-              <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2">
+              <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2 self-center">
                 <Tooltip content="导出会话为 Markdown 文件">
-                  <span className="inline-flex">
+                  <span className="inline-flex h-9 items-center">
                     <Button
                       variant="action-primary"
                       size="sm"
@@ -1160,12 +1167,12 @@ const ChatPage: React.FC = () => {
                           d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                         />
                       </svg>
-                      导出会话
+                      <span className="hidden sm:inline">导出会话</span>
                     </Button>
                   </span>
                 </Tooltip>
                 <Tooltip content="发送到已配置的通知机器人/邮箱">
-                  <span className="inline-flex">
+                  <span className="inline-flex h-9 items-center">
                     <Button
                       variant="action-primary"
                       size="sm"
@@ -1225,7 +1232,7 @@ const ChatPage: React.FC = () => {
                           />
                         </svg>
                       )}
-                      发送
+                      <span className="hidden sm:inline">发送</span>
                     </Button>
                   </span>
                 </Tooltip>

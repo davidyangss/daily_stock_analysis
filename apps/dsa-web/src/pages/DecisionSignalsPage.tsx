@@ -1562,6 +1562,7 @@ const DecisionSignalsPage: React.FC = () => {
         onClose={() => setSelected(null)}
         title={t('decisionSignals.detailTitle')}
         width="max-w-3xl"
+        zIndex={90}
       >
         {selected ? (
           <div className="space-y-4">

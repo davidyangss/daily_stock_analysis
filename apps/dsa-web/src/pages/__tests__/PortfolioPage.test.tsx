@@ -354,6 +354,16 @@ describe('PortfolioPage FX refresh', () => {
     expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
   });
 
+  it('allows mobile date inputs to shrink inside adjacent grid controls', async () => {
+    const { container } = render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dateInputs = Array.from(container.querySelectorAll('input[type="date"]'));
+    expect(dateInputs.length).toBeGreaterThan(0);
+    dateInputs.forEach((input) => expect(input).toHaveClass('min-w-0', 'max-w-full', 'w-full'));
+  });
+
   it('renders stale FX status with a manual refresh button', async () => {
     render(<PortfolioPage />);
 

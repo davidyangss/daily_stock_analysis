@@ -469,8 +469,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   };
 
   return (
-    <Card title={text.cardTitle} subtitle={text.cardSubtitle} variant="bordered" padding="md">
-      <form className="space-y-4" noValidate onSubmit={(event) => void handleSubmit(event)}>
+    <Card className="min-w-0 max-w-full overflow-x-auto overscroll-x-contain touch-pan-x" title={text.cardTitle} subtitle={text.cardSubtitle} variant="bordered" padding="md">
+      <form className="min-w-0 space-y-4" noValidate onSubmit={(event) => void handleSubmit(event)}>
         <div className="grid gap-4 md:grid-cols-2">
           <Input
             label={text.ruleName}
