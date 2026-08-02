@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
+from datetime import date, datetime
 from functools import wraps
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import pandas as pd
 
@@ -25,6 +27,14 @@ class DsaTradingAgentsToolkit:
         self.symbol = ledger.symbol
         self._tools: dict[str, Any] = {}
         self.trace_emit = trace_emit
+        self._consumed_capabilities: set[str] = set()
+        self._consumed_lock = threading.Lock()
+
+    @property
+    def consumed_capabilities(self) -> set[str]:
+        """Return the canonical evidence capabilities actually requested by tools."""
+        with self._consumed_lock:
+            return set(self._consumed_capabilities)
 
     def _require_symbol(self, ticker: str) -> None:
         normalized = str(ticker).upper().replace("SH", "").replace("SZ", "").replace("BJ", "").split(".")[0]
@@ -35,6 +45,8 @@ class DsaTradingAgentsToolkit:
         envelope = self.ledger.envelopes.get(capability)
         if envelope is None:
             raise ValueError(f"canonical evidence unavailable: {capability}")
+        with self._consumed_lock:
+            self._consumed_capabilities.add(capability)
         if self.trace_emit:
             self.trace_emit(
                 event_type="evidence.consumed", stage="tool", payload={
@@ -106,11 +118,14 @@ class DsaTradingAgentsToolkit:
 
     def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
         self._require_symbol(ticker)
-        return _json((self._envelope("news").payload or {}).get("items") or [])
+        items = list((self._envelope("news").payload or {}).get("items") or [])
+        return _json(self._filter_items_by_date(items, start_date=start_date, end_date=end_date))
 
     def get_global_news(self, curr_date: str, look_back_days: int = 7, limit: int = 10) -> str:
-        items = list((self._envelope("news").payload or {}).get("items") or [])
-        return _json(items[:limit])
+        return (
+            "DATA_UNAVAILABLE: 本次运行未加载具备独立来源和时点约束的 A 股宏观/全市场新闻；"
+            "不得用个股新闻冒充宏观新闻或虚构市场背景。"
+        )
 
     def get_insider_transactions(self, symbol: str) -> str:
         self._require_symbol(symbol)
@@ -144,19 +159,86 @@ class DsaTradingAgentsToolkit:
         }
 
     def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> str:
-        return self.get_fundamentals(ticker, curr_date)
+        self._require_symbol(ticker)
+        return _json(self._financial_statement_view("balance_sheet"))
 
     def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> str:
-        return self.get_fundamentals(ticker, curr_date)
+        self._require_symbol(ticker)
+        return _json(self._financial_statement_view("cash_flow"))
 
     def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> str:
-        return self.get_fundamentals(ticker, curr_date)
+        self._require_symbol(ticker)
+        return _json(self._financial_statement_view("income_statement"))
 
-    def prefetch_sentiment(self, ticker: str, start_date: str, end_date: str) -> dict[str, str]:
+    def _financial_statement_view(self, statement: str) -> dict[str, Any]:
+        envelope = self._envelope("fundamentals")
+        if envelope.status == EvidenceStatus.UNAVAILABLE:
+            return {"statement": statement, **self._unavailable_fundamentals(envelope)}
+        payload = envelope.payload or {}
+        earnings = payload.get("earnings") if isinstance(payload.get("earnings"), dict) else {}
+        earnings_data = earnings.get("data") if isinstance(earnings.get("data"), dict) else earnings
+        primary = earnings_data.get("financial_report")
+        supplemental = earnings_data.get("supplemental_financial_reports")
+        reports = ([primary] if isinstance(primary, dict) else []) + (
+            [item for item in supplemental if isinstance(item, dict)]
+            if isinstance(supplemental, list) else []
+        )
+        field_map = {
+            "balance_sheet": ("total_assets", "total_liabilities", "equity_parent"),
+            "cash_flow": ("operating_cash_flow",),
+            "income_statement": ("revenue", "net_profit_parent"),
+        }
+        identity_fields = (
+            "report_date", "announcement_date", "available_at", "ann_date",
+            "report_type", "document_type", "currency", "period_consistency",
+            "field_periods", "field_report_types",
+        )
+        fields = field_map[statement]
+        selected = [
+            {
+                key: report[key]
+                for key in (*identity_fields, *fields)
+                if key in report and report[key] not in (None, "", {}, [])
+            }
+            for report in reports
+        ]
+        selected = [item for item in selected if any(field in item for field in fields)]
+        return {
+            "status": "ok" if selected else "unavailable",
+            "statement": statement,
+            "provider": envelope.provider,
+            "as_of": envelope.as_of,
+            "fetched_at": envelope.fetched_at,
+            "reports": selected,
+            "reason": None if selected else "requested statement fields are absent from canonical DSA evidence",
+        }
+
+    def prefetch_sentiment(self, ticker: str, start_date: str, end_date: str) -> dict[str, Any]:
+        return self._trace_direct_call(
+            "prefetch_sentiment",
+            {"ticker": ticker, "start_date": start_date, "end_date": end_date},
+            lambda: self._prefetch_sentiment(ticker, start_date, end_date),
+        )
+
+    def _prefetch_sentiment(self, ticker: str, start_date: str, end_date: str) -> dict[str, Any]:
         self._require_symbol(ticker)
         envelope = self._envelope("sentiment")
         payload = envelope.payload or {}
-        social_items = payload.get("social_items") or []
+        social_items = self._filter_items_by_date(
+            list(payload.get("social_items") or []), start_date=start_date, end_date=end_date,
+        )
+        news_envelope = self._envelope("news")
+        news_items = self._filter_items_by_date(
+            list((news_envelope.payload or {}).get("items") or []),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        news_block = (
+            "DSA SOURCE CONTRACT: 以下记录是国内个股新闻或公告证据。search_provider 表示检索服务，"
+            "publisher/source 表示内容发布方，二者不得混称。未提供 published_date 的记录只能作为"
+            "低置信度运行时线索；不得推断未提供的正文、日期或发布机构。\n\n"
+            f"{_json(news_items)}"
+        )
         social_block = (
             "DSA SOURCE CONTRACT: The records below are public investor-community search results "
             "collected through SearXNG from allowlisted Xueqiu, Zhihu, or Weibo pages. They are NOT "
@@ -170,7 +252,43 @@ class DsaTradingAgentsToolkit:
             f"{_json(social_items)}"
         )
         return {
-            "news": "<not used: news evidence belongs to the News Analyst>",
+            # Provider-neutral sections are consumed by the compatible
+            # upstream seam. Legacy keys below remain during the 0.3.1
+            # transition and preserve the original default path.
+            "sections": [
+                {
+                    "key": "domestic_news",
+                    "label": "国内个股新闻与公告",
+                    "source_kind": "news",
+                    "provider": news_envelope.provider or "unavailable",
+                    "as_of": str(news_envelope.as_of) if news_envelope.as_of else None,
+                    "fetched_at": str(news_envelope.fetched_at),
+                    "guidance": (
+                        "区分事件事实和媒体/机构观点；search_provider 不是 publisher，"
+                        "无 published_date 时降低置信度。"
+                    ),
+                    "records": news_items,
+                },
+                {
+                    "key": "domestic_investor_community",
+                    "label": "国内投资者社区观点（雪球、知乎、微博）",
+                    "source_kind": "investor_community",
+                    "provider": envelope.provider or "unavailable",
+                    "as_of": str(envelope.as_of) if envelope.as_of else None,
+                    "fetched_at": str(envelope.fetched_at),
+                    "guidance": (
+                        "只能使用实际记录；不得要求或虚构 Bullish/Bearish 标签、"
+                        "upvote、comment、完整帖子或评论线程。"
+                    ),
+                    "records": social_items,
+                },
+            ],
+            # Preserve the original TradingAgents multi-source sentiment
+            # structure, but replace US-specific sources with explicit A-share
+            # news and community evidence contracts.
+            "news": news_block,
+            "news_source": news_envelope.provider or "unavailable",
+            "news_as_of": str(news_envelope.fetched_at),
             # TradingAgents 0.3.1 exposes only the legacy news/stocktwits/reddit
             # bundle keys. Put the DSA community block in the second slot and
             # make its true identity explicit until the pinned upstream adds a
@@ -182,21 +300,102 @@ class DsaTradingAgentsToolkit:
             "reddit": "<unavailable: A-share Reddit source is not configured>",
         }
 
+    @classmethod
+    def _filter_items_by_date(
+        cls,
+        items: list[dict[str, Any]],
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        start = cls._parse_date(start_date)
+        end = cls._parse_date(end_date)
+        selected: list[dict[str, Any]] = []
+        for raw_item in items:
+            item = dict(raw_item)
+            published = cls._parse_date(item.get("published_date"))
+            if published is None:
+                item["date_filter_status"] = "undated_retained_low_confidence"
+                selected.append(item)
+            elif (start is None or published >= start) and (end is None or published <= end):
+                item["date_filter_status"] = "within_requested_window"
+                selected.append(item)
+        return selected
+
+    @staticmethod
+    def _parse_date(value: Any) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            digits = "".join(character for character in text if character.isdigit())[:8]
+            try:
+                return datetime.strptime(digits, "%Y%m%d").date()
+            except ValueError:
+                return None
+
     def fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5, benchmark: str = ""
     ) -> tuple[float | None, float | None, int | None]:
         """Resolve decision-memory returns from the same DSA daily-bar evidence."""
+        return self._trace_direct_call(
+            "fetch_returns",
+            {
+                "ticker": ticker, "trade_date": trade_date,
+                "holding_days": holding_days, "benchmark": benchmark,
+            },
+            lambda: self._fetch_returns(ticker),
+        )
+
+    def _fetch_returns(self, ticker: str) -> tuple[float | None, float | None, int | None]:
         self._require_symbol(ticker)
-        rows = list((self._envelope("market_daily_bars").payload or {}).get("rows") or [])
-        later = [row for row in rows if str(row.get("trade_date") or "") >= trade_date]
-        if len(later) < 2:
-            return None, None, None
-        end_index = min(holding_days, len(later) - 1)
-        start = float(later[0]["close"])
-        end = float(later[end_index]["close"])
-        if start <= 0:
-            return None, None, None
-        return (end / start - 1.0), None, end_index
+        self._envelope("market_daily_bars")
+        # Upstream decision memory formats alpha_return as a percentage.  A
+        # mixed tuple with a raw return but alpha=None crashes that path and,
+        # more importantly, pretends a benchmark-relative outcome was resolved.
+        # Keep the entry pending until a canonical A-share benchmark series is
+        # available for the same dates.
+        return None, None, None
+
+    def _trace_direct_call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        operation: Callable[[], Any],
+    ) -> Any:
+        """Trace injected toolkit calls that are not LangGraph StructuredTools."""
+        started = time.monotonic()
+        operation_id = str(uuid.uuid4())
+        input_payload = {"tool": name, "arguments": arguments}
+        if self.trace_emit:
+            self.trace_emit(event_type="tool.started", stage="tool", payload={
+                "operation_id": operation_id, "input": input_payload,
+            })
+        try:
+            result = operation()
+        except Exception as exc:
+            if self.trace_emit:
+                self.trace_emit(event_type="tool.failed", stage="tool", payload={
+                    "operation_id": operation_id,
+                    "input": input_payload,
+                    "error": {"type": type(exc).__name__, "message": str(exc)},
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                })
+            raise
+        if self.trace_emit:
+            self.trace_emit(event_type="tool.completed", stage="tool", payload={
+                "operation_id": operation_id,
+                "input": input_payload,
+                "output": {"result": result},
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            })
+        return result
 
     def _tool(self, name: str, description: str) -> Any:
         if name in self._tools:
@@ -243,16 +442,29 @@ class DsaTradingAgentsToolkit:
     @property
     def market_tools(self) -> Sequence[Any]:
         return (
-            self._tool("get_stock_data", "Get canonical DSA daily OHLCV CSV."),
-            self._tool("get_indicators", "Calculate a deterministic indicator from the same DSA daily bars."),
-            self._tool("get_verified_market_snapshot", "Get the verified DSA price snapshot."),
+            self._tool(
+                "get_stock_data",
+                "获取 DSA 已核验的 A 股日线 OHLCV CSV；volume 为股、amount 为人民币，复权口径见证据清单。",
+            ),
+            self._tool(
+                "get_indicators",
+                "基于同一 A 股日线确定性计算指标：macd=DIF，macds=DEA，macdh=2*(DIF-DEA)，"
+                "BOLL 为 20 日中轨/上轨/下轨；只能解释工具实际返回的日期和值。",
+            ),
+            self._tool("get_verified_market_snapshot", "获取已核验的 A 股价格快照、价格类型和数据时点。"),
         )
 
     @property
     def news_tools(self) -> Sequence[Any]:
         return (
-            self._tool("get_news", "Get verified company news collected by DSA."),
-            self._tool("get_global_news", "Get relevant A-share context news collected by DSA."),
+            self._tool(
+                "get_news",
+                "获取指定窗口内 DSA 国内个股新闻/公告；区分 search_provider、publisher、published_date 与 fetched_at。",
+            ),
+            self._tool(
+                "get_global_news",
+                "获取 A 股宏观/全市场新闻；未配置独立时点数据时明确返回不可用，绝不复用个股新闻冒充。",
+            ),
             self._tool("get_macro_indicators", "Return explicit macro-data availability for this DSA run."),
             self._tool("get_prediction_markets", "Return explicit prediction-market availability for this DSA run."),
         )
@@ -260,6 +472,10 @@ class DsaTradingAgentsToolkit:
     @property
     def fundamentals_tools(self) -> Sequence[Any]:
         return tuple(
-            self._tool(name, "Get point-in-time constrained DSA fundamental evidence.")
+            self._tool(
+                name,
+                "获取受公告日/可得日约束的 A 股基本面证据；报告期不等于公告日，"
+                "不同报告期和业绩预告/正式财报不得混算。",
+            )
             for name in ("get_fundamentals", "get_balance_sheet", "get_cashflow", "get_income_statement")
         )

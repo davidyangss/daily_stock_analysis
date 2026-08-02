@@ -54,6 +54,8 @@ describe('TraderAnalysisPage', () => {
         { code: 'historical_fundamentals_not_point_in_time', severity: 'warning' as const, capability: 'fundamentals', message: '历史分析不会读取当前财务数据', missingFields: [], retriable: false },
         { code: 'historical_news_not_point_in_time', severity: 'warning' as const, capability: 'news', message: '历史分析不会读取未来新闻', missingFields: [], retriable: false },
         { code: 'social_sources_unavailable', severity: 'warning' as const, capability: 'sentiment', message: '情绪分析已降低置信度', missingFields: [], retriable: false },
+        { code: 'fundamentals_runtime_snapshot', severity: 'warning' as const, capability: 'fundamentals', message: '运行时数据不代表历史快照', missingFields: [], retriable: false },
+        { code: 'fundamentals_partial', severity: 'warning' as const, capability: 'fundamentals', message: '部分字段缺失', missingFields: [], retriable: false },
       ],
     },
   };
@@ -141,6 +143,8 @@ describe('TraderAnalysisPage', () => {
     expect(screen.getByText('历史基本面数据不满足时点要求')).toBeInTheDocument();
     expect(screen.getByText('历史新闻数据不满足时点要求')).toBeInTheDocument();
     expect(screen.getByText('社交情绪数据源不可用')).toBeInTheDocument();
+    expect(screen.getByText('基本面为运行时聚合快照')).toBeInTheDocument();
+    expect(screen.getByText('基本面数据部分可用')).toBeInTheDocument();
   });
 
   it('places refresh and real cancellation actions on each task row', async () => {

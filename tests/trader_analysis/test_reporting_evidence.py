@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
-from src.trader_analysis.reporting import reports_from_state
+from src.trader_analysis.evidence.renderer import render_quality_summary
+from src.trader_analysis.reporting import reports_from_state, render_evidence_manifest
 from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger, EvidenceStatus
 
 
@@ -66,3 +67,57 @@ def test_report_prefers_browser_excerpt_and_labels_evidence_type() -> None:
     assert "浏览器读取的正文" in report.content
     assert "公告解读：搜索摘要" not in report.content
     assert "2026-08-01T10:05:00" in report.content
+
+
+def test_complete_evidence_manifest_distinguishes_loaded_and_consumed_data() -> None:
+    ledger = EvidenceLedger(
+        run_id="run-1", symbol="600519", trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 1, 10, 0),
+    )
+    ledger.add(_envelope("market_daily_bars", {
+        "adjustment": "qfq",
+        "rows": [{
+            "trade_date": "2026-07-31", "open": 1400, "high": 1420,
+            "low": 1390, "close": 1410, "volume_shares": 0,
+            "amount_cny": 0, "pct_change": 1.2,
+        }],
+    }, "TushareFetcher"))
+    ledger.add(_envelope("news", {"items": [{
+        "title": "公司公告", "publisher": "上交所", "search_provider": "Anspire",
+        "published_date": "2026-07-31", "fetched_at": "2026-08-01T10:00:00",
+    }]}, "Anspire"))
+
+    content = render_evidence_manifest(
+        ledger, consumed_capabilities={"market_daily_bars"},
+    )
+
+    assert "预检已加载" in content
+    assert "TushareFetcher" in content
+    assert "| market_daily_bars |" in content and "| 是 |" in content
+    assert "| news |" in content and "| 否 |" in content
+    assert "| 2026-07-31 | 1400 | 1420 | 1390 | 1410 | 0 | 0 | 1.2 |" in content
+    assert '"publisher": "上交所"' in content
+    assert '"search_provider": "Anspire"' in content
+
+
+def test_reports_add_evidence_manifest_even_without_graph_reports() -> None:
+    ledger = EvidenceLedger(
+        run_id="run-1", symbol="600519", trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 1, 10, 0),
+    )
+    ledger.add(_envelope("news", {"items": []}, "Anspire"))
+
+    reports = reports_from_state({}, ledger=ledger)
+
+    assert [report.kind for report in reports] == ["data_evidence"]
+
+
+def test_quality_summary_localizes_status_and_preserves_stable_code() -> None:
+    ledger = EvidenceLedger(
+        run_id="run-1", symbol="600519", trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 1, 10, 0), overall_status="degraded",
+    )
+
+    content = render_quality_summary(ledger)
+
+    assert "总体状态：降级可用（degraded）" in content

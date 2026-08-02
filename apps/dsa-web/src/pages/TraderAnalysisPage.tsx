@@ -27,6 +27,9 @@ const displayLabels: Record<string, string> = {
   runtime_sentiment_not_point_in_time: '社区情绪不是历史时点快照',
   fundamentals_report_expired: '最近一期财报已超过一年',
   fundamentals_report_date_missing: '基本面数据缺少报告期',
+  fundamentals_partial: '基本面数据部分可用',
+  fundamentals_unavailable: '基本面数据不可用',
+  fundamentals_runtime_snapshot: '基本面为运行时聚合快照',
   social_sources_unavailable: '社交情绪数据源不可用',
   limited_daily_history: '新股历史较短', 'evidence.started': '证据获取开始', 'evidence.completed': '证据获取完成',
   llm_start: '模型开始', llm_end: '模型完成', llm_error: '模型错误', tool_start: '工具开始', tool_end: '工具完成', tool_error: '工具错误',
@@ -433,7 +436,7 @@ const TraderAnalysisPage: React.FC = () => {
         <details className={collapsibleSectionClass}>
           <summary className={stickySectionSummaryClass}>
             完整分析报告
-            <span className="ml-2 text-xs font-normal text-secondary-text">各角色原始报告均以 Markdown 完整显示</span>
+            <span className="ml-2 text-xs font-normal text-secondary-text">各角色正式报告均以 Markdown 完整显示</span>
           </summary>
           <div className="mt-4 flex justify-end">
             <a className="btn-primary inline-flex items-center gap-2" href={`/api/v1/trader-analysis/runs/${encodeURIComponent(run.runId)}/download/markdown`} download={`${run.symbol}_分析报告_${run.tradeDate}.md`}>

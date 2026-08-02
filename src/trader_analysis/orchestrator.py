@@ -267,6 +267,9 @@ class TraderAnalysisOrchestrator:
             run.analysis_status = TraderAnalysisStatus.INSUFFICIENT_EVIDENCE
             run.current_stage = "completed"
             run.completed_at = datetime.now()
+            for report in reports_from_state({}, ledger=ledger):
+                run.reports.append(report)
+                emit("report.written", {"kind": report.kind})
             run.reports.append(TraderAnalysisReport(
                 kind="data_quality",
                 title="数据质量与分析限制",
@@ -279,9 +282,10 @@ class TraderAnalysisOrchestrator:
         run.task_status = TraderTaskStatus.RUNNING
         run.current_stage = "graph_running"
         emit("graph.started", {"analysts": ["market", "social", "news", "fundamentals"]})
+        toolkit = DsaTradingAgentsToolkit(ledger, trace_emit=trace_emit)
         try:
             state, decision = self.graph_runner.run(
-                toolkit=DsaTradingAgentsToolkit(ledger, trace_emit=trace_emit),
+                toolkit=toolkit,
                 instrument=instrument,
                 trade_date=trade_date.isoformat(),
                 run_id=run_id,
@@ -292,26 +296,44 @@ class TraderAnalysisOrchestrator:
             run.task_status = TraderTaskStatus.CANCELLED
             run.current_stage = "cancelled"
             run.completed_at = datetime.now()
+            for report in reports_from_state(
+                {}, ledger=ledger, consumed_capabilities=toolkit.consumed_capabilities,
+            ):
+                run.reports.append(report)
+                emit("report.written", {"kind": report.kind})
             emit("run.cancelled", {})
             return run
         except TradingAgentsConfigurationError as exc:
-            return self._failed(run, ledger, emit, "configuration_error", str(exc), "graph_configuration")
+            return self._failed(
+                run, ledger, emit, "configuration_error", str(exc), "graph_configuration",
+                consumed_capabilities=toolkit.consumed_capabilities,
+            )
         except Exception as exc:
             logger.exception("TradingAgents graph execution failed for run_id=%s", run_id)
             return self._failed(
                 run, ledger, emit, "graph_execution_failed",
                 "TradingAgents 多角色分析执行失败", "graph_execution",
                 details={"error_type": type(exc).__name__, "error": str(exc)},
+                consumed_capabilities=toolkit.consumed_capabilities,
             )
 
         if is_cancelled():
             run.task_status = TraderTaskStatus.CANCELLED
             run.current_stage = "cancelled"
             run.completed_at = datetime.now()
+            for report in reports_from_state(
+                {}, ledger=ledger, consumed_capabilities=toolkit.consumed_capabilities,
+            ):
+                run.reports.append(report)
+                emit("report.written", {"kind": report.kind})
             emit("run.cancelled", {})
             return run
 
-        for report in reports_from_state(state, ledger=ledger):
+        for report in reports_from_state(
+            state,
+            ledger=ledger,
+            consumed_capabilities=toolkit.consumed_capabilities,
+        ):
             run.reports.append(report)
             emit("report.written", {"kind": report.kind})
         run.reports.append(TraderAnalysisReport(
@@ -319,6 +341,7 @@ class TraderAnalysisOrchestrator:
             title="数据质量与分析限制",
             content=render_quality_summary(ledger),
         ))
+        emit("report.written", {"kind": "data_quality"})
         run.task_status = TraderTaskStatus.COMPLETED
         run.analysis_status = (
             TraderAnalysisStatus.COMPLETE
@@ -341,6 +364,7 @@ class TraderAnalysisOrchestrator:
         stage: str,
         *,
         details: Optional[dict] = None,
+        consumed_capabilities: Optional[set[str]] = None,
     ) -> TraderAnalysisRun:
         run.task_status = TraderTaskStatus.FAILED
         run.current_stage = "failed"
@@ -357,11 +381,19 @@ class TraderAnalysisOrchestrator:
                 "data_toolkit_version": self.config.data_toolkit_version,
             },
         )
+        for report in reports_from_state(
+            {},
+            ledger=ledger,  # type: ignore[arg-type]
+            consumed_capabilities=consumed_capabilities,
+        ):
+            run.reports.append(report)
+            emit("report.written", {"kind": report.kind})
         run.reports.append(TraderAnalysisReport(
             kind="data_quality",
             title="数据质量与分析限制",
             content=render_quality_summary(ledger),  # type: ignore[arg-type]
         ))
+        emit("report.written", {"kind": "data_quality"})
         emit("run.failed", {"code": run.error.code, "trace_id": run.error.trace_id})
         return run
 

@@ -56,8 +56,8 @@ class TraderAnalysisConfig:
         "xueqiu.com", "zhihu.com", "weibo.com", "sse.com.cn", "szse.cn",
         "cninfo.com.cn", "cnstock.com", "eastmoney.com", "sina.com.cn",
     )
-    data_toolkit_version: str = "dsa-trader-toolkit-v1"
-    evidence_policy_version: str = "trader-evidence-policy-v1"
+    data_toolkit_version: str = "dsa-trader-toolkit-v2"
+    evidence_policy_version: str = "trader-evidence-policy-v2"
 
     @classmethod
     def from_app_config(cls, config: Any) -> "TraderAnalysisConfig":

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger
 from src.trader_analysis.schemas.result import TraderAnalysisReport, TraderAnalysisRun
@@ -24,26 +25,155 @@ REPORT_MODULES = (
     ("portfolio_manager", "👔 投资组合经理"),
     ("final_decision", "🎯 最终交易决策"),
     ("investment_advice", "📋 投资建议"),
+    ("data_evidence", "🔎 完整数据证据清单"),
 )
 
-_MARKET_PROPOSAL_PREFIX = re.compile(
-    r"^FINAL TRANSACTION PROPOSAL:\s*\*{0,2}(BUY|HOLD|SELL)\*{0,2}\s*[:：-]?\s*",
+_TRANSACTION_PROPOSAL_LINE = re.compile(
+    r"^[ \t]*FINAL TRANSACTION PROPOSAL:[ \t]*\*{0,2}(BUY|HOLD|SELL)\*{0,2}"
+    r"[ \t]*[:：-]?[ \t]*(?:\r?\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REPORT_FIELD_LINE = re.compile(
+    r"^(?P<indent>[ \t]*)\*\*(?P<label>[A-Za-z][A-Za-z /-]*?)(?:[:：])?\*\*"
+    r"[ \t]*[:：]?[ \t]*(?P<value>.*)$",
+    re.MULTILINE,
+)
+_REPORT_FIELD_LABELS = {
+    "Overall Sentiment": "整体情绪（Overall Sentiment）",
+    "Confidence": "置信度（Confidence）",
+    "Recommendation": "投资建议（Recommendation）",
+    "Rationale": "核心依据（Rationale）",
+    "Strategic Actions": "策略行动（Strategic Actions）",
+    "Action": "操作方向（Action）",
+    "Reasoning": "决策依据（Reasoning）",
+    "Entry Price": "参考价格（Entry Price）",
+    "Position Sizing": "仓位安排（Position Sizing）",
+    "Rating": "评级（Rating）",
+    "Executive Summary": "执行摘要（Executive Summary）",
+    "Investment Thesis": "投资逻辑（Investment Thesis）",
+    "Time Horizon": "观察周期（Time Horizon）",
+}
+_REPORT_ENUM_LABELS = {
+    "STRONGLY BULLISH": "强烈看多",
+    "MILDLY BULLISH": "温和看多",
+    "STRONGLY BEARISH": "强烈看空",
+    "MILDLY BEARISH": "温和看空",
+    "OVERWEIGHT": "超配",
+    "UNDERWEIGHT": "低配",
+    "BULLISH": "看多",
+    "BEARISH": "看空",
+    "NEUTRAL": "中性",
+    "MIXED": "多空分歧",
+    "BUY": "买入",
+    "HOLD": "持有",
+    "SELL": "卖出",
+    "LOW": "低",
+    "MEDIUM": "中",
+    "HIGH": "高",
+}
+_ENGLISH_ENUM_WITH_CHINESE = re.compile(
+    r"\b(?P<enum>STRONGLY BULLISH|MILDLY BULLISH|STRONGLY BEARISH|MILDLY BEARISH|"
+    r"OVERWEIGHT|UNDERWEIGHT|BULLISH|BEARISH|NEUTRAL|MIXED|BUY|HOLD|SELL)"
+    r"[ \t]*[（(](?P<chinese>[\u3400-\u9fff][^）)]*)[）)]",
     re.IGNORECASE,
 )
+_QUALITY_STATUS_LINE = re.compile(
+    r"^(?P<prefix>- 总体状态：)(?P<status>complete|degraded|insufficient_evidence)$",
+    re.MULTILINE,
+)
+_QUALITY_STATUS_LABELS = {
+    "complete": "完整",
+    "degraded": "降级可用",
+    "insufficient_evidence": "证据不足",
+}
+_FORMAL_REPORT_RAW_STATUS_LABELS = {
+    "<unavailable: A-share Reddit source is not configured>": (
+        "A 股 Reddit 数据源未配置"
+        "（原始状态：<unavailable: A-share Reddit source is not configured>）"
+    ),
+}
+_CHINESE_MARKDOWN_HEADING = re.compile(r"^#{1,6}[ \t]+[^\n]*[\u3400-\u9fff]", re.MULTILINE)
+_MARKET_WORKPAD_MARKER = re.compile(
+    r"^[ \t]*(?:now\s+i\b|i\s+(?:have|need|will)\b|let\s+me\b|key\s+data\s+points?\b|"
+    r"the\s+stock\b|from\s+(?:the\s+)?peak\b|(?:now\s+)?write\s+the\s+report\b|yes\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
-def _localize_market_report_prefix(content: str) -> str:
-    """Localize the upstream graph's optional English stop-signal prefix."""
-    labels = {"BUY": "买入", "HOLD": "持有", "SELL": "卖出"}
-    return _MARKET_PROPOSAL_PREFIX.sub(
-        lambda match: f"最终交易建议：{labels[match.group(1).upper()]}\n\n",
-        content,
-        count=1,
+def _strip_market_workpad_prefix(content: str) -> str:
+    """Drop a recognizable English workpad before the formal Chinese report."""
+    heading = _CHINESE_MARKDOWN_HEADING.search(content)
+    if heading is None:
+        return content
+    prefix = content[:heading.start()]
+    if not _MARKET_WORKPAD_MARKER.search(prefix):
+        return content
+    return content[heading.start():].lstrip()
+
+
+def _localize_enum_prefix(value: str) -> str:
+    for enum, label in _REPORT_ENUM_LABELS.items():
+        bold_pattern = re.compile(
+            rf"^\*\*{re.escape(enum)}\*\*(?=$|[ \t（(])",
+            re.IGNORECASE,
+        )
+        if bold_pattern.match(value):
+            return bold_pattern.sub(f"**{label}（{enum.title()}）**", value, count=1)
+        plain_pattern = re.compile(rf"^{re.escape(enum)}(?=$|[ \t（(])", re.IGNORECASE)
+        if plain_pattern.match(value):
+            return plain_pattern.sub(f"{label}（{enum.title()}）", value, count=1)
+    return value
+
+
+def _localize_report_field(match: re.Match[str]) -> str:
+    english_label = match.group("label").strip()
+    localized_label = _REPORT_FIELD_LABELS.get(english_label)
+    if localized_label is None:
+        return match.group(0)
+    value = _localize_enum_prefix(match.group("value"))
+    value = re.sub(
+        r"[ \t]*\(Score:[ \t]*([^)]+)\)",
+        r"（评分（Score）：\1）",
+        value,
+        flags=re.IGNORECASE,
     )
+    return f"{match.group('indent')}**{localized_label}**：{value}"
+
+
+def _localize_formal_report(kind: str, content: str) -> str:
+    """Localize stable upstream labels while preserving evidence and decisions."""
+    if kind == "data_evidence":
+        return content
+    body, appendix_marker, appendix = content.partition("\n### 证据摘要与来源")
+    if kind == "market":
+        body = _strip_market_workpad_prefix(body)
+    body = _TRANSACTION_PROPOSAL_LINE.sub(
+        lambda match: (
+            "最终交易建议（Final Transaction Proposal）："
+            f"{_REPORT_ENUM_LABELS[match.group(1).upper()]}（{match.group(1).upper()}）\n\n"
+        ),
+        body,
+    )
+    body = _REPORT_FIELD_LINE.sub(_localize_report_field, body)
+    body = _ENGLISH_ENUM_WITH_CHINESE.sub(
+        lambda match: f"{match.group('chinese')}（{match.group('enum')}）",
+        body,
+    )
+    for raw_status, localized_status in _FORMAL_REPORT_RAW_STATUS_LABELS.items():
+        body = body.replace(raw_status, localized_status)
+    if kind == "data_quality":
+        body = _QUALITY_STATUS_LINE.sub(
+            lambda match: (
+                f"{match.group('prefix')}{_QUALITY_STATUS_LABELS[match.group('status')]}"
+                f"（{match.group('status')}）"
+            ),
+            body,
+        )
+    return body if not appendix_marker else f"{body}{appendix_marker}{appendix}"
 
 
 def _clean_cell(value: Any) -> str:
-    return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
+    return str("" if value is None else value).replace("|", "\\|").replace("\n", " ").strip()
 
 
 def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> str:
@@ -84,8 +214,96 @@ def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> s
     return "\n".join(lines)
 
 
+def _json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str, indent=2).replace("```", "` ` `")
+
+
+def render_evidence_manifest(
+    ledger: EvidenceLedger,
+    *,
+    consumed_capabilities: Collection[str] | None = None,
+) -> str:
+    """Render the full canonical preflight input and actual tool consumption."""
+    consumed = set(consumed_capabilities or ())
+    lines = [
+        "### 审计口径",
+        "",
+        "- “预检已加载”表示数据进入本次运行的 canonical evidence ledger；并不等于模型实际读取。",
+        "- “工具实际消费”仅在 TradingAgents 工具调用读取该 evidence envelope 后标记；"
+        "完整 LLM 请求/响应和逐次工具参数/结果以同一运行编号的 Trace 为准。",
+        "- 下列 payload 是进入工具层的标准化实际数据；`as_of` 是数据业务时点，"
+        "`fetched_at` 是本系统采集时点，二者不可混用。",
+        "",
+        "### 证据总览",
+        "",
+        "| 能力 | evidence_id | 状态 | 主数据源 | 来源链 | 数据业务时点 | 采集时点 | 工具实际消费 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for capability, envelope in ledger.envelopes.items():
+        source_chain = ", ".join(str(item) for item in envelope.source_chain) or "未提供"
+        lines.append(
+            "| {capability} | {evidence_id} | {status} | {provider} | {source_chain} | "
+            "{as_of} | {fetched_at} | {consumed} |".format(
+                capability=_clean_cell(capability),
+                evidence_id=_clean_cell(envelope.evidence_id),
+                status=_clean_cell(envelope.status.value),
+                provider=_clean_cell(envelope.provider) or "未提供",
+                source_chain=_clean_cell(source_chain),
+                as_of=_clean_cell(envelope.as_of.isoformat() if envelope.as_of else None) or "未提供",
+                fetched_at=_clean_cell(envelope.fetched_at.isoformat()),
+                consumed="是" if capability in consumed else "否",
+            )
+        )
+
+    for capability, envelope in ledger.envelopes.items():
+        lines.extend(("", f"### {capability} 实际输入", ""))
+        if envelope.issues:
+            lines.extend(("#### 数据问题", ""))
+            for issue in envelope.issues:
+                detail = {
+                    "missing_fields": issue.missing_fields,
+                    "expected": issue.expected,
+                    "observed": issue.observed,
+                    "retriable": issue.retriable,
+                }
+                lines.append(
+                    f"- `{issue.severity.value}` / `{issue.code}`：{issue.message}；"
+                    f"详情=`{_clean_cell(_json_text(detail))}`"
+                )
+            lines.append("")
+
+        payload = dict(envelope.payload or {})
+        rows = payload.pop("rows", None) if capability == "market_daily_bars" else None
+        if rows is not None:
+            lines.extend(("#### 日线元数据", "", "```json", _json_text(payload), "```", ""))
+            lines.extend((
+                "#### 完整标准化日线",
+                "",
+                "| 交易日 | 开盘 | 最高 | 最低 | 收盘 | 成交量（股） | 成交额（元） | 涨跌幅（%） |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ))
+            for row in rows or []:
+                lines.append(
+                    "| {trade_date} | {open} | {high} | {low} | {close} | "
+                    "{volume} | {amount} | {pct_change} |".format(
+                        trade_date=_clean_cell(row.get("trade_date")) or "未提供",
+                        open=_clean_cell(row.get("open")) or "未提供",
+                        high=_clean_cell(row.get("high")) or "未提供",
+                        low=_clean_cell(row.get("low")) or "未提供",
+                        close=_clean_cell(row.get("close")) or "未提供",
+                        volume=_clean_cell(row.get("volume_shares")) or "未提供",
+                        amount=_clean_cell(row.get("amount_cny")) or "未提供",
+                        pct_change=_clean_cell(row.get("pct_change")) or "未提供",
+                    )
+                )
+        else:
+            lines.extend(("```json", _json_text(payload), "```"))
+    return "\n".join(lines)
+
+
 def reports_from_state(
     state: Mapping[str, Any], *, ledger: EvidenceLedger | None = None,
+    consumed_capabilities: Collection[str] | None = None,
 ) -> list[TraderAnalysisReport]:
     """Extract all public report modules from one final TradingAgents state."""
     research = state.get("investment_debate_state") or {}
@@ -96,7 +314,7 @@ def reports_from_state(
         risk = {}
 
     values = {
-        "market": _localize_market_report_prefix(str(state.get("market_report") or "").strip()),
+        "market": state.get("market_report"),
         "sentiment": state.get("sentiment_report"),
         "news": state.get("news_report"),
         "fundamentals": state.get("fundamentals_report"),
@@ -113,7 +331,11 @@ def reports_from_state(
     }
     titles = dict(REPORT_MODULES)
     reports = [
-        TraderAnalysisReport(kind=kind, title=titles[kind], content=content)
+        TraderAnalysisReport(
+            kind=kind,
+            title=titles[kind],
+            content=_localize_formal_report(kind, content).strip(),
+        )
         for kind, _title in REPORT_MODULES
         if (content := str(values.get(kind) or "").strip())
     ]
@@ -127,11 +349,28 @@ def reports_from_state(
         appendix = appendices.get(report.kind)
         if appendix:
             report.content = f"{report.content.rstrip()}\n\n{appendix}"
+    reports.append(TraderAnalysisReport(
+        kind="data_evidence",
+        title=dict(REPORT_MODULES)["data_evidence"],
+        content=render_evidence_manifest(
+            ledger,
+            consumed_capabilities=consumed_capabilities,
+        ),
+    ))
     return reports
+
+
+def localize_run_for_publication(run: TraderAnalysisRun) -> TraderAnalysisRun:
+    """Return a localized copy without rewriting the persisted audit record."""
+    public_run = run.model_copy(deep=True)
+    for report in public_run.reports:
+        report.content = _localize_formal_report(report.kind, report.content).strip()
+    return public_run
 
 
 def render_run_markdown(run: TraderAnalysisRun) -> str:
     """Render the persisted API report contract as one downloadable document."""
+    run = localize_run_for_publication(run)
     instrument = run.instrument
     name = instrument.name if instrument and instrument.name != run.symbol else "名称未核验"
     raw_status = run.analysis_status.value if run.analysis_status else run.task_status.value

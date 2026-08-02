@@ -15,6 +15,10 @@ from src.trader_analysis.schemas.evidence import (
     EvidenceIssueSeverity,
     EvidenceStatus,
 )
+from src.trader_analysis.identity.resolver import (
+    UnsupportedInstrumentError,
+    normalize_a_share_symbol,
+)
 
 
 def _value(obj: Any, key: str, default: Any = None) -> Any:
@@ -28,6 +32,15 @@ def _to_float(value: Any) -> Optional[float]:
         if value is None or value == "":
             return None
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -53,10 +66,12 @@ class MarketEvidenceAdapter:
                 symbol,
                 end_date=trade_date.isoformat(),
                 days=max(260, min_daily_bars),
-                # A newly listed stock cannot satisfy the preferred history
-                # length through provider fallback. Accept the first usable
-                # canonical series and let the evidence policy grade its depth.
-                min_rows=1,
+                # Let DataFetcherManager continue through the configured
+                # domestic provider chain when an early source has only a
+                # shallow series.  The manager still returns the deepest
+                # partial result when every source is below this preference,
+                # so newly listed stocks remain eligible for degraded grading.
+                min_rows=min_daily_bars,
             )
             # DataFetcherManager returns (frame, provider).  Keep accepting a
             # bare frame as well so injected adapters and older integrations
@@ -197,12 +212,21 @@ class MarketEvidenceAdapter:
 
         daily_rows = (daily_envelope.payload or {}).get("rows") or []
         last_bar = daily_rows[-1] if daily_rows else None
-        quote_symbol = str(_value(quote, "code", _value(quote, "symbol", symbol)) or symbol)
+        quote_symbol = str(_value(quote, "code", _value(quote, "symbol", "")) or "")
         provider = _value(quote, "provider", _value(quote, "source", None))
-        price = _to_float(_value(quote, "price", _value(quote, "last_price", None)))
-        quote_time = _value(quote, "timestamp", _value(quote, "time", None))
+        quote_price = _to_float(_value(quote, "price", _value(quote, "last_price", None)))
+        price = quote_price
+        quote_time = _value(
+            quote,
+            "provider_timestamp",
+            _value(quote, "timestamp", _value(quote, "time", None)),
+        )
+        quote_fetched_at = _value(quote, "fetched_at", None)
+        quote_as_of = self._parse_datetime(quote_time)
+        quote_is_stale = _value(quote, "is_stale", None)
+        quote_stale_seconds = _value(quote, "stale_seconds", None)
 
-        if quote is not None and symbol not in quote_symbol:
+        if quote is not None and self._canonical_symbol(symbol) != self._canonical_symbol(quote_symbol):
             issues.append(EvidenceIssue(
                 code="identity_mismatch",
                 severity=EvidenceIssueSeverity.BLOCKING,
@@ -237,12 +261,13 @@ class MarketEvidenceAdapter:
             "last_price": price,
             "price_kind": (
                 "live"
-                if quote is not None and _to_float(_value(quote, "price", None)) is not None
+                if quote is not None and quote_price is not None
                 else "close"
             ),
             "market_phase": "unknown",
             "daily_trade_date": last_bar.get("trade_date") if last_bar else None,
             "quote_time": str(quote_time) if quote_time else None,
+            "quote_fetched_at": str(quote_fetched_at) if quote_fetched_at else None,
         }
         return EvidenceEnvelope(
             evidence_id=uuid.uuid4().hex,
@@ -250,18 +275,52 @@ class MarketEvidenceAdapter:
             capability=capability,
             symbol=symbol,
             trade_date=trade_date,
-            as_of=fetched_at if quote is not None else datetime.combine(trade_date, datetime.min.time()),
+            as_of=(quote_as_of or fetched_at) if quote is not None else datetime.combine(
+                trade_date, datetime.min.time()
+            ),
             fetched_at=fetched_at,
             status=status,
             provider=provider,
             source_chain=[provider] if provider else [],
             fallback_trace=[],
-            is_stale=None,
-            stale_seconds=None,
+            is_stale=quote_is_stale if quote is not None else daily_envelope.is_stale,
+            stale_seconds=(
+                _to_int(quote_stale_seconds)
+                if quote is not None
+                else daily_envelope.stale_seconds
+            ),
             missing_fields=[],
             issues=issues,
             payload=payload,
         )
+
+    @staticmethod
+    def _canonical_symbol(value: Any) -> Optional[tuple[str, str]]:
+        text = str(value or "").upper().strip()
+        if text.startswith(("SH.", "SZ.", "BJ.", "SS.")):
+            text = text[:2] + text[3:]
+        if text.startswith("SS"):
+            text = "SH" + text[2:]
+        if text.endswith(".SS"):
+            text = text[:-3] + ".SH"
+        try:
+            return normalize_a_share_symbol(text)
+        except UnsupportedInstrumentError:
+            return None
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     def _normalize_daily_frame(
         self,

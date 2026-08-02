@@ -13,7 +13,12 @@ from src.trader_analysis.graph_runner import TradingAgentsGraphRunner, _tradinga
 from src.trader_analysis.identity.resolver import resolve_instrument
 from src.trader_analysis.model_routes import ModelRoute
 from src.trader_analysis.persistence.repository import TraderAnalysisRepository
-from src.trader_analysis.reporting import REPORT_MODULES, render_run_markdown, reports_from_state
+from src.trader_analysis.reporting import (
+    REPORT_MODULES,
+    localize_run_for_publication,
+    render_run_markdown,
+    reports_from_state,
+)
 from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceStatus
 from src.trader_analysis.schemas.result import (
     TraderAnalysisEvent,
@@ -120,7 +125,9 @@ def test_orchestrator_executes_graph_after_complete_preflight(tmp_path: Path) ->
     assert run.analysis_status.value == "complete"
     assert run.instrument is not None
     assert run.instrument.name == "贵州茅台"
-    assert {report.kind for report in run.reports} >= {"market", "final_decision", "data_quality"}
+    assert {report.kind for report in run.reports} >= {
+        "market", "final_decision", "data_evidence", "data_quality",
+    }
     assert any(event == "graph.completed" for event, _ in events)
 
 
@@ -270,6 +277,7 @@ def test_graph_checkpoint_signature_is_isolated_by_api_run(tmp_path: Path) -> No
     class FakeGraph:
         def __init__(self, selected_analysts, debug, config, data_toolkit, role_llms):
             self.config = config
+            self.selected_analysts = tuple(selected_analysts)
             captured.append(self)
 
         def _run_signature(self, asset_type: str) -> str:
@@ -304,6 +312,10 @@ def test_graph_checkpoint_signature_is_isolated_by_api_run(tmp_path: Path) -> No
         "asset=stock|dsa_run=run-attempt-10",
     ]
     assert all(item.debug is True for item in captured if not isinstance(item, str))
+    assert all(
+        item.selected_analysts == ("market", "social", "news", "fundamentals")
+        for item in captured if not isinstance(item, str)
+    )
 
 
 def test_graph_requires_simplified_chinese_from_the_first_market_report_sentence(tmp_path: Path) -> None:
@@ -331,26 +343,14 @@ def test_graph_requires_simplified_chinese_from_the_first_market_report_sentence
     )
 
     assert runner._graph_config()["output_language"] == "Simplified Chinese"
-    assert "第一句话也必须使用中文" in captured[0]
-    assert "不得以 `FINAL TRANSACTION PROPOSAL`" in captured[0]
-    assert "从工具返回日线的 low 列取该区间精确最小值" in captured[0]
-    assert "指标值必须与所写交易日来自工具输出的同一行" in captured[0]
-    assert "不得把月中或月末数据描述为月初数据" in captured[0]
-    assert "上影线=high-max(open,close)" in captured[0]
-    assert "当 open=high 时上影线为 0，禁止描述为长上影" in captured[0]
-    assert "应描述为高开长阴或光头阴线" in captured[0]
-    assert "low-high 区间与所述价格带确实相交" in captured[0]
-    assert "只能描述为跌破后的压力确认" in captured[0]
-    assert "应写成该筹码带内的共振压力" in captured[0]
-    assert "业绩预告不得标成正式季报" in captured[0]
-    assert "不同期间的数据必须分开展示" in captured[0]
-    assert "明确说明不可直接相除" in captured[0]
-    assert "必须输出两张独立表" in captured[0]
-    assert "未披露现金流时明确写未披露" in captured[0]
-    assert "盈利质量判断只能依据同期间数据" in captured[0]
-    assert "`价格倍数` 必须写为 P/L" in captured[0]
-    assert "`累计涨幅` 必须写为 (P/L-1)*100%" in captured[0]
-    assert "adjustment=unknown 时必须说明复权口径未知" in captured[0]
+    assert "必须使用简体中文" in captured[0]
+    assert "所有叙述性报告从第一句话开始只输出简体中文" in captured[0]
+    assert "不得输出英文分析草稿、英文报告标题或英文元叙述" in captured[0]
+    assert "固定结构化枚举、股票代码和 A 股通用英文缩写可以保留" in captured[0]
+    assert "中国 A 股市场术语和人民币口径" in captured[0]
+    assert "报告期、公告日、复权与单位" in captured[0]
+    assert "不得虚构或用海外市场数据替代" in captured[0]
+    assert "必须输出两张独立表" not in captured[0]
 
 
 def test_repository_relates_reports_debug_events_and_llm_trace_by_run_id(tmp_path: Path) -> None:
@@ -450,7 +450,9 @@ def test_report_modules_extract_all_public_trading_roles() -> None:
 
     reports = reports_from_state(state)
 
-    assert [report.kind for report in reports] == [kind for kind, _title in REPORT_MODULES]
+    assert [report.kind for report in reports] == [
+        kind for kind, _title in REPORT_MODULES if kind != "data_evidence"
+    ]
     assert all(report.title[0] in "📈💭📰💰🐂🐻🔬💼⚡🛡⚖👔🎯📋" for report in reports)
 
 
@@ -459,7 +461,123 @@ def test_market_report_localizes_upstream_english_proposal_prefix() -> None:
         "market_report": "FINAL TRANSACTION PROPOSAL: **HOLD**\n趋势保持震荡。",
     })
 
-    assert reports[0].content == "最终交易建议：持有\n\n趋势保持震荡。"
+    assert reports[0].content == (
+        "最终交易建议（Final Transaction Proposal）：持有（HOLD）\n\n趋势保持震荡。"
+    )
+
+
+def test_market_report_removes_english_workpad_but_preserves_chinese_report() -> None:
+    reports = reports_from_state({
+        "market_report": (
+            "Now I have all the data I need. Let me analyze and write the comprehensive report.\n\n"
+            "Key data points as of 2026-07-31:\n"
+            "- MACD: -58.05\n\n"
+            "Let me analyze the whole trajectory.\n\n"
+            "# 兆易创新（603986.SH）技术分析报告\n\n"
+            "## 一、趋势研判\n\n"
+            "MACD 处于空头区域，正式结论保持不变。\n\n"
+            "FINAL TRANSACTION PROPOSAL: **HOLD**"
+        ),
+    })
+
+    content = reports[0].content
+    assert content.startswith("# 兆易创新（603986.SH）技术分析报告")
+    assert "Now I have" not in content
+    assert "Key data points" not in content
+    assert "Let me analyze" not in content
+    assert "MACD 处于空头区域" in content
+    assert content.endswith("最终交易建议（Final Transaction Proposal）：持有（HOLD）")
+
+
+def test_market_report_does_not_strip_formal_content_without_workpad_marker() -> None:
+    content = "数据口径：MACD、RSI 使用 A 股常用定义。\n\n# 技术分析报告\n\n中文正文"
+
+    reports = reports_from_state({"market_report": content})
+
+    assert reports[0].content == content
+
+
+def test_structured_report_fields_use_chinese_first_with_english_terms() -> None:
+    reports = reports_from_state({
+        "sentiment_report": (
+            "**Overall Sentiment:** **Mixed** (Score: 4.7/10)\n"
+            "**Confidence:** Low\n\n"
+            "# 情绪分析\n\n"
+            "整体情绪评级：Mixed（多空分歧）。\n\n"
+            "原始状态：`<unavailable: A-share Reddit source is not configured>`"
+        ),
+        "investment_plan": (
+            "**Recommendation**: Underweight\n\n"
+            "**Rationale**: 中文依据\n\n"
+            "**Strategic Actions**: 中文行动"
+        ),
+        "trader_investment_plan": (
+            "**Action**: Sell\n\n"
+            "**Reasoning**: 中文理由\n\n"
+            "**Entry Price**: 378.6\n\n"
+            "**Position Sizing**: 分批减仓\n\n"
+            "FINAL TRANSACTION PROPOSAL: **SELL**"
+        ),
+        "risk_debate_state": {
+            "judge_decision": (
+                "**Rating**: Underweight\n\n"
+                "**Executive Summary**: 中文摘要\n\n"
+                "**Investment Thesis**: 中文逻辑\n\n"
+                "**Time Horizon**: 1—3个月"
+            ),
+        },
+        "final_trade_decision": (
+            "**Rating**: Underweight\n\n"
+            "**Executive Summary**: 中文摘要"
+        ),
+    })
+    by_kind = {report.kind: report.content for report in reports}
+
+    assert "**整体情绪（Overall Sentiment）**：**多空分歧（Mixed）**（评分（Score）：4.7/10）" in by_kind["sentiment"]
+    assert "**置信度（Confidence）**：低（Low）" in by_kind["sentiment"]
+    assert "整体情绪评级：多空分歧（Mixed）" in by_kind["sentiment"]
+    assert "A 股 Reddit 数据源未配置（原始状态：<unavailable:" in by_kind["sentiment"]
+    assert "**投资建议（Recommendation）**：低配（Underweight）" in by_kind["research_decision"]
+    assert "**核心依据（Rationale）**：中文依据" in by_kind["research_decision"]
+    assert "**策略行动（Strategic Actions）**：中文行动" in by_kind["research_decision"]
+    assert "**操作方向（Action）**：卖出（Sell）" in by_kind["trader_plan"]
+    assert "**决策依据（Reasoning）**：中文理由" in by_kind["trader_plan"]
+    assert "**参考价格（Entry Price）**：378.6" in by_kind["trader_plan"]
+    assert "**仓位安排（Position Sizing）**：分批减仓" in by_kind["trader_plan"]
+    assert by_kind["trader_plan"].endswith(
+        "最终交易建议（Final Transaction Proposal）：卖出（SELL）"
+    )
+    assert "**评级（Rating）**：低配（Underweight）" in by_kind["portfolio_manager"]
+    assert "**执行摘要（Executive Summary）**：中文摘要" in by_kind["portfolio_manager"]
+    assert "**投资逻辑（Investment Thesis）**：中文逻辑" in by_kind["portfolio_manager"]
+    assert "**观察周期（Time Horizon）**：1—3个月" in by_kind["portfolio_manager"]
+    assert "**评级（Rating）**：低配（Underweight）" in by_kind["final_decision"]
+
+
+def test_publication_localizes_persisted_market_report_without_mutating_audit_record() -> None:
+    raw_content = (
+        "Now I have all the data I need.\n\n"
+        "# 兆易创新技术分析报告\n\n"
+        "中文正式正文\n\n"
+        "FINAL TRANSACTION PROPOSAL: **HOLD**"
+    )
+    run = TraderAnalysisRun(
+        run_id="persisted-run",
+        task_status=TraderTaskStatus.COMPLETED,
+        symbol="603986",
+        trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 2, 22, 0),
+        reports=[TraderAnalysisReport(kind="market", title="市场技术分析", content=raw_content)],
+    )
+
+    public_run = localize_run_for_publication(run)
+
+    assert public_run is not run
+    assert public_run.reports[0].content.startswith("# 兆易创新技术分析报告")
+    assert public_run.reports[0].content.endswith(
+        "最终交易建议（Final Transaction Proposal）：持有（HOLD）"
+    )
+    assert run.reports[0].content == raw_content
 
 
 def test_markdown_export_uses_chinese_headings_and_persisted_content() -> None:
@@ -474,7 +592,9 @@ def test_markdown_export_uses_chinese_headings_and_persisted_content() -> None:
         reports=reports_from_state({
             "market_report": "市场正文",
             "final_trade_decision": "最终正文",
-        }),
+        }) + [TraderAnalysisReport(
+            kind="data_evidence", title="完整数据证据清单", content="证据正文",
+        )],
     )
 
     markdown = render_run_markdown(run)
@@ -483,6 +603,7 @@ def test_markdown_export_uses_chinese_headings_and_persisted_content() -> None:
     assert "- 分析状态：降级可用" in markdown
     assert "## 📈 市场技术分析\n\n市场正文" in markdown
     assert "## 🎯 最终交易决策\n\n最终正文" in markdown
+    assert "## 🔎 完整数据证据清单\n\n证据正文" in markdown
     assert "不构成投资建议" in markdown
 
 

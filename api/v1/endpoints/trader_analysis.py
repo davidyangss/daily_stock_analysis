@@ -16,7 +16,7 @@ from api.v1.schemas.trader_analysis import (
 )
 from src.config import Config
 from src.trader_analysis.schemas.result import TraderTaskStatus
-from src.trader_analysis.reporting import render_run_markdown
+from src.trader_analysis.reporting import localize_run_for_publication, render_run_markdown
 from src.trader_analysis.task_service import TraderAnalysisCapacityError, get_trader_analysis_task_service
 
 router = APIRouter()
@@ -71,7 +71,10 @@ def list_trader_analysis_runs(
                 "message": f"不支持的任务状态：{', '.join(invalid_statuses)}",
             },
         )
-    return _service(config).list_runs(statuses=task_status, offset=offset, limit=limit)
+    return [
+        localize_run_for_publication(run)
+        for run in _service(config).list_runs(statuses=task_status, offset=offset, limit=limit)
+    ]
 
 
 @router.get("/runs/{run_id}", response_model=TraderAnalysisRun)
@@ -79,7 +82,7 @@ def get_trader_analysis_run(run_id: str, config: Config = Depends(get_config_dep
     run = _service(config).get(run_id)
     if run is None:
         raise _not_found(run_id)
-    return run
+    return localize_run_for_publication(run)
 
 
 @router.get("/runs/{run_id}/events", response_model=list[TraderAnalysisEvent])

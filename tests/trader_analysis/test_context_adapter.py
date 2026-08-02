@@ -1,8 +1,18 @@
 from datetime import date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from src.trader_analysis.adapters.context import ContextEvidenceAdapter
 from src.trader_analysis.schemas.evidence import EvidenceStatus
+
+
+@pytest.fixture(autouse=True)
+def _latest_completed_session(monkeypatch):
+    monkeypatch.setattr(
+        "src.trader_analysis.adapters.context.get_effective_trading_date",
+        lambda market, current_time: date(2026, 7, 31),
+    )
 
 
 class SearchService:
@@ -24,8 +34,8 @@ class SearchService:
             )],
         )
 
-    def search_community_sentiment(self, symbol, name, max_results):
-        self.calls.append(("sentiment", symbol, name, max_results))
+    def search_community_sentiment(self, symbol, name, max_results, days):
+        self.calls.append(("sentiment", symbol, name, max_results, days))
         return SimpleNamespace(
             success=True,
             provider="SearXNG",
@@ -59,12 +69,19 @@ class FundamentalManager:
         return self.payload
 
 
-def fundamental_payload(*, report_date="2026-03-31", status="ok", missing_reasons=None):
+def fundamental_payload(
+    *, report_date="2026-03-31", announcement_date="2026-04-30",
+    status="ok", missing_reasons=None,
+):
     return {
         "status": status,
         "earnings": {
             "status": "ok",
-            "data": {"financial_report": {"report_date": report_date, "revenue": 100}},
+            "data": {"financial_report": {
+                "report_date": report_date,
+                "announcement_date": announcement_date,
+                "revenue": 100,
+            }},
         },
         "growth": {"status": "ok", "data": {"roe": 10.5}},
         "source_chain": [{"provider": "tushare", "result": status}],
@@ -73,7 +90,7 @@ def fundamental_payload(*, report_date="2026-03-31", status="ok", missing_reason
     }
 
 
-def test_fundamentals_use_latest_report_for_past_analysis_date() -> None:
+def test_latest_session_fundamentals_are_runtime_snapshot_with_explicit_times() -> None:
     manager = FundamentalManager(fundamental_payload())
     adapter = ContextEvidenceAdapter(manager=manager)
 
@@ -83,11 +100,14 @@ def test_fundamentals_use_latest_report_for_past_analysis_date() -> None:
     )
 
     assert manager.calls == [("603986", 12)]
-    assert result.status == EvidenceStatus.OK
+    assert result.status == EvidenceStatus.PARTIAL
     assert result.provider == "tushare"
     assert result.payload["report_date"] == "2026-03-31"
-    assert result.as_of == datetime(2026, 3, 31)
-    assert result.issues == []
+    assert result.payload["announcement_date"] == "2026-04-30"
+    assert result.payload["available_at"] == "2026-04-30"
+    assert result.as_of == datetime(2026, 4, 30)
+    assert result.payload["point_in_time"]["mode"] == "runtime_latest_session"
+    assert [issue.code for issue in result.issues] == ["fundamentals_runtime_snapshot"]
 
 
 def test_fundamentals_are_partial_only_when_fields_or_report_date_are_missing() -> None:
@@ -101,13 +121,16 @@ def test_fundamentals_are_partial_only_when_fields_or_report_date_are_missing() 
 
     assert result.status == EvidenceStatus.PARTIAL
     assert result.missing_fields == ["growth.revenue_yoy"]
-    assert [issue.code for issue in result.issues] == ["fundamentals_partial"]
+    assert [issue.code for issue in result.issues] == [
+        "fundamentals_runtime_snapshot", "fundamentals_partial",
+    ]
 
 
 def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> None:
     payload = fundamental_payload()
     payload["earnings"]["data"]["financial_report"] = {
         "report_date": "2026-03-31",
+        "announcement_date": "2026-07-15",
         "revenue": 11_500_000_000,
         "net_profit_parent": 6_900_000_000,
         "operating_cash_flow": 1_783_000_000,
@@ -129,6 +152,7 @@ def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> No
     earnings = result.payload["earnings"]["data"]
     assert earnings["financial_report"] == {
         "report_date": "2026-03-31",
+        "announcement_date": "2026-07-15",
         "field_periods": {"operating_cash_flow": "2026-03-31"},
         "operating_cash_flow": 1_783_000_000,
         "report_type": "financial_statement",
@@ -136,6 +160,7 @@ def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> No
     }
     assert earnings["supplemental_financial_reports"] == [{
         "report_date": "2026-06-30",
+        "announcement_date": "2026-07-15",
         "field_periods": {
             "revenue": "2026-06-30",
             "net_profit_parent": "2026-06-30",
@@ -155,6 +180,7 @@ def test_fundamentals_do_not_label_a_single_h1_field_group_as_declared_q1() -> N
     payload = fundamental_payload()
     payload["earnings"]["data"]["financial_report"] = {
         "report_date": "2026-03-31",
+        "announcement_date": "2026-07-15",
         "revenue": 11_500_000_000,
         "net_profit_parent": 6_900_000_000,
         "field_periods": {
@@ -174,6 +200,7 @@ def test_fundamentals_do_not_label_a_single_h1_field_group_as_declared_q1() -> N
     earnings = result.payload["earnings"]["data"]
     assert earnings["financial_report"] == {
         "report_date": "2026-03-31",
+        "announcement_date": "2026-07-15",
         "field_periods": {},
         "report_type": "financial_statement",
         "period_consistency": "declared_period_without_attributed_values",
@@ -194,7 +221,7 @@ def test_fundamentals_expire_only_after_one_year() -> None:
 
 
 def test_fundamentals_without_report_date_remain_partial() -> None:
-    manager = FundamentalManager(fundamental_payload(report_date=None))
+    manager = FundamentalManager(fundamental_payload(report_date=None, announcement_date=None))
     result = ContextEvidenceAdapter(manager=manager).fetch_fundamentals(
         run_id="run-no-date", symbol="603986",
         trade_date=date(2026, 7, 31), timeout=12,
@@ -202,7 +229,98 @@ def test_fundamentals_without_report_date_remain_partial() -> None:
 
     assert result.status == EvidenceStatus.PARTIAL
     assert result.payload["report_date"] is None
-    assert [issue.code for issue in result.issues] == ["fundamentals_report_date_missing"]
+    assert [issue.code for issue in result.issues] == [
+        "fundamentals_report_date_missing", "fundamentals_runtime_snapshot",
+    ]
+
+
+def test_historical_fundamentals_require_announcement_date_at_or_before_cutoff() -> None:
+    admitted = ContextEvidenceAdapter(
+        manager=FundamentalManager(fundamental_payload(announcement_date="2026-04-30")),
+    ).fetch_fundamentals(
+        run_id="historical-admitted", symbol="603986",
+        trade_date=date(2026, 7, 30), timeout=12,
+    )
+    rejected = ContextEvidenceAdapter(
+        manager=FundamentalManager(fundamental_payload(announcement_date="2026-08-01")),
+    ).fetch_fundamentals(
+        run_id="historical-rejected", symbol="603986",
+        trade_date=date(2026, 7, 30), timeout=12,
+    )
+
+    assert admitted.status == EvidenceStatus.OK
+    assert admitted.payload["point_in_time"]["status"] == "point_in_time"
+    assert admitted.payload["announcement_date"] == "2026-04-30"
+    assert rejected.status == EvidenceStatus.UNAVAILABLE
+    assert rejected.issues[0].code == "historical_fundamentals_not_point_in_time"
+    assert rejected.issues[0].severity.value == "warning"
+    assert rejected.payload["earnings"]["data"] == {}
+
+
+def test_historical_fundamentals_prefer_explicit_available_at_for_admission() -> None:
+    payload = fundamental_payload(announcement_date="2026-04-30")
+    payload["earnings"]["data"]["financial_report"]["available_at"] = "2026-08-01T09:00:00+08:00"
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="historical-available-at", symbol="603986",
+        trade_date=date(2026, 7, 30), timeout=12,
+    )
+
+    assert result.status == EvidenceStatus.UNAVAILABLE
+    removed = result.payload["point_in_time"]["removed_reports"][0]
+    assert removed["announcement_date"] == "2026-04-30"
+    assert removed["available_at"] == "2026-08-01"
+    assert removed["admission_date"] == "2026-08-01"
+    assert removed["reason"] == "not_available_at_cutoff"
+
+
+def test_runtime_fundamentals_keep_announcement_and_available_dates_distinct() -> None:
+    payload = fundamental_payload(announcement_date="2026-04-30")
+    payload["earnings"]["data"]["financial_report"]["available_at"] = "2026-08-01T09:00:00+08:00"
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="runtime-available-at", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    assert result.payload["announcement_date"] == "2026-04-30"
+    assert result.payload["available_at"] == "2026-08-01"
+    assert result.as_of == datetime(2026, 8, 1)
+
+
+def test_historical_fundamentals_remove_runtime_only_blocks() -> None:
+    payload = fundamental_payload()
+    payload["valuation"] = {"status": "ok", "data": {"pe_ratio": 20}}
+    payload["capital_flow"] = {"status": "ok", "data": {"main_net_inflow": 1_000_000}}
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="historical-runtime-blocks", symbol="603986",
+        trade_date=date(2026, 7, 30), timeout=12,
+    )
+
+    assert result.payload["valuation"]["data"] == {}
+    assert result.payload["capital_flow"]["data"] == {}
+    assert set(result.payload["point_in_time"]["removed_blocks"]) >= {"valuation", "capital_flow"}
+
+
+def test_historical_primary_statement_stays_aligned_with_growth_when_newer_forecast_exists() -> None:
+    payload = fundamental_payload()
+    payload["earnings"]["data"]["supplemental_financial_reports"] = [{
+        "report_date": "2026-06-30",
+        "announcement_date": "2026-07-15",
+        "report_type": "earnings_forecast",
+        "revenue": 250,
+    }]
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="historical-period-alignment", symbol="603986",
+        trade_date=date(2026, 7, 30), timeout=12,
+    )
+
+    earnings = result.payload["earnings"]["data"]
+    assert earnings["financial_report"]["report_date"] == "2026-03-31"
+    assert earnings["supplemental_financial_reports"][0]["report_date"] == "2026-06-30"
+    assert result.payload["growth"]["data"]["roe"] == 10.5
 
 
 def test_news_for_latest_completed_session_uses_runtime_dsa_provider(monkeypatch) -> None:
@@ -225,6 +343,7 @@ def test_news_for_latest_completed_session_uses_runtime_dsa_provider(monkeypatch
     assert result.status == EvidenceStatus.PARTIAL
     assert result.provider == "Anspire"
     assert result.payload["items"][0]["title"] == "公司公告"
+    assert result.as_of == datetime(2026, 7, 31)
     assert [issue.code for issue in result.issues] == ["runtime_news_not_point_in_time"]
 
 
@@ -264,12 +383,13 @@ def test_sentiment_uses_independent_community_search(monkeypatch) -> None:
         run_id="run-1", symbol="600519", name="贵州茅台", trade_date=date(2026, 7, 31),
     )
 
-    assert service.calls == [("sentiment", "600519", "贵州茅台", 10)]
+    assert service.calls == [("sentiment", "600519", "贵州茅台", 10, 7)]
     assert result.provider == "SearXNG"
     assert result.status == EvidenceStatus.PARTIAL
     assert "news_items" not in result.payload
     assert result.payload["social_items"][0]["source"] == "xueqiu.com"
     assert result.payload["social_items"][0]["fetched_at"] == "2026-08-01T10:00:00"
+    assert result.as_of == datetime(2026, 7, 31)
     assert [issue.code for issue in result.issues] == ["runtime_sentiment_not_point_in_time"]
 
 

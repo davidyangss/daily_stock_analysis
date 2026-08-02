@@ -63,7 +63,8 @@ def test_toolkit_uses_dif_double_macd_histogram_and_wilder_rsi() -> None:
     assert boll_upper["boll_ub"].iloc[-1] != pytest.approx(sample_boll_upper.iloc[-1])
 
 
-def test_sentiment_prefetch_uses_social_evidence_without_news() -> None:
+def test_sentiment_prefetch_preserves_domestic_news_and_community_sources() -> None:
+    trace = []
     ledger = EvidenceLedger(run_id="r", symbol="600519", trade_date=date(2026, 7, 31), created_at=datetime.now())
     ledger.add(EvidenceEnvelope(
         evidence_id="sentiment", run_id="r", capability="sentiment", symbol="600519",
@@ -71,8 +72,19 @@ def test_sentiment_prefetch_uses_social_evidence_without_news() -> None:
         status=EvidenceStatus.PARTIAL, provider="SearXNG",
         payload={"social_items": [{"title": "雪球讨论"}]},
     ))
+    ledger.add(EvidenceEnvelope(
+        evidence_id="news", run_id="r", capability="news", symbol="600519",
+        trade_date=date(2026, 7, 31), fetched_at=datetime(2026, 8, 1, 9, 30),
+        status=EvidenceStatus.PARTIAL, provider="Anspire",
+        payload={"items": [{
+            "title": "公司公告", "publisher": "上交所", "published_date": "2026-07-30",
+        }]},
+    ))
 
-    bundle = DsaTradingAgentsToolkit(ledger).prefetch_sentiment(
+    toolkit = DsaTradingAgentsToolkit(
+        ledger, trace_emit=lambda **event: trace.append(event),
+    )
+    bundle = toolkit.prefetch_sentiment(
         "600519", "2026-07-24", "2026-07-31",
     )
 
@@ -84,4 +96,74 @@ def test_sentiment_prefetch_uses_social_evidence_without_news() -> None:
     assert "content_kind=search_snippet" in bundle["stocktwits"]
     assert "no browser or external tools" in bundle["stocktwits"]
     assert "雪球讨论" in bundle["stocktwits"]
-    assert "not used" in bundle["news"]
+    assert bundle["news_source"] == "Anspire"
+    assert "公司公告" in bundle["news"]
+    assert [section["key"] for section in bundle["sections"]] == [
+        "domestic_news", "domestic_investor_community",
+    ]
+    assert "不得要求或虚构 Bullish/Bearish" in bundle["sections"][1]["guidance"]
+    assert toolkit.consumed_capabilities == {"news", "sentiment"}
+    assert [event["event_type"] for event in trace if event["event_type"].startswith("tool.")] == [
+        "tool.started", "tool.completed",
+    ]
+
+
+def test_news_and_sentiment_tools_filter_dated_items_but_retain_undated_with_warning() -> None:
+    ledger = EvidenceLedger(
+        run_id="r", symbol="600519", trade_date=date(2026, 7, 31), created_at=datetime.now(),
+    )
+    items = [
+        {"title": "窗口内", "published_date": "2026-07-30"},
+        {"title": "窗口外", "published_date": "2026-07-01"},
+        {"title": "无日期", "published_date": None},
+    ]
+    ledger.add(EvidenceEnvelope(
+        evidence_id="news", run_id="r", capability="news", symbol="600519",
+        trade_date=date(2026, 7, 31), fetched_at=datetime.now(), status=EvidenceStatus.OK,
+        provider="fixture", payload={"items": items},
+    ))
+
+    result = DsaTradingAgentsToolkit(ledger).get_news(
+        "600519", "2026-07-24", "2026-07-31",
+    )
+
+    assert "窗口内" in result
+    assert "窗口外" not in result
+    assert "undated_retained_low_confidence" in result
+
+
+def test_financial_statement_tools_return_only_requested_statement_fields() -> None:
+    ledger = EvidenceLedger(
+        run_id="r", symbol="600519", trade_date=date(2026, 7, 31), created_at=datetime.now(),
+    )
+    ledger.add(EvidenceEnvelope(
+        evidence_id="fundamentals", run_id="r", capability="fundamentals", symbol="600519",
+        trade_date=date(2026, 7, 31), fetched_at=datetime.now(), status=EvidenceStatus.OK,
+        provider="tushare", payload={"earnings": {"data": {"financial_report": {
+            "report_date": "2026-03-31", "announcement_date": "2026-04-30",
+            "revenue": 100, "net_profit_parent": 20, "operating_cash_flow": 30,
+            "total_assets": 500, "total_liabilities": 200, "equity_parent": 300,
+        }}}},
+    ))
+    toolkit = DsaTradingAgentsToolkit(ledger)
+
+    income = toolkit.get_income_statement("600519")
+    cashflow = toolkit.get_cashflow("600519")
+    balance = toolkit.get_balance_sheet("600519")
+
+    assert "revenue" in income and "operating_cash_flow" not in income and "total_assets" not in income
+    assert "operating_cash_flow" in cashflow and "revenue" not in cashflow
+    assert "total_assets" in balance and "revenue" not in balance
+
+
+def test_fetch_returns_keeps_memory_pending_without_canonical_benchmark() -> None:
+    ledger = EvidenceLedger(
+        run_id="r", symbol="600519", trade_date=date(2026, 7, 31), created_at=datetime.now(),
+    )
+    ledger.add(EvidenceEnvelope(
+        evidence_id="daily", run_id="r", capability="market_daily_bars", symbol="600519",
+        trade_date=date(2026, 7, 31), fetched_at=datetime.now(), status=EvidenceStatus.OK,
+        provider="fixture", payload={"rows": [{"trade_date": "2026-07-31", "close": 100}]},
+    ))
+
+    assert DsaTradingAgentsToolkit(ledger).fetch_returns("600519", "2026-07-31") == (None, None, None)

@@ -12,6 +12,8 @@ _ISSUE_LABELS = {
     "fundamentals_report_date_missing": "基本面数据缺少报告期",
     "fundamentals_partial": "基本面数据部分可用",
     "fundamentals_unavailable": "基本面数据不可用",
+    "fundamentals_runtime_snapshot": "基本面为运行时聚合快照",
+    "historical_fundamentals_not_point_in_time": "历史基本面缺少可核验公告日",
 }
 _CAPABILITY_LABELS = {
     "fundamentals": "基本面",
@@ -27,13 +29,18 @@ _STATUS_LABELS = {
     "invalid": "无效",
     "stale": "已过期",
 }
+_OVERALL_STATUS_LABELS = {
+    "complete": "完整（complete）",
+    "degraded": "降级可用（degraded）",
+    "insufficient_evidence": "证据不足（insufficient_evidence）",
+}
 
 
 def render_quality_summary(ledger: EvidenceLedger) -> str:
     lines = [
         "## 数据质量与分析限制",
         "",
-        f"- 总体状态：{ledger.overall_status}",
+        f"- 总体状态：{_OVERALL_STATUS_LABELS.get(ledger.overall_status, ledger.overall_status)}",
         f"- 使用数据源：{', '.join(ledger.providers_used) if ledger.providers_used else '无'}",
     ]
     if ledger.blocking_issues:
