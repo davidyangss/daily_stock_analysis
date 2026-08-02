@@ -181,6 +181,60 @@ class TestFundamentalContext(unittest.TestCase):
             "earnings.quick_report_summary": "no_matching_quick_report",
         })
 
+    def test_cn_fundamentals_do_not_merge_financial_fields_across_periods(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            financial_source_priority="iwencai,akshare_em",
+            governance_source_priority="iwencai,akshare_em",
+        )
+        iwencai = MagicMock()
+        iwencai.get_fundamental_bundle.return_value = {
+            "status": "partial",
+            "growth": {},
+            "earnings": {"financial_report": {
+                "report_date": "2026-06-30",
+                "report_type": "earnings_forecast",
+                "revenue": 11_500_000_000,
+                "net_profit_parent": 6_900_000_000,
+            }},
+            "institution": {},
+            "source_chain": ["forecast:iwencai"],
+            "errors": [],
+        }
+        q1_bundle = {
+            "status": "partial",
+            "growth": {},
+            "earnings": {"financial_report": {
+                "report_date": "2026-03-31",
+                "report_type": "financial_statement",
+                "revenue": 4_188_000_000,
+                "net_profit_parent": 1_461_000_000,
+                "operating_cash_flow": 1_783_000_000,
+            }},
+            "institution": {"top10_holder_change": "fixture"},
+            "source_chain": ["financial:akshare_em"],
+            "errors": [],
+        }
+
+        with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(manager._fundamental_adapter, "get_fundamental_bundle", return_value=q1_bundle):
+            bundle = manager._get_cn_fundamental_bundle("600519", cfg)
+
+        primary = bundle["earnings"]["financial_report"]
+        self.assertEqual(primary["report_date"], "2026-06-30")
+        self.assertNotIn("operating_cash_flow", primary)
+        self.assertEqual(bundle["earnings"]["supplemental_financial_reports"], [
+            q1_bundle["earnings"]["financial_report"],
+        ])
+
+        q1_report = bundle["earnings"]["supplemental_financial_reports"][0]
+        q1_revenue = q1_report["revenue"]
+        q1_profit = q1_report["net_profit_parent"]
+        q1_cash_flow = q1_report["operating_cash_flow"]
+        self.assertAlmostEqual(q1_profit / q1_revenue * 100, 34.8854, places=4)
+        self.assertAlmostEqual(q1_cash_flow / q1_profit * 100, 122.0397, places=4)
+        self.assertNotEqual(primary["net_profit_parent"], q1_profit)
+
     def test_cn_fundamentals_keep_iwencai_partial_result_when_fallback_times_out(self) -> None:
         manager = DataFetcherManager(fetchers=[])
         cfg = SimpleNamespace(

@@ -817,6 +817,33 @@ class DataFetcherManager:
         return primary
 
     @staticmethod
+    def _merge_earnings_by_period(primary: Dict[str, Any], supplement: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge earnings without combining financial statement periods."""
+        supplemental_report = supplement.get("financial_report")
+        other_earnings = {key: value for key, value in supplement.items() if key != "financial_report"}
+        DataFetcherManager._merge_missing_mapping(primary, other_earnings)
+        if not isinstance(supplemental_report, dict) or not supplemental_report:
+            return primary
+
+        primary_report = primary.get("financial_report")
+        if not isinstance(primary_report, dict) or not primary_report:
+            primary["financial_report"] = supplemental_report
+            return primary
+
+        primary_date = str(primary_report.get("report_date") or "").strip()
+        supplemental_date = str(supplemental_report.get("report_date") or "").strip()
+        if primary_date and primary_date == supplemental_date:
+            DataFetcherManager._merge_missing_mapping(primary_report, supplemental_report)
+            return primary
+
+        # Keep a differently dated (or undated) report visible as a separate
+        # record. Never fill its values into the primary period.
+        reports = primary.setdefault("supplemental_financial_reports", [])
+        if isinstance(reports, list) and supplemental_report not in reports:
+            reports.append(supplemental_report)
+        return primary
+
+    @staticmethod
     def _has_complete_financial_strategy_fields(bundle: Dict[str, Any]) -> bool:
         """Return whether report-visible A-share fundamental fields are complete."""
         growth = bundle.get("growth")
@@ -965,10 +992,13 @@ class DataFetcherManager:
             candidate: Dict[str, Any],
             _provider: str,
         ) -> Dict[str, Any]:
-            for block in ("growth", "earnings", "institution"):
+            for block in ("growth", "institution"):
                 payload = candidate.get(block)
                 if isinstance(payload, dict):
                     self._merge_missing_mapping(current[block], payload)
+            earnings = candidate.get("earnings")
+            if isinstance(earnings, dict):
+                self._merge_earnings_by_period(current["earnings"], earnings)
             current["source_chain"].extend(candidate.get("source_chain") or [])
             current["errors"].extend(candidate.get("errors") or [])
             candidate_reasons = candidate.get("missing_reasons")
