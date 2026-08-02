@@ -59,6 +59,10 @@ class TraderAnalysisOrchestrator:
         )
         self.graph_runner = graph_runner or TradingAgentsGraphRunner(config)
 
+    def _resolve_instrument_name(self, symbol: str) -> Optional[str]:
+        """Resolve locally first, then use the configured iWencai gateway."""
+        return self.market_adapter.manager.get_a_share_name_local_then_iwencai(symbol)
+
     def run(
         self,
         *,
@@ -134,6 +138,24 @@ class TraderAnalysisOrchestrator:
             emit("preflight.completed", {"analysis_status": run.analysis_status.value})
             emit("run.completed", {"analysis_status": run.analysis_status.value})
             return run
+
+        resolved_name = self._resolve_instrument_name(instrument.symbol)
+        if not resolved_name:
+            run.task_status = TraderTaskStatus.COMPLETED
+            run.analysis_status = TraderAnalysisStatus.INSUFFICIENT_EVIDENCE
+            run.current_stage = "completed"
+            run.completed_at = datetime.now()
+            run.error = build_error(
+                code="instrument_name_unresolved",
+                message="无法从本地股票库或问财确认股票名称，未开始生成报告",
+                stage="preflight",
+                run_id=run_id,
+                retriable=True,
+            )
+            emit("preflight.completed", {"analysis_status": run.analysis_status.value})
+            emit("run.completed", {"analysis_status": run.analysis_status.value})
+            return run
+        instrument = resolve_instrument(instrument.symbol, trade_date, name=resolved_name)
 
         if is_cancelled():
             run.task_status = TraderTaskStatus.CANCELLED

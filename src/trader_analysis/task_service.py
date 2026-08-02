@@ -8,16 +8,31 @@ from datetime import date, datetime
 from typing import Dict, Optional
 
 from src.config import Config
+from src.data.stock_index_loader import get_index_stock_name
+from src.data.stock_mapping import is_meaningful_stock_name
 from src.trader_analysis.config import TraderAnalysisConfig
 from src.trader_analysis.errors import build_error
 from src.trader_analysis.orchestrator import TraderAnalysisOrchestrator, new_run_id
 from src.trader_analysis.persistence.repository import TraderAnalysisRepository, get_trader_analysis_repository
 from src.trader_analysis.schemas.result import TraderAnalysisEvent, TraderAnalysisRun, TraderTaskStatus
 from src.trader_analysis.schemas.trace import TraderAnalysisTraceEvent
+from src.trader_analysis.identity.resolver import resolve_instrument
 
 
 class TraderAnalysisCapacityError(RuntimeError):
     pass
+
+
+def _hydrate_legacy_instrument_name(run: TraderAnalysisRun) -> TraderAnalysisRun:
+    """Backfill the display identity of legacy runs without rewriting storage."""
+    current_name = run.instrument.name if run.instrument is not None else ""
+    if is_meaningful_stock_name(current_name, run.symbol):
+        return run
+    name = get_index_stock_name(run.symbol)
+    if not is_meaningful_stock_name(name, run.symbol):
+        return run
+    run.instrument = resolve_instrument(run.symbol, run.trade_date, name=name or "")
+    return run
 
 
 class TraderAnalysisTaskService:
@@ -81,7 +96,8 @@ class TraderAnalysisTaskService:
         return run
 
     def get(self, run_id: str) -> Optional[TraderAnalysisRun]:
-        return self.repository.get_run(run_id)
+        run = self.repository.get_run(run_id)
+        return _hydrate_legacy_instrument_name(run) if run is not None else None
 
     def configure(self, app_config: Config) -> None:
         service_config = TraderAnalysisConfig.from_app_config(app_config)
@@ -94,7 +110,10 @@ class TraderAnalysisTaskService:
         offset: int = 0,
         limit: int = 100,
     ) -> list[TraderAnalysisRun]:
-        return self.repository.list_runs(statuses=statuses, offset=offset, limit=limit)
+        return [
+            _hydrate_legacy_instrument_name(run)
+            for run in self.repository.list_runs(statuses=statuses, offset=offset, limit=limit)
+        ]
 
     def events(self, run_id: str, after: int = 0) -> list[TraderAnalysisEvent]:
         return self.repository.list_events(run_id, after=after)

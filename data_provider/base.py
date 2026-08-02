@@ -2872,6 +2872,30 @@ class DataFetcherManager:
         logger.warning(f"[股票名称] 所有数据源都无法获取 {stock_code} 的名称")
         return ""
 
+    def get_a_share_name_local_then_iwencai(self, stock_code: str) -> Optional[str]:
+        """Resolve an A-share name from local indexes, then iWencai only."""
+        normalized = normalize_stock_code(stock_code)
+        for candidate in (
+            self._get_cached_stock_name(normalized),
+            STOCK_NAME_MAP.get(normalized),
+            get_index_stock_name(normalized),
+        ):
+            if is_meaningful_stock_name(candidate, normalized):
+                return self._cache_stock_name(normalized, candidate) or candidate
+
+        adapter = self._get_iwencai_adapter()
+        if adapter is None:
+            return None
+        try:
+            name = adapter.get_stock_name(normalized)
+        except Exception as exc:
+            logger.warning("[股票名称] 问财解析失败: %s (%s)", normalized, type(exc).__name__)
+            return None
+        if not is_meaningful_stock_name(name, normalized):
+            return None
+        logger.info("[股票名称] 从问财获取: %s -> %s", normalized, name)
+        return self._cache_stock_name(normalized, name) or name
+
     def get_belong_boards(self, stock_code: str) -> List[Dict[str, Any]]:
         """
         Get stock membership boards through capability probing.

@@ -10,6 +10,7 @@ from src.trader_analysis.config import TraderAnalysisConfig
 from src.trader_analysis.trace import RoleTraceCallback, sanitize_trace
 from src.trader_analysis.orchestrator import TraderAnalysisOrchestrator
 from src.trader_analysis.graph_runner import TradingAgentsGraphRunner, _tradingagents_provider
+from src.trader_analysis.identity.resolver import resolve_instrument
 from src.trader_analysis.model_routes import ModelRoute
 from src.trader_analysis.persistence.repository import TraderAnalysisRepository
 from src.trader_analysis.reporting import REPORT_MODULES, render_run_markdown, reports_from_state
@@ -20,6 +21,7 @@ from src.trader_analysis.schemas.result import (
     TraderAnalysisRun,
     TraderTaskStatus,
 )
+from src.trader_analysis.task_service import _hydrate_legacy_instrument_name
 from src.trader_analysis.schemas.trace import TraderAnalysisTraceEvent
 
 
@@ -58,8 +60,13 @@ def envelope(capability: str, payload: dict, status: EvidenceStatus = EvidenceSt
     )
 
 
+class MarketManager:
+    def get_a_share_name_local_then_iwencai(self, symbol: str):
+        return "贵州茅台" if symbol == "600519" else None
+
+
 class MarketAdapter:
-    manager = object()
+    manager = MarketManager()
 
     def fetch_daily_bars(self, **kwargs):
         return envelope("market_daily_bars", {"rows": [{
@@ -111,8 +118,57 @@ def test_orchestrator_executes_graph_after_complete_preflight(tmp_path: Path) ->
 
     assert run.task_status == TraderTaskStatus.COMPLETED
     assert run.analysis_status.value == "complete"
+    assert run.instrument is not None
+    assert run.instrument.name == "贵州茅台"
     assert {report.kind for report in run.reports} >= {"market", "final_decision", "data_quality"}
     assert any(event == "graph.completed" for event, _ in events)
+
+
+def test_orchestrator_stops_before_evidence_when_stock_name_is_unresolved(tmp_path: Path) -> None:
+    class UnknownNameManager:
+        def get_a_share_name_local_then_iwencai(self, symbol: str):
+            return None
+
+    adapter = MarketAdapter()
+    adapter.manager = UnknownNameManager()
+    events = []
+
+    run = TraderAnalysisOrchestrator(
+        config=config(tmp_path),
+        market_adapter=adapter,
+        context_adapter=ContextAdapter(),
+        graph_runner=GraphRunner(),
+    ).run(
+        run_id="run-unresolved",
+        symbol="600519",
+        trade_date=date(2026, 7, 31),
+        emit=lambda event, payload: events.append((event, payload)),
+        is_cancelled=lambda: False,
+    )
+
+    assert run.analysis_status.value == "insufficient_evidence"
+    assert run.error is not None
+    assert run.error.code == "instrument_name_unresolved"
+    assert run.reports == []
+    assert not any(event == "evidence.started" for event, _ in events)
+
+
+def test_legacy_run_display_name_is_hydrated_from_local_index() -> None:
+    run = TraderAnalysisRun(
+        run_id="legacy-name",
+        task_status=TraderTaskStatus.COMPLETED,
+        symbol="603986",
+        trade_date=date(2026, 7, 31),
+        created_at=datetime.now(),
+        current_stage="completed",
+        instrument=resolve_instrument("603986", date(2026, 7, 31)),
+    )
+
+    hydrated = _hydrate_legacy_instrument_name(run)
+
+    assert hydrated.instrument is not None
+    assert hydrated.instrument.name == "兆易创新"
+    assert "兆易创新（603986）" in hydrated.instrument.description
 
 
 def test_repository_round_trips_runs_and_events(tmp_path: Path) -> None:

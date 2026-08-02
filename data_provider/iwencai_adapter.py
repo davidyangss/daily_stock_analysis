@@ -289,6 +289,15 @@ class IwencaiAdapter:
             circ_mv=_number(_pick(row, ("流通市值",))),
         )
 
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        """Resolve an A-share name without requiring a valid realtime price."""
+        query = f"{stock_code} 股票简称"
+        row = self._stock_row(self.query(query, skill_id="hithink-market-query", limit=1), stock_code)
+        if not row:
+            return None
+        name = _text(_pick(row, ("股票简称", "证券简称", "名称")))
+        return name or None
+
     def get_capital_flow(self, stock_code: str) -> Dict[str, Any]:
         query = f"{stock_code} 当日主力净流入 近5日主力累计净流入 近10日主力累计净流入"
         row = self._stock_row(self.query(query, skill_id="hithink-market-query", limit=3), stock_code)

@@ -875,6 +875,36 @@ describe('ChatPage', () => {
     });
   });
 
+  it('allows selecting and sending more than three skills', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '' },
+        { id: 'chan_theory', name: '缠论', description: '' },
+        { id: 'wave_theory', name: '波浪理论', description: '' },
+        { id: 'box_oscillation', name: '箱体震荡', description: '' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    for (const name of ['缠论', '波浪理论', '箱体震荡']) {
+      fireEvent.click(await screen.findByRole('checkbox', { name }));
+    }
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), { target: { value: '综合分析 600519' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skills: ['bull_trend', 'chan_theory', 'wave_theory', 'box_oscillation'],
+      }),
+      expect.anything(),
+    ));
+  });
+
   it('adds the quick-question stock context only for Codex', async () => {
     mockGetStatus.mockResolvedValueOnce({
       backend: 'codex_app_server',
@@ -980,7 +1010,7 @@ describe('ChatPage', () => {
     }));
   });
 
-  it('caps concrete skill selection at three and re-enables choices after unselecting', async () => {
+  it('keeps every concrete skill selectable after three choices', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [
         { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
@@ -1001,10 +1031,9 @@ describe('ChatPage', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: '缠论' }));
 
     const wave = screen.getByRole('checkbox', { name: '波浪理论' });
-    expect(wave).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('checkbox', { name: '均线金叉' }));
     expect(wave).not.toBeDisabled();
+    fireEvent.click(wave);
+    expect(wave).toBeChecked();
   });
 
   it('quick questions override the current multi-skill selection', async () => {

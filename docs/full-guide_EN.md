@@ -1418,6 +1418,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 For this feature, the product behavior is:
 
 - UI language is independent from generated-content language: `dsa.uiLanguage` (browser persistence) controls shell/login/settings text, while `REPORT_LANGUAGE` controls report text, report-page fixed copy, and Agent Chat replies that omit `context.report_language` (`zh`/`en`/`ko`).
+- Ask Stock can select any number of currently available strategies; the former three-strategy Web limit no longer applies. More strategies can increase execution time and model cost, while runtime orchestration and resource settings still determine actual availability.
 - `dsa.uiLanguage` follows local persistence -> browser language -> default `zh`.
 - This change only adds request-scope report language override parameters; it does not modify `provider`, `model`, `base_url`, or migration/cleanup behavior.
 - PR-level verification output, screenshots, and command logs are maintained in PR description, not in this usage guide.

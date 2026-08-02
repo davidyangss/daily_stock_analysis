@@ -7,6 +7,16 @@ from data_provider.iwencai_adapter import IwencaiAdapter
 from data_provider.realtime_types import RealtimeSource
 
 
+def test_stock_name_does_not_require_realtime_price() -> None:
+    adapter = IwencaiAdapter("secret")
+    payload = {"datas": [{"股票代码": "600519.SH", "股票简称": "贵州茅台"}]}
+
+    with patch.object(adapter, "query", return_value=payload) as query:
+        assert adapter.get_stock_name("600519") == "贵州茅台"
+
+    query.assert_called_once_with("600519 股票简称", skill_id="hithink-market-query", limit=1)
+
+
 def test_realtime_quote_normalizes_date_suffixed_columns_and_units() -> None:
     adapter = IwencaiAdapter("secret")
     payload = {

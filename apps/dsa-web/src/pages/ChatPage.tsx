@@ -49,7 +49,6 @@ const QUICK_QUESTIONS: Array<{
   { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
 ];
 
-const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_COMPRESSION_CONFIG_KEY = 'AGENT_CONTEXT_COMPRESSION_ENABLED';
 const STRONG_COMPARE_STOCK_MESSAGE_RE = /比较|对比|\bvs\b|和[^，。,.!?！？]{0,40}比/i;
 const WEAK_COMPARE_STOCK_MESSAGE_RE = /差异(?!化)|区别|不同|相比|对照|比一比/;
@@ -563,7 +562,6 @@ const ChatPage: React.FC = () => {
   const availableSkillIds = new Set(skills.map((skill) => skill.id));
   const quickQuestions = QUICK_QUESTIONS.filter((question) => availableSkillIds.size === 0 || availableSkillIds.has(question.skill));
   const selectedSkillIdSet = new Set(selectedSkillIds);
-  const skillLimitReached = selectedSkillIds.length >= MAX_SELECTED_SKILLS;
   const agentConfirmedUnavailable = Boolean(agentStatus && !agentStatus.available);
   const agentAvailable = Boolean(agentStatus?.available) && !agentStatusChecking;
   const agentUnavailableMessage = agentStatus?.errorCode === 'agent_mode_disabled'
@@ -595,16 +593,13 @@ const ChatPage: React.FC = () => {
         normalized.push(cleaned);
       }
     }
-    return normalized.slice(0, MAX_SELECTED_SKILLS);
+    return normalized;
   }, []);
 
   const toggleSkillSelection = useCallback((skillId: string) => {
     setSelectedSkillIds((prev) => {
       if (prev.includes(skillId)) {
         return prev.filter((id) => id !== skillId);
-      }
-      if (prev.length >= MAX_SELECTED_SKILLS) {
-        return prev;
       }
       return [...prev, skillId];
     });
@@ -1631,11 +1626,10 @@ const ChatPage: React.FC = () => {
                     </label>
                     {skills.map((s) => {
                       const checked = selectedSkillIdSet.has(s.id);
-                      const disabled = !checked && skillLimitReached;
                       return (
                         <label
                           key={s.id}
-                          className={`flex items-center gap-1.5 cursor-pointer group relative mt-0.5 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          className="flex items-center gap-1.5 cursor-pointer group relative mt-0.5"
                           onMouseEnter={() => setShowSkillDesc(s.id)}
                           onMouseLeave={() => setShowSkillDesc(null)}
                         >
@@ -1644,7 +1638,6 @@ const ChatPage: React.FC = () => {
                             name="skills"
                             value={s.id}
                             checked={checked}
-                            disabled={disabled}
                             onChange={() => toggleSkillSelection(s.id)}
                             className="chat-skill-checkbox"
                           />
