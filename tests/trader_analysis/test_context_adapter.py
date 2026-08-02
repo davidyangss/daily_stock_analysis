@@ -49,6 +49,84 @@ class PageReader:
         return [{**item, "content_excerpt": "正文摘录", "content_kind": "browser_excerpt"} for item in items]
 
 
+class FundamentalManager:
+    def __init__(self, payload) -> None:
+        self.payload = payload
+        self.calls = []
+
+    def get_fundamental_context(self, symbol, budget_seconds):
+        self.calls.append((symbol, budget_seconds))
+        return self.payload
+
+
+def fundamental_payload(*, report_date="2026-03-31", status="ok", missing_reasons=None):
+    return {
+        "status": status,
+        "earnings": {
+            "status": "ok",
+            "data": {"financial_report": {"report_date": report_date, "revenue": 100}},
+        },
+        "growth": {"status": "ok", "data": {"roe": 10.5}},
+        "source_chain": [{"provider": "tushare", "result": status}],
+        "errors": [],
+        "missing_reasons": missing_reasons or {},
+    }
+
+
+def test_fundamentals_use_latest_report_for_past_analysis_date() -> None:
+    manager = FundamentalManager(fundamental_payload())
+    adapter = ContextEvidenceAdapter(manager=manager)
+
+    result = adapter.fetch_fundamentals(
+        run_id="run-fundamental", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    assert manager.calls == [("603986", 12)]
+    assert result.status == EvidenceStatus.OK
+    assert result.provider == "tushare"
+    assert result.payload["report_date"] == "2026-03-31"
+    assert result.as_of == datetime(2026, 3, 31)
+    assert result.issues == []
+
+
+def test_fundamentals_are_partial_only_when_fields_or_report_date_are_missing() -> None:
+    manager = FundamentalManager(fundamental_payload(
+        status="partial", missing_reasons={"growth.revenue_yoy": "source_field_missing"},
+    ))
+    result = ContextEvidenceAdapter(manager=manager).fetch_fundamentals(
+        run_id="run-partial", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    assert result.status == EvidenceStatus.PARTIAL
+    assert result.missing_fields == ["growth.revenue_yoy"]
+    assert [issue.code for issue in result.issues] == ["fundamentals_partial"]
+
+
+def test_fundamentals_expire_only_after_one_year() -> None:
+    manager = FundamentalManager(fundamental_payload(report_date="2025-07-30"))
+    result = ContextEvidenceAdapter(manager=manager).fetch_fundamentals(
+        run_id="run-expired", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    assert result.status == EvidenceStatus.UNAVAILABLE
+    assert [issue.code for issue in result.issues] == ["fundamentals_report_expired"]
+
+
+def test_fundamentals_without_report_date_remain_partial() -> None:
+    manager = FundamentalManager(fundamental_payload(report_date=None))
+    result = ContextEvidenceAdapter(manager=manager).fetch_fundamentals(
+        run_id="run-no-date", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    assert result.status == EvidenceStatus.PARTIAL
+    assert result.payload["report_date"] is None
+    assert [issue.code for issue in result.issues] == ["fundamentals_report_date_missing"]
+
+
 def test_news_for_latest_completed_session_uses_runtime_dsa_provider(monkeypatch) -> None:
     service = SearchService()
     monkeypatch.setattr(

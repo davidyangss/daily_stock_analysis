@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger
+from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger, EvidenceStatus
 
 
 def _json(value: Any) -> str:
@@ -112,7 +112,10 @@ class DsaTradingAgentsToolkit:
 
     def get_insider_transactions(self, symbol: str) -> str:
         self._require_symbol(symbol)
-        fundamentals = self._envelope("fundamentals").payload or {}
+        envelope = self._envelope("fundamentals")
+        if envelope.status == EvidenceStatus.UNAVAILABLE:
+            return _json(self._unavailable_fundamentals(envelope))
+        fundamentals = envelope.payload or {}
         return _json(fundamentals.get("institution") or {"status": "unavailable"})
 
     def get_macro_indicators(self, indicator: str, curr_date: str, look_back_days: int = 30) -> str:
@@ -123,7 +126,20 @@ class DsaTradingAgentsToolkit:
 
     def get_fundamentals(self, ticker: str, curr_date: str | None = None) -> str:
         self._require_symbol(ticker)
-        return _json(self._envelope("fundamentals").payload or {})
+        envelope = self._envelope("fundamentals")
+        if envelope.status == EvidenceStatus.UNAVAILABLE:
+            return _json(self._unavailable_fundamentals(envelope))
+        return _json(envelope.payload or {})
+
+    @staticmethod
+    def _unavailable_fundamentals(envelope: EvidenceEnvelope) -> dict[str, Any]:
+        payload = envelope.payload or {}
+        return {
+            "status": "unavailable",
+            "report_date": payload.get("report_date"),
+            "fetched_at": payload.get("fetched_at"),
+            "reasons": [issue.message for issue in envelope.issues],
+        }
 
     def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> str:
         return self.get_fundamentals(ticker, curr_date)

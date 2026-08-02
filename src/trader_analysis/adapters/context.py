@@ -33,36 +33,92 @@ class ContextEvidenceAdapter:
         self.now_provider = now_provider
 
     def fetch_fundamentals(self, *, run_id: str, symbol: str, trade_date: date, timeout: float) -> EvidenceEnvelope:
-        if trade_date < date.today():
-            return self._envelope(
-                run_id, "fundamentals", symbol, trade_date, EvidenceStatus.UNAVAILABLE, None, {},
-                [self._issue(
-                    "historical_fundamentals_not_point_in_time",
-                    "fundamentals",
-                    "DSA 财务数据尚无可核验公告可得日期，历史分析不会读取当前财务数据",
-                    blocking=False,
-                )], [],
-            )
         try:
             payload = self.manager.get_fundamental_context(symbol, budget_seconds=timeout)
         except Exception as exc:
             return self._unavailable(run_id, "fundamentals", symbol, trade_date, exc)
+        payload = dict(payload or {})
+        report_date = self._fundamental_report_date(payload)
+        fetched_at = self.now_provider()
+        payload["report_date"] = report_date.isoformat() if report_date else None
+        payload["fetched_at"] = fetched_at.isoformat()
         status = str((payload or {}).get("status") or "failed")
         usable = status in {"ok", "partial"} and any(
             isinstance((payload or {}).get(key), dict) and (payload or {}).get(key, {}).get("data")
             for key in ("valuation", "growth", "earnings", "institution", "capital_flow", "boards")
         )
-        issues = []
+        missing_fields = self._fundamental_missing_fields(payload)
+        issues: list[EvidenceIssue] = []
+        evidence_status = EvidenceStatus.OK
         if not usable:
             issues.append(self._issue("fundamentals_unavailable", "fundamentals", "财务证据不可用，基本面报告将被阻止"))
-        elif status == "partial" or (payload or {}).get("errors"):
-            issues.append(self._issue("fundamentals_partial", "fundamentals", "财务证据不完整，报告必须披露缺失项", blocking=False))
+            evidence_status = EvidenceStatus.UNAVAILABLE
+        elif report_date and (trade_date - report_date).days > 365:
+            issues.append(self._issue(
+                "fundamentals_report_expired",
+                "fundamentals",
+                f"最近一期财报（{report_date.isoformat()}）距分析日期已超过一年",
+                blocking=False,
+            ))
+            evidence_status = EvidenceStatus.UNAVAILABLE
+        elif report_date is None:
+            issues.append(self._issue(
+                "fundamentals_report_date_missing",
+                "fundamentals",
+                "已取得基本面数据，但缺少财报报告期，按部分可用处理",
+                blocking=False,
+            ))
+            evidence_status = EvidenceStatus.PARTIAL
+        elif status == "partial" or payload.get("errors") or missing_fields:
+            issues.append(self._issue(
+                "fundamentals_partial",
+                "fundamentals",
+                f"最近一期财报为 {report_date.isoformat()}，部分基本面字段缺失",
+                blocking=False,
+            ))
+            evidence_status = EvidenceStatus.PARTIAL
         providers = self._providers(payload)
-        return self._envelope(
+        envelope = self._envelope(
             run_id, "fundamentals", symbol, trade_date,
-            EvidenceStatus.OK if usable and not issues else EvidenceStatus.PARTIAL if usable else EvidenceStatus.UNAVAILABLE,
+            evidence_status,
             providers[0] if providers else None, payload or {}, issues, providers,
+            as_of=datetime.combine(report_date, datetime.min.time()) if report_date else None,
         )
+        envelope.missing_fields = missing_fields
+        return envelope
+
+    @staticmethod
+    def _fundamental_report_date(payload: dict) -> Optional[date]:
+        earnings = payload.get("earnings") if isinstance(payload.get("earnings"), dict) else {}
+        earnings_data = earnings.get("data") if isinstance(earnings.get("data"), dict) else earnings
+        financial_report = (
+            earnings_data.get("financial_report")
+            if isinstance(earnings_data.get("financial_report"), dict)
+            else {}
+        )
+        candidates = (
+            payload.get("report_date"),
+            financial_report.get("report_date"),
+            earnings_data.get("report_date"),
+        )
+        for value in candidates:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(text[:10], fmt).date()
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _fundamental_missing_fields(payload: dict) -> list[str]:
+        fields = [str(item) for item in payload.get("missing_fields", []) if str(item).strip()]
+        reasons = payload.get("missing_reasons")
+        if isinstance(reasons, dict):
+            fields.extend(str(key) for key in reasons if str(key).strip())
+        return list(dict.fromkeys(fields))
 
     def fetch_news(self, *, run_id: str, symbol: str, name: str, trade_date: date) -> EvidenceEnvelope:
         now = self.now_provider()
@@ -221,6 +277,7 @@ class ContextEvidenceAdapter:
         run_id: str, capability: str, symbol: str, trade_date: date,
         status: EvidenceStatus, provider: Optional[str], payload: dict,
         issues: list[EvidenceIssue], source_chain: list[str],
+        as_of: Optional[datetime] = None,
     ) -> EvidenceEnvelope:
         return EvidenceEnvelope(
             evidence_id=uuid.uuid4().hex,
@@ -228,7 +285,7 @@ class ContextEvidenceAdapter:
             capability=capability,
             symbol=symbol,
             trade_date=trade_date,
-            as_of=datetime.combine(trade_date, datetime.min.time()),
+            as_of=as_of or datetime.combine(trade_date, datetime.min.time()),
             fetched_at=datetime.now(),
             status=status,
             provider=provider,
