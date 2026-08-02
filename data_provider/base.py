@@ -16,6 +16,7 @@
 
 import logging
 import random
+import re
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
@@ -819,6 +820,15 @@ class DataFetcherManager:
     @staticmethod
     def _merge_earnings_by_period(primary: Dict[str, Any], supplement: Dict[str, Any]) -> Dict[str, Any]:
         """Merge earnings without combining financial statement periods."""
+        def normalized_period(value: Any) -> str:
+            digits = re.sub(r"\D", "", str(value or ""))
+            if len(digits) != 8:
+                return ""
+            try:
+                return datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d")
+            except ValueError:
+                return ""
+
         supplemental_report = supplement.get("financial_report")
         other_earnings = {key: value for key, value in supplement.items() if key != "financial_report"}
         DataFetcherManager._merge_missing_mapping(primary, other_earnings)
@@ -830,9 +840,15 @@ class DataFetcherManager:
             primary["financial_report"] = supplemental_report
             return primary
 
-        primary_date = str(primary_report.get("report_date") or "").strip()
-        supplemental_date = str(supplemental_report.get("report_date") or "").strip()
-        if primary_date and primary_date == supplemental_date:
+        primary_date = normalized_period(primary_report.get("report_date"))
+        supplemental_date = normalized_period(supplemental_report.get("report_date"))
+        primary_type = str(primary_report.get("report_type") or "").strip()
+        supplemental_type = str(supplemental_report.get("report_type") or "").strip()
+        if (
+            primary_date
+            and primary_date == supplemental_date
+            and primary_type == supplemental_type
+        ):
             DataFetcherManager._merge_missing_mapping(primary_report, supplemental_report)
             return primary
 

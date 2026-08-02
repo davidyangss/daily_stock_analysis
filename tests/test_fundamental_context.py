@@ -235,6 +235,31 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertAlmostEqual(q1_cash_flow / q1_profit * 100, 122.0397, places=4)
         self.assertNotEqual(primary["net_profit_parent"], q1_profit)
 
+    def test_earnings_merge_requires_same_period_and_disclosure_type(self) -> None:
+        primary = {"financial_report": {
+            "report_date": "2026-06-30",
+            "report_type": "earnings_forecast",
+            "revenue": 11_500_000_000,
+        }}
+        formal = {"financial_report": {
+            "report_date": "20260630",
+            "report_type": "financial_statement",
+            "operating_cash_flow": 3_000_000_000,
+        }}
+
+        DataFetcherManager._merge_earnings_by_period(primary, formal)
+
+        self.assertNotIn("operating_cash_flow", primary["financial_report"])
+        self.assertEqual(primary["supplemental_financial_reports"], [formal["financial_report"]])
+
+        same_forecast = {"financial_report": {
+            "report_date": "20260630",
+            "report_type": "earnings_forecast",
+            "net_profit_parent": 6_900_000_000,
+        }}
+        DataFetcherManager._merge_earnings_by_period(primary, same_forecast)
+        self.assertEqual(primary["financial_report"]["net_profit_parent"], 6_900_000_000)
+
     def test_cn_fundamentals_keep_iwencai_partial_result_when_fallback_times_out(self) -> None:
         manager = DataFetcherManager(fetchers=[])
         cfg = SimpleNamespace(

@@ -119,6 +119,40 @@ def _dated_metric_date(row: Mapping[str, Any], aliases: Iterable[str]) -> Option
     return max(dates) if dates else None
 
 
+def _normalize_report_period(value: Any) -> Optional[str]:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) != 8:
+        return None
+    try:
+        return datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _pick_metric_with_date(
+    row: Mapping[str, Any], aliases: Iterable[str]
+) -> tuple[Any, Optional[str], Optional[str]]:
+    """Return a metric value, its column period, and explicit disclosure type."""
+    normalized_aliases = [_column_key(alias) for alias in aliases]
+    candidates = []
+    for key, value in row.items():
+        if value in (None, "", "-", "--"):
+            continue
+        normalized = _column_key(key)
+        if any(token in normalized for token in ("同比", "增长率", "占比", "比率")):
+            continue
+        exact = normalized in normalized_aliases
+        if exact or any(alias in normalized for alias in normalized_aliases):
+            match = re.search(r"\[(\d{8})\]", str(key))
+            report_type = "earnings_forecast" if "业绩预告" in str(key) else None
+            candidates.append((0 if exact else 1, value, match.group(1) if match else None, report_type))
+    if not candidates:
+        return None, None, None
+    candidates.sort(key=lambda item: item[0])
+    _, value, period, report_type = candidates[0]
+    return value, _normalize_report_period(period), report_type
+
+
 def _text(value: Any) -> str:
     text = str(value or "").strip()
     return "" if text.lower() in {"", "-", "--", "none", "null", "nan"} else text
@@ -342,16 +376,36 @@ class IwencaiAdapter:
         profit_yoy = _number(_pick(row, ("归母净利润同比增长率", "净利润同比增长率", "归母净利润同比")))
         roe = _number(_pick(row, ("净资产收益率", "roe")))
         gross_margin = _number(_pick(row, ("毛利率", "销售毛利率")))
-        financial_report = {
-            "report_date": _pick(row, ("最新报告期", "报告期", "报告日期")) or _dated_metric_date(
+        report_date = _normalize_report_period(
+            _pick(row, ("最新报告期", "报告期", "报告日期")) or _dated_metric_date(
                 row, ("净资产收益率", "毛利率", "经营活动产生的现金流量净额")
-            ),
-            "revenue": _number(_pick(row, ("营业收入", "营业总收入"))),
-            "net_profit_parent": _number(_pick(row, ("归母净利润", "归属于母公司股东的净利润"))),
-            "operating_cash_flow": _number(_pick(row, (
-                "经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流",
-            ))),
+            )
+        )
+        revenue_raw, revenue_period, revenue_type = _pick_metric_with_date(row, ("营业收入", "营业总收入"))
+        profit_raw, profit_period, profit_type = _pick_metric_with_date(
+            row, ("归母净利润", "归属于母公司股东的净利润")
+        )
+        cash_raw, cash_period, cash_type = _pick_metric_with_date(row, (
+            "经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流",
+        ))
+        financial_report = {
+            "report_date": report_date,
+            "revenue": _number(revenue_raw),
+            "net_profit_parent": _number(profit_raw),
+            "operating_cash_flow": _number(cash_raw),
             "roe": roe,
+            "field_periods": {
+                "revenue": revenue_period or report_date,
+                "net_profit_parent": profit_period or report_date,
+                "operating_cash_flow": cash_period or report_date,
+                "roe": _normalize_report_period(_dated_metric_date(row, ("净资产收益率",))) or report_date,
+            },
+            "field_report_types": {
+                "revenue": revenue_type,
+                "net_profit_parent": profit_type,
+                "operating_cash_flow": cash_type,
+                "roe": None,
+            },
         }
         growth = {
             "revenue_yoy": revenue_yoy,
@@ -366,7 +420,10 @@ class IwencaiAdapter:
         }
         earnings = (
             {"financial_report": financial_report}
-            if any(value is not None for value in financial_report.values()) else {}
+            if any(
+                financial_report.get(key) is not None
+                for key in ("report_date", "revenue", "net_profit_parent", "operating_cash_flow", "roe")
+            ) else {}
         )
         errors = []
         missing_reasons: Dict[str, str] = {}

@@ -113,8 +113,20 @@ def test_fundamental_bundle_maps_real_dated_financial_columns() -> None:
         result = adapter.get_fundamental_bundle("600519")
 
     report = result["earnings"]["financial_report"]
-    assert report["report_date"] == "20260331"
+    assert report["report_date"] == "2026-03-31"
     assert report["operating_cash_flow"] == 10_000_000
+    assert report["field_periods"] == {
+        "revenue": "2026-03-31",
+        "net_profit_parent": "2026-03-31",
+        "operating_cash_flow": "2026-03-31",
+        "roe": "2026-03-31",
+    }
+    assert report["field_report_types"] == {
+        "revenue": None,
+        "net_profit_parent": None,
+        "operating_cash_flow": None,
+        "roe": None,
+    }
     assert result["institution"]["shareholder_count_change"] == -1234
     assert result["institution"]["top10_holder_change"] == (
         "20260428：减持1名，新进1名，已披露持股数量变动合计-100股，"
@@ -138,6 +150,7 @@ def test_fundamental_bundle_maps_proven_quick_report_without_mislabeling_regular
     assert result["earnings"]["quick_report_summary"] == (
         "20260227：营业收入3,000,000,000元，归母净利润200,000,000元"
     )
+    assert "financial_report" not in result["earnings"]
 
 
 def test_top10_query_stays_narrow_to_preserve_change_detail_semantics() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date, datetime
 from typing import Any, Callable, Optional
@@ -38,6 +39,7 @@ class ContextEvidenceAdapter:
         except Exception as exc:
             return self._unavailable(run_id, "fundamentals", symbol, trade_date, exc)
         payload = dict(payload or {})
+        self._separate_mixed_financial_periods(payload)
         report_date = self._fundamental_report_date(payload)
         fetched_at = self.now_provider()
         payload["report_date"] = report_date.isoformat() if report_date else None
@@ -86,6 +88,76 @@ class ContextEvidenceAdapter:
         )
         envelope.missing_fields = missing_fields
         return envelope
+
+    @staticmethod
+    def _separate_mixed_financial_periods(payload: dict) -> None:
+        """Split a provider report whose individual fields declare different periods."""
+        earnings = payload.get("earnings") if isinstance(payload.get("earnings"), dict) else {}
+        earnings_data = earnings.get("data") if isinstance(earnings.get("data"), dict) else earnings
+        report = earnings_data.get("financial_report")
+        if not isinstance(report, dict):
+            return
+        field_periods = report.get("field_periods")
+        if not isinstance(field_periods, dict):
+            return
+        field_report_types = report.get("field_report_types")
+        if not isinstance(field_report_types, dict):
+            field_report_types = {}
+
+        def normalize_period(value: Any) -> str:
+            digits = re.sub(r"\D", "", str(value or ""))
+            if len(digits) != 8:
+                return ""
+            try:
+                return datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d")
+            except ValueError:
+                return ""
+
+        value_fields = ("revenue", "net_profit_parent", "operating_cash_flow", "roe")
+        grouped: dict[str, dict] = {}
+        for field in value_fields:
+            value = report.get(field)
+            period = normalize_period(field_periods.get(field))
+            if value is None or not period:
+                continue
+            grouped.setdefault(period, {"report_date": period, "field_periods": {}})[field] = value
+            grouped[period]["field_periods"][field] = period
+            report_type = str(field_report_types.get(field) or "").strip()
+            if report_type:
+                grouped[period].setdefault("field_report_types", {})[field] = report_type
+        if not grouped:
+            return
+
+        primary_period = normalize_period(report.get("report_date"))
+        if len(grouped) == 1 and primary_period in grouped:
+            report["report_date"] = primary_period
+            report["field_periods"] = grouped[primary_period]["field_periods"]
+            report.setdefault("report_type", "financial_statement")
+            report["period_consistency"] = "consistent"
+            return
+
+        primary = grouped.pop(primary_period, None)
+        if primary is None:
+            primary = {"report_date": primary_period or None, "field_periods": {}}
+        for key, value in report.items():
+            if key not in value_fields and key not in {"field_periods", "field_report_types"}:
+                primary.setdefault(key, value)
+        primary.setdefault("report_type", "financial_statement")
+        primary["period_consistency"] = (
+            "consistent" if any(primary.get(field) is not None for field in value_fields)
+            else "declared_period_without_attributed_values"
+        )
+        earnings_data["financial_report"] = primary
+        supplemental = earnings_data.setdefault("supplemental_financial_reports", [])
+        if isinstance(supplemental, list):
+            for period_report in grouped.values():
+                explicit_types = set(period_report.get("field_report_types", {}).values())
+                period_report["report_type"] = (
+                    "earnings_forecast" if explicit_types == {"earnings_forecast"}
+                    else "unclassified_period_data"
+                )
+                period_report["period_consistency"] = "separated_from_mixed_provider_payload"
+                supplemental.append(period_report)
 
     @staticmethod
     def _fundamental_report_date(payload: dict) -> Optional[date]:

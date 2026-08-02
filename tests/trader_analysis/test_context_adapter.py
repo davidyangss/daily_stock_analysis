@@ -104,6 +104,84 @@ def test_fundamentals_are_partial_only_when_fields_or_report_date_are_missing() 
     assert [issue.code for issue in result.issues] == ["fundamentals_partial"]
 
 
+def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> None:
+    payload = fundamental_payload()
+    payload["earnings"]["data"]["financial_report"] = {
+        "report_date": "2026-03-31",
+        "revenue": 11_500_000_000,
+        "net_profit_parent": 6_900_000_000,
+        "operating_cash_flow": 1_783_000_000,
+        "field_periods": {
+            "revenue": "20260630",
+            "net_profit_parent": "2026-06-30",
+            "operating_cash_flow": "20260331",
+        },
+        "field_report_types": {
+            "revenue": "earnings_forecast",
+            "net_profit_parent": "earnings_forecast",
+        },
+    }
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="mixed-periods", symbol="603986", trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    earnings = result.payload["earnings"]["data"]
+    assert earnings["financial_report"] == {
+        "report_date": "2026-03-31",
+        "field_periods": {"operating_cash_flow": "2026-03-31"},
+        "operating_cash_flow": 1_783_000_000,
+        "report_type": "financial_statement",
+        "period_consistency": "consistent",
+    }
+    assert earnings["supplemental_financial_reports"] == [{
+        "report_date": "2026-06-30",
+        "field_periods": {
+            "revenue": "2026-06-30",
+            "net_profit_parent": "2026-06-30",
+        },
+        "revenue": 11_500_000_000,
+        "net_profit_parent": 6_900_000_000,
+        "field_report_types": {
+            "revenue": "earnings_forecast",
+            "net_profit_parent": "earnings_forecast",
+        },
+        "report_type": "earnings_forecast",
+        "period_consistency": "separated_from_mixed_provider_payload",
+    }]
+
+
+def test_fundamentals_do_not_label_a_single_h1_field_group_as_declared_q1() -> None:
+    payload = fundamental_payload()
+    payload["earnings"]["data"]["financial_report"] = {
+        "report_date": "2026-03-31",
+        "revenue": 11_500_000_000,
+        "net_profit_parent": 6_900_000_000,
+        "field_periods": {
+            "revenue": "20260630",
+            "net_profit_parent": "2026-06-30",
+        },
+        "field_report_types": {
+            "revenue": "earnings_forecast",
+            "net_profit_parent": "earnings_forecast",
+        },
+    }
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="declared-q1-values-h1", symbol="603986", trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    earnings = result.payload["earnings"]["data"]
+    assert earnings["financial_report"] == {
+        "report_date": "2026-03-31",
+        "field_periods": {},
+        "report_type": "financial_statement",
+        "period_consistency": "declared_period_without_attributed_values",
+    }
+    assert earnings["supplemental_financial_reports"][0]["report_date"] == "2026-06-30"
+    assert earnings["supplemental_financial_reports"][0]["report_type"] == "earnings_forecast"
+
+
 def test_fundamentals_expire_only_after_one_year() -> None:
     manager = FundamentalManager(fundamental_payload(report_date="2025-07-30"))
     result = ContextEvidenceAdapter(manager=manager).fetch_fundamentals(
