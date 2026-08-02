@@ -27,6 +27,7 @@ from src.trader_analysis.graph_runner import (
     TradingAgentsCancelledError,
     TradingAgentsGraphRunner,
 )
+from src.trader_analysis.proposal_guard import guard_trader_proposal
 from src.trader_analysis.reporting import reports_from_state
 from src.trader_analysis.toolkit import DsaTradingAgentsToolkit
 
@@ -328,6 +329,19 @@ class TraderAnalysisOrchestrator:
                 emit("report.written", {"kind": report.kind})
             emit("run.cancelled", {})
             return run
+
+        state, proposal_issues = guard_trader_proposal(state, ledger)
+        if proposal_issues:
+            ledger.warnings.extend(proposal_issues)
+            ledger.overall_status = evaluate_overall_status(ledger)  # type: ignore[assignment]
+            run.quality.overall_status = ledger.overall_status
+            run.quality.warnings = ledger.warnings
+            run.metadata["proposal_guard_corrections"] = len(proposal_issues)
+            emit("quality.updated", {
+                "capability": "trader_plan",
+                "status": "degraded",
+                "issue_codes": [issue.code for issue in proposal_issues],
+            })
 
         for report in reports_from_state(
             state,

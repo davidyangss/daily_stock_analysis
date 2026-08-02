@@ -14,6 +14,7 @@ _ISSUE_LABELS = {
     "fundamentals_unavailable": "基本面数据不可用",
     "fundamentals_runtime_snapshot": "基本面为运行时聚合快照",
     "historical_fundamentals_not_point_in_time": "历史基本面缺少可核验公告日",
+    "trader_stop_loss_reclassified": "交易计划止损价位语义已修正",
 }
 _CAPABILITY_LABELS = {
     "fundamentals": "基本面",

@@ -191,7 +191,8 @@ class DsaTradingAgentsToolkit:
         identity_fields = (
             "report_date", "announcement_date", "available_at", "ann_date",
             "report_type", "document_type", "currency", "period_consistency",
-            "field_periods", "field_report_types",
+            "field_periods", "field_report_types", "field_announcement_dates", "field_sources",
+            "data_basis",
         )
         fields = field_map[statement]
         selected = [

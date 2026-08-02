@@ -103,6 +103,8 @@ pip install "git+https://github.com/davidyangss/TradingAgents.git@ab0909306075e4
 - Sentiment 当前传给模型的社区证据是“标题 + 搜索摘要 + 来源 + 内容/采集时间 + URL”，不是网页完整正文。TradingAgents 0.3.1 的 Sentiment 节点没有浏览器或外部搜索工具；提示明确禁止模型声称已打开链接、自行联网或读取未提供的评论/正文，摘要截断、无日期或样本过少时必须降低置信度。
 - 开启 `TRADER_ANALYSIS_BROWSER_READER_ENABLED` 后，News 和 Sentiment 会对各自搜索结果中最多 `MAX_PAGES` 条允许域名页面调用后端 `agent-browser read`，把受 `MAX_CHARS` 限制的公开正文摘录写入 canonical evidence。仅允许 HTTPS、配置白名单域名和公网 DNS 解析；不使用登录态、Cookie、点击、下载、JavaScript 执行或持久会话。浏览器超时、域名未允许或正文不可读时 fail-open 保留搜索摘要，报告的“证据类型”会区分“浏览器正文摘录”与“搜索摘要（正文不可用）”。
 - 当分析日期为今天或最近已完成交易日时，新闻通过 DSA `SearchService` 的现有 provider/fallback 链按运行时间检索；最近交易日的运行时新闻标记为 `runtime_news_not_point_in_time` 并降级披露。最近交易日的基本面也明确标记为运行时聚合快照。更早历史日期的财务记录只有在 `announcement_date/available_at <= trade_date` 时才准入，并清除当前估值、资金、龙虎榜、机构和板块等运行时 blocks；缺公告可得日的数据不回填历史上下文。
+- 问财无日期营收/利润会结合 `*来源说明` 识别报告期、公告日、业绩预告和区间中值口径；若同一响应混有正式报告字段，系统显式补查对应定期报告并把预告作为独立 supplemental report，禁止把 H1 预告与 Q1 现金流、毛利率跨期计算。前十大股东优先使用带报告期的直接人数统计；只有当前排名 1—10 完整时才允许从明细计数，截断明细不再输出部分人数或数量合计。
+- Trader 会收到已核验当前价、近 5 个交易日最低价和 200 日均线及 A 股多头现货约束。Sell 表示减仓/退出，公开报告将其 `Entry Price` 展示为执行价格；若模型把不低于当前价的上方重评位写入 `Stop Loss`，发布边界会改列为重新评估价格、产生 `trader_stop_loss_reclassified` 警告并将运行降级，原始输出仍保留在 Trace。
 - 新上市标的截至分析日已有至少 3 个有效交易日、但少于建议历史长度时，以 `limited_daily_history` 降级继续分析；报告必须明确短历史限制，不得把不成熟的技术指标解释成高置信度趋势。少于 3 个有效交易日仍阻断分析。
 - 历史分析具备日线与核验价格且无阻断问题时，即使新闻、财务和情绪因 point-in-time 约束不可用，也会以 `degraded` 运行 Graph 并生成各角色报告；缺失能力必须保留在数据质量报告中，不得使用当前数据回填历史上下文。
 - 运行、分角色报告、Debug 事件和脱敏后的 LLM/工具 trace 以 `run_id` 为外键持久化到 `TRADER_ANALYSIS_RESULTS_DIR/trader_analysis.sqlite3`；同时继续双写 `runs/<run_id>/` 下的 JSON 文件用于兼容回滚，升级时会把旧 JSON 任务懒迁移到 SQLite，不写入 `analysis_history`。

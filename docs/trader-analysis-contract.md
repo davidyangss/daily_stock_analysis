@@ -20,7 +20,7 @@ DSA 的职责不是重写 TradingAgents，而是给原版工作流注入适合�
 - 用 DSA 的 A 股身份解析替代上游的海外证券身份查询。
 - 用 run-scoped `DsaTradingAgentsToolkit` 替代海外行情、新闻、基本面和情绪工具。
 - 国内数据源优先，并保留 provider fallback、标准化、超时和来源链。
-- Prompt 只增加证券身份、简体中文、A 股术语、人民币口径和禁止虚构缺失证据等本地化约束；不得在全局身份 Prompt 中重写角色职责或强迫特定投资结论。
+- Prompt 只增加证券身份、简体中文、A 股术语、人民币口径、已核验价位和动作感知的价格字段不变量，以及禁止虚构缺失证据等本地化约束；不得在全局身份 Prompt 中重写角色职责或强迫特定投资结论。
 - 通过回调和工具包装记录完整 LLM/工具交互，通过证据清单披露模型可用数据、实际消费情况、来源和时间。
 - 报告层把上游固定英文交易建议前缀本地化，不改变原始决策方向。
 
@@ -279,7 +279,7 @@ DataFetcherManager 的 conformance 要求：首个 provider 只有 5 行、后�
 }
 ```
 
-### 8.2 财务报告完美字段
+### 8.2 财务报告标准字段
 
 | 字段 | 类型 | 必填 | 可空 | 规则 |
 | --- | --- | --- | --- | --- |
@@ -297,11 +297,23 @@ DataFetcherManager 的 conformance 要求：首个 provider 只有 5 行、后�
 | `equity_parent` | number | 建议 | 是 | 归母权益 |
 | `field_periods` | map<field,date> | 混合源时必填 | 是 | 每个值的报告期 |
 | `field_report_types` | map<field,string> | 混合源时必填 | 是 | 每个值的文档性质 |
+| `field_announcement_dates` | map<field,date> | 混合源时建议 | 是 | 每个值所属披露的公告日 |
+| `field_sources` | map<field,string> | 混合源时建议 | 是 | provider 返回的字段来源说明或可审计来源标识 |
+| `data_basis` | string | 预告时建议 | 是 | 如 `midpoint_of_forecast_range`，说明数值是否为区间中值等加工口径 |
 | `period_consistency` | string | 建议 | 是 | 是否同期间，或为何被拆分 |
 
-同一 provider 返回不同字段期间时，先拆成 `financial_report` 和 `supplemental_financial_reports[]`，不得把 H1 预告收入与 Q1 正式现金流装进同一个可相除对象。
+同一 provider 返回不同字段期间或不同披露类型时，先拆成 `financial_report` 和 `supplemental_financial_reports[]`，不得把 H1 预告收入与 Q1 正式现金流装进同一个可相除对象。只有字段期间与 `field_report_types` 均明确一致时，`period_consistency` 才能为 `consistent`；仅日期相同但披露类型未知时必须标为 `period_consistent_disclosure_type_unverified`，并禁止跨字段派生计算。
 
-### 8.3 Point-in-time 规则
+问财宽查询的无日期指标必须读取同一指标的 `*来源说明`。若来源说明指出业绩预告，应提取其报告期、公告日、`earnings_forecast` 和区间中值口径，并将该值放入 supplemental forecast；不得用同一行 ROE、毛利率或现金流列的日期回填。若同一行存在正式报告字段，适配器应按该报告期执行显式定期报告补查；补查失败时保留已证明的字段和独立预告，但缺失的正式营收/利润必须保持为空。
+
+### 8.3 前十大股东统计完整性
+
+- 优先使用问财带报告期的 `新进股东个数`、`减持股东个数` 等直接汇总字段。
+- 明细查询的 `limit` 不得截断潜在的“当前十名 + 新出成员”集合。只有当当期排名 `1..10` 全部存在时，才允许从明细重新计数。
+- 无当期排名的 `新出` 行不属于当前前十名，不得混入“新进/减持/不变”人数。
+- 明细完整性无法证明时，`institution.top10_holder_change` 返回缺失原因，不发布部分人数或对截断行求持股数量/比例合计。
+
+### 8.4 Point-in-time 规则
 
 - `trade_date` 早于最近已完成交易日时进入 `historical_strict`。
 - 历史严格模式只保留 `report_date <= trade_date` 且显式 `announcement_date/available_at <= trade_date` 的报告。
@@ -455,7 +467,7 @@ DSA 兼容构建支持可选 `sections[]`：只有注入 toolkit 提供该字段
 | Bull Researcher | 四类报告、debate state、past context | 更新 `bull_history/history/current_response/count` | 只能引用已有报告证据 |
 | Bear Researcher | 同上 | 更新 `bear_history/history/current_response/count` | 同上 |
 | Research Manager | 完整多空历史 | `ResearchPlan` → `investment_plan` | schema 校验失败走上游兼容 fallback，不改变字段契约 |
-| Trader | 四类报告、investment_plan、past context | `TraderProposal` → `trader_investment_plan` | action 仅 Buy/Hold/Sell；价格字段可空 |
+| Trader | 四类报告、investment_plan、past context、已核验当前价/近 5 日低点/200 日 SMA | `TraderProposal` → `trader_investment_plan` | action 仅 Buy/Hold/Sell；A 股 Sell 为减仓/退出多头；价格字段可空且须通过方向校验 |
 | Aggressive Analyst | trader plan、四类报告、risk state | aggressive response/history/count | 不直接成为最终决策 |
 | Conservative Analyst | 同上 | conservative response/history/count | 同上 |
 | Neutral Analyst | 同上 | neutral response/history/count | 同上 |
@@ -480,8 +492,10 @@ DSA 兼容构建支持可选 `sections[]`：只有注入 toolkit 提供该字段
 
 - `action`：Buy / Hold / Sell。
 - `reasoning`：基于上游报告的理由。
-- `entry_price`、`stop_loss`：可空 number，CNY/股。
+- `entry_price`、`stop_loss`：可空 number，CNY/股。Sell 下的 `entry_price` 在公开报告中按卖出执行参考价展示；`stop_loss` 只表示剩余多头的下行退出位，必须严格低于已核验当前价，并在成本已知时低于多头成本。
 - `position_sizing`：可空 string。
+
+上方 EMA、均线或阻力位只能表达重新评估/重新入场条件。固定上游 schema 没有独立字段时应令 `stop_loss=null`。发布边界会确定性检查所有结构化 Stop Loss：若其不低于已核验当前价，则改列为 `Reassessment Price`，写入 `trader_stop_loss_reclassified` warning，并把运行降级为 `degraded`；不得静默保留为止损，也不得凭空生成一个替代价位。原始模型输出仍保留在 Trace 供审计。
 
 `PortfolioDecision`：
 
@@ -573,6 +587,7 @@ LLM trace 必须记录实际 message list、invocation params、response、token
 - issue code 在 API/Trace 中保持稳定英文标识；`data_quality` Markdown 与 Web 展示中文名称和原始 message。
 - 所有正式角色报告以中文为主；TradingAgents 固定字段名和枚举采用中文在前、英文对照在后，技术缩写、证券代码、来源专名和 URL 不翻译。
 - 市场技术报告在正式展示层移除首个中文 Markdown 标题之前可明确识别的英文分析草稿；所有角色报告本地化固定英文交易建议，原始 LLM 响应仍保留在 Trace 中供审计。
+- Sell 交易计划的 `Entry Price` 公开为“执行价格（Execution Price）”；方向非法的上方 `Stop Loss` 公开为“重新评估价格（Reassessment Price）”，同时在数据质量报告披露修正，不改写原始 Trace。
 - News/Sentiment 报告附交叉核验证据摘要。
 - `data_evidence` 保存完整标准化输入和实际消费标记。
 - `data_quality` 保存总体状态、阻断项、warning、每项能力的来源和业务时点。
@@ -612,16 +627,19 @@ LLM trace 必须记录实际 message list、invocation params、response、token
 9. 接入原版 Graph 的 `data_toolkit/role_llms` seam，不改节点和边。
 10. 接入 LLM/工具 trace 和 evidence consumption lineage。
 11. 实现角色报告、完整证据清单、数据质量报告及持久化。
-12. 最后只增加最小身份/语言/A 股术语 Prompt，并跑 Prompt 边界测试。
+12. 最后只增加最小身份/语言/A 股术语及动作感知价位不变量 Prompt，并跑 Prompt 边界测试。
 
 ## 18. 最低 conformance 测试
 
 - Graph：节点、边、条件 path map、selected analyst 顺序和 state 字段与冻结上游一致。
-- Prompt：只有身份、简体中文、A 股术语、CNY、证据边界；不含额外投资逻辑或强制表格。
+- Prompt：只有身份、简体中文、A 股术语、CNY、证据边界和已核验的动作感知价位不变量；不含额外投资结论或强制表格。
 - 日线：首源浅、后源深时继续 fallback；全部浅时返回最大 partial；少于 3 行阻断。
 - 身份：实时快照返回相似但不相等代码时阻断。
 - 财务：公告日在 cutoff 后或缺失时，历史报告被移除；运行时 blocks 不进入历史报告。
 - 财务分期：Q1 正式报告和 H1 业绩预告保持两个对象，不能跨期相除。
+- 财务来源说明：无日期 115/69 亿且来源说明指向 H1 预告时，显式 Q1 补查进入正式报告，H1 中值进入 supplemental forecast；Q1 净利同比不得沿用 H1 预告同比。
+- 股东统计：13 行“当前十名 + 新出三名”反例输出新进 3、减持 5、不变 2；截断到不足十个当前排名时 fail-closed，且不输出数量合计。
+- 交易价位：Sell/current=378.60/stop_loss=426.29 时，公开 Trader 模块将 426.29 重分类为 reassessment 并产生降级 warning，不再显示为 Stop Loss。
 - 新闻：窗口外有日期条目被过滤，无日期条目明确低置信度。
 - 情绪：固定 7 天；保留国内新闻与国内社区的真实来源；不要求不存在的美股社区统计。
 - 工具：balance/cashflow/income 只返回各自字段；global news 不冒充个股新闻。

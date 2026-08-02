@@ -130,27 +130,76 @@ def _normalize_report_period(value: Any) -> Optional[str]:
 
 
 def _pick_metric_with_date(
-    row: Mapping[str, Any], aliases: Iterable[str]
-) -> tuple[Any, Optional[str], Optional[str]]:
-    """Return a metric value, its column period, and explicit disclosure type."""
+    row: Mapping[str, Any], aliases: Iterable[str], *, report_type: Optional[str] = None,
+) -> tuple[Any, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Return a metric with period and disclosure provenance.
+
+    iWencai sometimes returns an undated ``营业收入``/``归母净利润`` column while
+    putting the real report period and disclosure type only in a sibling
+    ``*来源说明`` field.  Treating such a value as belonging to another dated
+    column in the same row is unsafe, so provenance is resolved before any
+    report-level fallback is considered.
+    """
     normalized_aliases = [_column_key(alias) for alias in aliases]
     candidates = []
     for key, value in row.items():
         if value in (None, "", "-", "--"):
             continue
         normalized = _column_key(key)
+        if "来源说明" in normalized or normalized.endswith("说明"):
+            continue
         if any(token in normalized for token in ("同比", "增长率", "占比", "比率")):
             continue
         exact = normalized in normalized_aliases
         if exact or any(alias in normalized for alias in normalized_aliases):
             match = re.search(r"\[(\d{8})\]", str(key))
-            report_type = "earnings_forecast" if "业绩预告" in str(key) else None
-            candidates.append((0 if exact else 1, value, match.group(1) if match else None, report_type))
+            column_type = "earnings_forecast" if "业绩预告" in str(key) else report_type
+            candidates.append((0 if exact else 1, value, match.group(1) if match else None, column_type))
     if not candidates:
-        return None, None, None
+        return None, None, None, None, None
     candidates.sort(key=lambda item: item[0])
-    _, value, period, report_type = candidates[0]
-    return value, _normalize_report_period(period), report_type
+    _, value, period, disclosure_type = candidates[0]
+
+    source = ""
+    for key, candidate in row.items():
+        normalized = _column_key(key)
+        if "来源说明" not in normalized:
+            continue
+        if any(alias in normalized for alias in normalized_aliases):
+            source = _text(candidate)
+            if source:
+                break
+    source_period, announcement_date, source_type = _disclosure_from_source(source)
+    return (
+        value,
+        _normalize_report_period(period) or source_period,
+        source_type or disclosure_type,
+        announcement_date,
+        source or None,
+    )
+
+
+def _disclosure_from_source(source: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Parse report period, announcement date and type from an iWencai source note."""
+    if not source:
+        return None, None, None
+    dates = [
+        _normalize_report_period(value)
+        for value in re.findall(r"\d{4}(?:[-年])\d{1,2}(?:[-月])\d{1,2}", source)
+    ]
+    dates = [value for value in dates if value]
+    if "业绩预告" in source:
+        disclosure_type = "earnings_forecast"
+    elif "业绩快报" in source:
+        disclosure_type = "quick_report"
+    elif any(token in source for token in ("一季报", "三季报", "半年度报告", "年度报告", "年报", "定期报告")):
+        disclosure_type = "financial_statement"
+    else:
+        disclosure_type = None
+    if len(dates) >= 2 and "公告" in source:
+        # Real source notes use: "来源于<公告日>公告的<报告期>的业绩预告".
+        return dates[1], dates[0], disclosure_type
+    return (dates[-1] if dates else None), None, disclosure_type
 
 
 def _text(value: Any) -> str:
@@ -191,40 +240,74 @@ def _quick_report_summary(row: Mapping[str, Any]) -> Optional[str]:
     return f"{report_date + '：' if report_date else ''}{'，'.join(parts)}"
 
 
-def _top10_holder_change_summary(rows: Iterable[Mapping[str, Any]]) -> Optional[str]:
-    """Normalize iWencai's multi-row top-shareholder change response."""
-    changes = []
+def _dated_holder_count(
+    rows: Iterable[Mapping[str, Any]], aliases: Iterable[str],
+) -> tuple[Optional[int], Optional[str]]:
+    normalized_aliases = [_column_key(alias) for alias in aliases]
+    values: list[tuple[int, str]] = []
     for row in rows:
-        change_type = _text(_pick(row, ("持股变动类型", "变动类型")))
-        quantity_change = _number(_pick(row, ("持股数量变动", "持股数变动")))
-        ratio_change = _number(_pick(row, ("持股比例变动", "持股占比变动")))
-        if not change_type and quantity_change is None and ratio_change is None:
-            continue
-        changes.append({
-            "date": _text(_pick(row, ("公告日期", "报告日期", "截止日期"))),
-            "type": change_type,
-            "quantity": quantity_change,
-            "ratio": ratio_change,
-        })
-    if not changes:
-        return None
+        for key, raw in row.items():
+            normalized = _column_key(key)
+            if not any(alias in normalized for alias in normalized_aliases):
+                continue
+            match = re.search(r"\[(\d{8})\]", str(key))
+            number = _number(raw)
+            if match and number is not None and number >= 0 and float(number).is_integer():
+                values.append((int(number), match.group(1)))
+    if not values:
+        return None, None
+    latest_period = max(item[1] for item in values)
+    latest_values = {item[0] for item in values if item[1] == latest_period}
+    return (latest_values.pop(), latest_period) if len(latest_values) == 1 else (None, None)
 
-    latest_date = max((item["date"] for item in changes if item["date"]), default="")
-    latest = [item for item in changes if not latest_date or item["date"] in {"", latest_date}]
-    type_counts: Dict[str, int] = {}
-    for item in latest:
-        if item["type"]:
-            type_counts[item["type"]] = type_counts.get(item["type"], 0) + 1
-    parts = [f"{name}{count}名" for name, count in type_counts.items()]
-    quantities = [item["quantity"] for item in latest if item["quantity"] is not None]
-    if quantities:
-        parts.append(f"已披露持股数量变动合计{_display_number(sum(quantities))}股")
-    ratios = [item["ratio"] for item in latest if item["ratio"] is not None]
-    if ratios:
-        parts.append(f"已披露持股比例变动合计{_display_number(sum(ratios))}个百分点")
-    if not parts:
+
+def _top10_holder_change_summary(rows: Iterable[Mapping[str, Any]]) -> Optional[str]:
+    """Summarize top-10 changes only when counts or all ten current ranks are proven."""
+    rows = list(rows)
+    count_specs = (
+        ("新进", ("新进股东个数", "新增股东个数")),
+        ("增持", ("增持股东个数",)),
+        ("减持", ("减持股东个数",)),
+        ("不变", ("不变股东个数",)),
+    )
+    direct_counts: list[tuple[str, int]] = []
+    periods = []
+    for label, aliases in count_specs:
+        count, period = _dated_holder_count(rows, aliases)
+        if count is not None:
+            direct_counts.append((label, count))
+            if period:
+                periods.append(period)
+    announcement_date = max(
+        (_text(_pick(row, ("公告日期",))) for row in rows),
+        default="",
+    )
+    if {name for name, _count in direct_counts} >= {"新进", "减持"}:
+        period = max(periods, default="")
+        prefix = announcement_date
+        if period:
+            prefix = f"{prefix + '（' if prefix else ''}报告期{period}{'）' if prefix else ''}"
+        return f"{prefix + '：' if prefix else ''}{'，'.join(f'{name}{count}名' for name, count in direct_counts)}"
+
+    # Detail fallback is valid only if the response contains each current rank
+    # 1..10.  Rows such as ``新出`` have no current rank and must not be mixed
+    # into the current top-ten population.
+    current: dict[int, str] = {}
+    for row in rows:
+        rank = _number(_pick(row, ("排名", "当期排名")))
+        change_type = _text(_pick(row, ("持股变动类型", "变动类型")))
+        if rank is None or not float(rank).is_integer() or not 1 <= int(rank) <= 10:
+            continue
+        current[int(rank)] = change_type
+    if set(current) != set(range(1, 11)) or any(not value for value in current.values()):
         return None
-    return f"{latest_date + '：' if latest_date else ''}{'，'.join(parts)}"
+    type_counts: Dict[str, int] = {}
+    for change_type in current.values():
+        type_counts[change_type] = type_counts.get(change_type, 0) + 1
+    ordered = [name for name, _aliases in count_specs if name in type_counts]
+    ordered.extend(name for name in type_counts if name not in ordered)
+    parts = [f"{name}{type_counts[name]}名" for name in ordered]
+    return f"{announcement_date + '：' if announcement_date else ''}{'，'.join(parts)}"
 
 
 class IwencaiAdapter:
@@ -381,35 +464,236 @@ class IwencaiAdapter:
                 row, ("净资产收益率", "毛利率", "经营活动产生的现金流量净额")
             )
         )
-        revenue_raw, revenue_period, revenue_type = _pick_metric_with_date(row, ("营业收入", "营业总收入"))
-        profit_raw, profit_period, profit_type = _pick_metric_with_date(
-            row, ("归母净利润", "归属于母公司股东的净利润")
+        revenue_raw, revenue_period, revenue_type, revenue_ann, revenue_source = _pick_metric_with_date(
+            row, ("营业收入", "营业总收入")
         )
-        cash_raw, cash_period, cash_type = _pick_metric_with_date(row, (
+        profit_raw, profit_period, profit_type, profit_ann, profit_source = _pick_metric_with_date(
+            row, ("归母净利润", "归属于母公司股东的净利润", "净利润")
+        )
+        cash_raw, cash_period, cash_type, cash_ann, cash_source = _pick_metric_with_date(row, (
             "经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流",
         ))
-        financial_report = {
-            "report_date": report_date,
-            "revenue": _number(revenue_raw),
-            "net_profit_parent": _number(profit_raw),
-            "operating_cash_flow": _number(cash_raw),
+        roe_period = _normalize_report_period(_dated_metric_date(row, ("净资产收益率",))) or report_date
+        revenue_yoy_period = _normalize_report_period(_dated_metric_date(
+            row, ("营业收入同比增长率", "营收同比增长率", "营业收入同比"),
+        ))
+        profit_yoy_period = _normalize_report_period(_dated_metric_date(
+            row, ("归母净利润同比增长率", "净利润同比增长率", "归母净利润同比"),
+        ))
+
+        field_values = {
+            "revenue": (
+                _number(revenue_raw)
+                if revenue_type != "earnings_forecast" and revenue_period else None
+            ),
+            "net_profit_parent": (
+                _number(profit_raw)
+                if profit_type != "earnings_forecast" and profit_period else None
+            ),
+            "operating_cash_flow": (
+                _number(cash_raw)
+                if cash_type != "earnings_forecast" and cash_period else None
+            ),
             "roe": roe,
+        }
+        field_periods = {
+            "revenue": revenue_period,
+            "net_profit_parent": profit_period,
+            "operating_cash_flow": cash_period,
+            "roe": roe_period,
+        }
+        field_report_types = {
+            "revenue": revenue_type,
+            "net_profit_parent": profit_type,
+            "operating_cash_flow": cash_type,
+            "roe": None,
+        }
+        field_announcement_dates = {
+            "revenue": revenue_ann,
+            "net_profit_parent": profit_ann,
+            "operating_cash_flow": cash_ann,
+            "roe": None,
+        }
+        field_sources = {
+            "revenue": revenue_source,
+            "net_profit_parent": profit_source,
+            "operating_cash_flow": cash_source,
+            "roe": None,
+        }
+        present_fields = {key for key, value in field_values.items() if value is not None}
+        financial_report: Dict[str, Any] = {
+            "report_date": report_date,
+            **{key: value for key, value in field_values.items() if key in present_fields},
             "field_periods": {
-                "revenue": revenue_period or report_date,
-                "net_profit_parent": profit_period or report_date,
-                "operating_cash_flow": cash_period or report_date,
-                "roe": _normalize_report_period(_dated_metric_date(row, ("净资产收益率",))) or report_date,
+                key: value for key, value in field_periods.items()
+                if key in present_fields and value is not None
             },
             "field_report_types": {
-                "revenue": revenue_type,
-                "net_profit_parent": profit_type,
-                "operating_cash_flow": cash_type,
-                "roe": None,
+                key: field_report_types[key] for key in present_fields
+            },
+            "field_announcement_dates": {
+                key: value for key, value in field_announcement_dates.items()
+                if key in present_fields and value is not None
+            },
+            "field_sources": {
+                key: value for key, value in field_sources.items()
+                if key in present_fields and value is not None
             },
         }
+
+        supplemental_reports: List[Dict[str, Any]] = []
+        forecast_values = {
+            "revenue": _number(revenue_raw) if revenue_type == "earnings_forecast" else None,
+            "net_profit_parent": _number(profit_raw) if profit_type == "earnings_forecast" else None,
+            "revenue_yoy": revenue_yoy if revenue_type == "earnings_forecast" else None,
+            "net_profit_yoy": profit_yoy if profit_type == "earnings_forecast" else None,
+        }
+        forecast_fields = {key for key, value in forecast_values.items() if value is not None}
+        forecast_period = revenue_period if revenue_type == "earnings_forecast" else None
+        forecast_period = forecast_period or (
+            profit_period if profit_type == "earnings_forecast" else None
+        )
+        forecast_ann = revenue_ann if revenue_type == "earnings_forecast" else None
+        forecast_ann = forecast_ann or (profit_ann if profit_type == "earnings_forecast" else None)
+        forecast_source = revenue_source if revenue_type == "earnings_forecast" else None
+        forecast_source = forecast_source or (
+            profit_source if profit_type == "earnings_forecast" else None
+        )
+        if forecast_fields:
+            supplemental_reports.append({
+                "report_date": forecast_period,
+                "announcement_date": forecast_ann,
+                "available_at": forecast_ann,
+                "report_type": "earnings_forecast",
+                "document_type": "earnings_forecast",
+                "data_basis": (
+                    "midpoint_of_forecast_range"
+                    if forecast_source and "中值" in forecast_source else None
+                ),
+                **{key: value for key, value in forecast_values.items() if key in forecast_fields},
+                "field_periods": {key: forecast_period for key in forecast_fields if forecast_period},
+                "field_report_types": {key: "earnings_forecast" for key in forecast_fields},
+                "field_announcement_dates": {
+                    key: forecast_ann for key in forecast_fields if forecast_ann
+                },
+                "field_sources": {
+                    key: forecast_source for key in forecast_fields if forecast_source
+                },
+                "period_consistency": "consistent" if forecast_period else "period_unverified",
+            })
+
+        errors = []
+        missing_reasons: Dict[str, str] = {}
+        for field, raw_value, period, disclosure_type in (
+            ("revenue", revenue_raw, revenue_period, revenue_type),
+            ("net_profit_parent", profit_raw, profit_period, profit_type),
+            ("operating_cash_flow", cash_raw, cash_period, cash_type),
+        ):
+            if (
+                _number(raw_value) is not None
+                and disclosure_type != "earnings_forecast"
+                and not period
+            ):
+                missing_reasons[f"earnings.{field}"] = "report_period_unattributed"
+        # When the broad "latest" query resolves income metrics to a forecast,
+        # explicitly fetch the formal statement for the independently dated
+        # ROE/cash-flow period.  If this fetch fails, forecast values remain
+        # supplemental and are never backfilled into that statement period.
+        if forecast_fields and report_date:
+            report_labels = {
+                "03-31": "一季度报告",
+                "06-30": "半年度报告",
+                "09-30": "三季度报告",
+                "12-31": "年度报告",
+            }
+            report_label = report_labels.get(report_date[5:])
+            if report_label:
+                formal_query = (
+                    f"{stock_code} {report_date[:4]}年{report_label} 营业收入 营业收入同比增长率 "
+                    "归母净利润 归母净利润同比增长率 净资产收益率 毛利率 "
+                    "经营活动现金流量净额 公告日期"
+                )
+                try:
+                    formal_row = self._stock_row(
+                        self.query(formal_query, skill_id="hithink-finance-query", limit=3),
+                        stock_code,
+                    )
+                    if formal_row:
+                        formal_metrics = {
+                            "revenue": _pick_metric_with_date(
+                                formal_row, ("营业收入", "营业总收入"),
+                                report_type="financial_statement",
+                            ),
+                            "net_profit_parent": _pick_metric_with_date(
+                                formal_row,
+                                ("归母净利润", "归属于母公司股东的净利润", "净利润"),
+                                report_type="financial_statement",
+                            ),
+                            "operating_cash_flow": _pick_metric_with_date(
+                                formal_row,
+                                ("经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流"),
+                                report_type="financial_statement",
+                            ),
+                            "roe": (
+                                _pick(formal_row, ("净资产收益率", "roe")),
+                                _normalize_report_period(_dated_metric_date(formal_row, ("净资产收益率",))),
+                                "financial_statement", None, None,
+                            ),
+                        }
+                        formal_values = {
+                            key: _number(metric[0]) for key, metric in formal_metrics.items()
+                            if _number(metric[0]) is not None
+                        }
+                        formal_periods = {
+                            key: metric[1] or report_date for key, metric in formal_metrics.items()
+                            if key in formal_values
+                        }
+                        announcement_date = _normalize_report_period(
+                            _pick(formal_row, ("公告日期",))
+                        )
+                        financial_report = {
+                            "report_date": report_date,
+                            "announcement_date": announcement_date,
+                            "available_at": announcement_date,
+                            "report_type": "financial_statement",
+                            "document_type": report_label,
+                            **formal_values,
+                            "field_periods": formal_periods,
+                            "field_report_types": {
+                                key: "financial_statement" for key in formal_values
+                            },
+                            "field_announcement_dates": {
+                                key: announcement_date for key in formal_values if announcement_date
+                            },
+                            "field_sources": {
+                                key: f"iwencai:{report_date[:4]}年{report_label}"
+                                for key in formal_values
+                            },
+                            "period_consistency": "consistent",
+                        }
+                        revenue_yoy = _number(_pick(formal_row, (
+                            "营业收入同比增长率", "营收同比增长率", "营业收入同比",
+                        )))
+                        profit_yoy = _number(_pick(formal_row, (
+                            "归母净利润同比增长率", "净利润同比增长率", "归母净利润同比",
+                        )))
+                        roe = _number(_pick(formal_row, ("净资产收益率", "roe")))
+                        gross_margin = _number(_pick(formal_row, ("毛利率", "销售毛利率")))
+                    else:
+                        missing_reasons["earnings.formal_revenue_profit"] = "formal_report_query_empty"
+                except Exception as exc:
+                    errors.append(f"earnings_formal:iwencai:{type(exc).__name__}")
+                    missing_reasons["earnings.formal_revenue_profit"] = "formal_report_fetch_failed"
+
         growth = {
-            "revenue_yoy": revenue_yoy,
-            "net_profit_yoy": profit_yoy,
+            "revenue_yoy": (
+                revenue_yoy
+                if financial_report.get("revenue") is not None or revenue_yoy_period else None
+            ),
+            "net_profit_yoy": (
+                profit_yoy
+                if financial_report.get("net_profit_parent") is not None or profit_yoy_period else None
+            ),
             "roe": roe,
             "gross_margin": gross_margin,
         }
@@ -419,14 +703,15 @@ class IwencaiAdapter:
             ))),
         }
         earnings = (
-            {"financial_report": financial_report}
+            {
+                "financial_report": financial_report,
+                **({"supplemental_financial_reports": supplemental_reports} if supplemental_reports else {}),
+            }
             if any(
                 financial_report.get(key) is not None
                 for key in ("report_date", "revenue", "net_profit_parent", "operating_cash_flow", "roe")
-            ) else {}
+            ) else ({"supplemental_financial_reports": supplemental_reports} if supplemental_reports else {})
         )
-        errors = []
-        missing_reasons: Dict[str, str] = {}
         quick_query = (
             f"{stock_code} 最新业绩快报 业绩快报营业收入 业绩快报归母净利润 "
             "业绩快报营业收入同比增长率 业绩快报归母净利润同比增长率 业绩快报公告日期"
@@ -442,13 +727,12 @@ class IwencaiAdapter:
             quick_summary = None
             errors.append(f"earnings_quick:iwencai:{type(exc).__name__}")
             missing_reasons["earnings.quick_report_summary"] = "quick_report_fetch_failed"
-        # Keep this query deliberately narrow. Adding requested output columns
-        # makes iWencai reinterpret it as the current top-10 holding total and
-        # drops the change-detail rows.
-        top10_query = f"{stock_code} 前十大股东持股数量变动"
+        top10_query = (
+            f"{stock_code} 最新十大股东持股变动 新进股东个数 减持股东个数"
+        )
         try:
             top10_rows = self._stock_rows(
-                self.query(top10_query, skill_id="hithink-finance-query", limit=10), stock_code
+                self.query(top10_query, skill_id="hithink-finance-query", limit=30), stock_code
             )
             top10_summary = _top10_holder_change_summary(top10_rows)
             if not top10_summary:

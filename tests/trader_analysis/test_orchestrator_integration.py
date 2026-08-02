@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.trader_analysis.config import TraderAnalysisConfig
+from src.trader_analysis.evidence.ledger import create_ledger
 from src.trader_analysis.trace import RoleTraceCallback, sanitize_trace
 from src.trader_analysis.orchestrator import TraderAnalysisOrchestrator
 from src.trader_analysis.graph_runner import TradingAgentsGraphRunner, _tradingagents_provider
 from src.trader_analysis.identity.resolver import resolve_instrument
 from src.trader_analysis.model_routes import ModelRoute
+from src.trader_analysis.proposal_guard import guard_trader_proposal
 from src.trader_analysis.persistence.repository import TraderAnalysisRepository
 from src.trader_analysis.reporting import (
     REPORT_MODULES,
@@ -129,6 +131,66 @@ def test_orchestrator_executes_graph_after_complete_preflight(tmp_path: Path) ->
         "market", "final_decision", "data_evidence", "data_quality",
     }
     assert any(event == "graph.completed" for event, _ in events)
+
+
+def test_orchestrator_reclassifies_stop_above_current_price_before_publication(tmp_path: Path) -> None:
+    class InvalidStopGraphRunner:
+        def run(self, **kwargs):
+            return ({
+                "trader_investment_plan": (
+                    "**Action**: Sell\n\n"
+                    "**Entry Price**: 2\n\n"
+                    "**Stop Loss**: 3\n\n"
+                    "FINAL TRANSACTION PROPOSAL: **SELL**"
+                ),
+                "final_trade_decision": "SELL",
+            }, "SELL")
+
+    events = []
+    run = TraderAnalysisOrchestrator(
+        config=config(tmp_path),
+        market_adapter=MarketAdapter(),
+        context_adapter=ContextAdapter(),
+        graph_runner=InvalidStopGraphRunner(),
+    ).run(
+        run_id="invalid-stop",
+        symbol="600519",
+        trade_date=date(2026, 7, 31),
+        emit=lambda event, payload: events.append((event, payload)),
+        is_cancelled=lambda: False,
+    )
+
+    trader = next(report.content for report in run.reports if report.kind == "trader_plan")
+    quality = next(report.content for report in run.reports if report.kind == "data_quality")
+    assert "**执行价格（Execution Price）**：2" in trader
+    assert "**重新评估价格（Reassessment Price）**：3" in trader
+    assert "Stop Loss" not in trader
+    assert run.analysis_status is not None and run.analysis_status.value == "degraded"
+    assert run.metadata["proposal_guard_corrections"] == 1
+    assert [issue.code for issue in run.quality.warnings] == [
+        "trader_stop_loss_reclassified",
+    ]
+    assert "交易计划止损价位语义已修正" in quality
+    assert any(
+        event == "quality.updated" and payload.get("capability") == "trader_plan"
+        for event, payload in events
+    )
+
+
+def test_proposal_guard_preserves_valid_downside_stop_loss() -> None:
+    ledger = create_ledger("valid-stop", "600519", date(2026, 7, 31))
+    ledger.add(envelope("verified_market_snapshot", {"last_price": 378.6}))
+    state = {
+        "trader_investment_plan": (
+            "**Action**: Sell\n\n**Entry Price**: 378.6\n\n**Stop Loss**: 342"
+        ),
+    }
+
+    guarded, issues = guard_trader_proposal(state, ledger)
+
+    assert "**Execution Price**: 378.6" in guarded["trader_investment_plan"]
+    assert "**Stop Loss**: 342" in guarded["trader_investment_plan"]
+    assert issues == []
 
 
 def test_orchestrator_stops_before_evidence_when_stock_name_is_unresolved(tmp_path: Path) -> None:
@@ -350,7 +412,54 @@ def test_graph_requires_simplified_chinese_from_the_first_market_report_sentence
     assert "中国 A 股市场术语和人民币口径" in captured[0]
     assert "报告期、公告日、复权与单位" in captured[0]
     assert "不得虚构或用海外市场数据替代" in captured[0]
+    assert "Sell 表示减仓或退出多头" in captured[0]
+    assert "stop_loss 仅表示剩余多头仓位的下行退出价" in captured[0]
+    assert "不得把上方重新评估位写成 Stop Loss" in captured[0]
     assert "必须输出两张独立表" not in captured[0]
+
+
+def test_graph_injects_verified_current_price_recent_low_and_sma200(tmp_path: Path) -> None:
+    captured = []
+
+    class FakeGraph:
+        def __init__(self, selected_analysts, debug, config, data_toolkit, role_llms):
+            self.config = config
+
+        def propagate(self, symbol: str, trade_date: str, asset_type: str = "stock"):
+            captured.append(self.resolve_instrument_context(symbol, asset_type))
+            return {"final_trade_decision": "持有"}, "持有"
+
+    rows = [
+        {
+            "trade_date": f"day-{index:03d}", "open": 334.33, "high": 380,
+            "low": 330, "close": 334.33, "volume_shares": 1,
+        }
+        for index in range(195)
+    ]
+    rows.extend([
+        {"trade_date": f"recent-{index}", "open": 350, "high": 380, "low": low, "close": 334.33, "volume_shares": 1}
+        for index, low in enumerate((350, 348, 342, 360, 355), start=1)
+    ])
+    ledger = create_ledger("price-rules", "603986", date(2026, 7, 31))
+    ledger.add(envelope("market_daily_bars", {"rows": rows}))
+    ledger.add(envelope("verified_market_snapshot", {"last_price": 378.6}))
+    route = ModelRoute(deployment_name="fixture", provider="openai", model="fixture")
+    runner = TradingAgentsGraphRunner(
+        replace(config(tmp_path), model_routes={"trader": route, "portfolio_manager": route}),
+        graph_factory=FakeGraph,
+    )
+    runner._build_role_llms = lambda trace_emit: {}
+
+    runner.run(
+        toolkit=SimpleNamespace(ledger=ledger),
+        instrument=SimpleNamespace(symbol="603986", name="兆易创新", exchange="SH"),
+        trade_date="2026-07-31",
+        run_id="verified-price-rules",
+    )
+
+    assert "当前价格=378.6 CNY" in captured[0]
+    assert "最近5个交易日最低价=342 CNY" in captured[0]
+    assert "200日简单移动平均线=334.33 CNY" in captured[0]
 
 
 def test_repository_relates_reports_debug_events_and_llm_trace_by_run_id(tmp_path: Path) -> None:
@@ -515,6 +624,7 @@ def test_structured_report_fields_use_chinese_first_with_english_terms() -> None
             "**Action**: Sell\n\n"
             "**Reasoning**: 中文理由\n\n"
             "**Entry Price**: 378.6\n\n"
+            "**Stop Loss**: 342\n\n"
             "**Position Sizing**: 分批减仓\n\n"
             "FINAL TRANSACTION PROPOSAL: **SELL**"
         ),
@@ -543,6 +653,7 @@ def test_structured_report_fields_use_chinese_first_with_english_terms() -> None
     assert "**操作方向（Action）**：卖出（Sell）" in by_kind["trader_plan"]
     assert "**决策依据（Reasoning）**：中文理由" in by_kind["trader_plan"]
     assert "**参考价格（Entry Price）**：378.6" in by_kind["trader_plan"]
+    assert "**止损价格（Stop Loss）**：342" in by_kind["trader_plan"]
     assert "**仓位安排（Position Sizing）**：分批减仓" in by_kind["trader_plan"]
     assert by_kind["trader_plan"].endswith(
         "最终交易建议（Final Transaction Proposal）：卖出（SELL）"

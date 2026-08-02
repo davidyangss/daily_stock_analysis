@@ -334,7 +334,7 @@ class ContextEvidenceAdapter:
 
     @staticmethod
     def _separate_mixed_financial_periods(payload: dict) -> None:
-        """Split a provider report whose individual fields declare different periods."""
+        """Split provider fields by both report period and disclosure type."""
         earnings = payload.get("earnings") if isinstance(payload.get("earnings"), dict) else {}
         earnings_data = earnings.get("data") if isinstance(earnings.get("data"), dict) else earnings
         report = earnings_data.get("financial_report")
@@ -346,6 +346,12 @@ class ContextEvidenceAdapter:
         field_report_types = report.get("field_report_types")
         if not isinstance(field_report_types, dict):
             field_report_types = {}
+        field_announcement_dates = report.get("field_announcement_dates")
+        if not isinstance(field_announcement_dates, dict):
+            field_announcement_dates = {}
+        field_sources = report.get("field_sources")
+        if not isinstance(field_sources, dict):
+            field_sources = {}
 
         def normalize_period(value: Any) -> str:
             digits = re.sub(r"\D", "", str(value or ""))
@@ -356,56 +362,133 @@ class ContextEvidenceAdapter:
             except ValueError:
                 return ""
 
-        value_fields = ("revenue", "net_profit_parent", "operating_cash_flow", "roe")
-        grouped: dict[str, dict] = {}
+        value_fields = (
+            "revenue", "net_profit_parent", "operating_cash_flow", "roe",
+            "revenue_yoy", "net_profit_yoy", "gross_margin",
+        )
+        grouped: dict[tuple[str, str], dict] = {}
         for field in value_fields:
             value = report.get(field)
             period = normalize_period(field_periods.get(field))
             if value is None or not period:
                 continue
-            grouped.setdefault(period, {"report_date": period, "field_periods": {}})[field] = value
-            grouped[period]["field_periods"][field] = period
             report_type = str(field_report_types.get(field) or "").strip()
+            key = (period, report_type)
+            period_report = grouped.setdefault(
+                key, {"report_date": period, "field_periods": {}},
+            )
+            period_report[field] = value
+            period_report["field_periods"][field] = period
             if report_type:
-                grouped[period].setdefault("field_report_types", {})[field] = report_type
+                period_report.setdefault("field_report_types", {})[field] = report_type
+            announcement_date = field_announcement_dates.get(field)
+            if announcement_date not in (None, ""):
+                period_report.setdefault("field_announcement_dates", {})[field] = announcement_date
+            source = field_sources.get(field)
+            if source not in (None, ""):
+                period_report.setdefault("field_sources", {})[field] = source
         if not grouped:
             return
 
         primary_period = normalize_period(report.get("report_date"))
-        if len(grouped) == 1 and primary_period in grouped:
-            report["report_date"] = primary_period
-            report["field_periods"] = grouped[primary_period]["field_periods"]
-            report.setdefault("report_type", "financial_statement")
-            report["period_consistency"] = "consistent"
-            return
+        declared_type = str(report.get("report_type") or "").strip()
+        if declared_type in {"unclassified_period_data", ""}:
+            declared_type = ""
 
-        primary = grouped.pop(primary_period, None)
+        primary_key: Optional[tuple[str, str]] = None
+        primary_candidates = [key for key in grouped if key[0] == primary_period]
+        if declared_type and (primary_period, declared_type) in grouped:
+            primary_key = (primary_period, declared_type)
+        elif (primary_period, "financial_statement") in grouped:
+            primary_key = (primary_period, "financial_statement")
+        elif len(primary_candidates) == 1:
+            primary_key = primary_candidates[0]
+
+        primary = grouped.pop(primary_key, None) if primary_key else None
         if primary is None:
             primary = {"report_date": primary_period or None, "field_periods": {}}
+
+        metadata_maps = {
+            "field_periods", "field_report_types", "field_announcement_dates", "field_sources",
+        }
         for key, value in report.items():
-            if key not in value_fields and key not in {"field_periods", "field_report_types"}:
-                primary.setdefault(key, value)
-        primary.setdefault("report_type", "financial_statement")
-        primary["period_consistency"] = (
-            "consistent" if any(primary.get(field) is not None for field in value_fields)
-            else "declared_period_without_attributed_values"
-        )
+            if key in value_fields or key in metadata_maps or key in {
+                "report_type", "period_consistency", "data_basis",
+            }:
+                continue
+            # A report-level announcement/document label from a mixed payload
+            # must not be copied onto a field group with unknown provenance.
+            if key in {"announcement_date", "available_at", "ann_date", "document_type"}:
+                continue
+            primary.setdefault(key, value)
+
+        def finalize(period_report: dict, *, separated: bool, is_primary: bool) -> None:
+            explicit_types = {
+                str(value).strip()
+                for value in period_report.get("field_report_types", {}).values()
+                if str(value).strip()
+            }
+            if len(explicit_types) == 1:
+                resolved_type = next(iter(explicit_types))
+                period_report["report_type"] = resolved_type
+                period_report["period_consistency"] = (
+                    "separated_from_mixed_provider_payload" if separated else "consistent"
+                )
+            elif explicit_types:
+                period_report["report_type"] = "unclassified_period_data"
+                period_report["period_consistency"] = "mixed_disclosure_types"
+            elif is_primary and declared_type and any(
+                period_report.get(field) is not None for field in value_fields
+            ):
+                period_report["report_type"] = declared_type
+                period_report["period_consistency"] = (
+                    "separated_from_mixed_provider_payload" if separated else "consistent"
+                )
+            elif any(period_report.get(field) is not None for field in value_fields):
+                period_report["report_type"] = "unclassified_period_data"
+                period_report["period_consistency"] = "period_consistent_disclosure_type_unverified"
+            else:
+                period_report["report_type"] = declared_type or "unclassified_period_data"
+                period_report["period_consistency"] = "declared_period_without_attributed_values"
+
+            announcements = {
+                normalize_period(value)
+                for value in period_report.get("field_announcement_dates", {}).values()
+                if normalize_period(value)
+            }
+            if len(announcements) == 1:
+                period_report["announcement_date"] = next(iter(announcements))
+                period_report["available_at"] = period_report["announcement_date"]
+            elif (
+                period_report["report_type"] in {"financial_statement", "earnings_forecast"}
+                and not is_primary
+            ):
+                # In legacy mixed payloads a single report-level date usually
+                # belongs to the explicitly typed supplemental disclosure.
+                for metadata_key in ("announcement_date", "available_at", "ann_date"):
+                    if report.get(metadata_key) not in (None, ""):
+                        period_report.setdefault(metadata_key, report[metadata_key])
+            elif len(grouped) == 0 and is_primary:
+                for metadata_key in ("announcement_date", "available_at", "ann_date"):
+                    if report.get(metadata_key) not in (None, ""):
+                        period_report.setdefault(metadata_key, report[metadata_key])
+
+            if period_report["report_type"] == declared_type:
+                if report.get("document_type") not in (None, ""):
+                    period_report.setdefault("document_type", report["document_type"])
+                if report.get("data_basis") not in (None, ""):
+                    period_report.setdefault("data_basis", report["data_basis"])
+
+        finalize(primary, separated=bool(grouped), is_primary=True)
         earnings_data["financial_report"] = primary
         supplemental = earnings_data.setdefault("supplemental_financial_reports", [])
         if isinstance(supplemental, list):
             for period_report in grouped.values():
-                for metadata_key in (
-                    "announcement_date", "available_at", "ann_date", "document_type", "currency",
-                ):
-                    if report.get(metadata_key) not in (None, ""):
-                        period_report.setdefault(metadata_key, report[metadata_key])
-                explicit_types = set(period_report.get("field_report_types", {}).values())
-                period_report["report_type"] = (
-                    "earnings_forecast" if explicit_types == {"earnings_forecast"}
-                    else "unclassified_period_data"
-                )
-                period_report["period_consistency"] = "separated_from_mixed_provider_payload"
-                supplemental.append(period_report)
+                if report.get("currency") not in (None, ""):
+                    period_report.setdefault("currency", report["currency"])
+                finalize(period_report, separated=True, is_primary=False)
+                if period_report not in supplemental:
+                    supplemental.append(period_report)
 
     @staticmethod
     def _fundamental_report_date(payload: dict) -> Optional[date]:

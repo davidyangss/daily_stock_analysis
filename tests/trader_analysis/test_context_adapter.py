@@ -143,6 +143,16 @@ def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> No
             "revenue": "earnings_forecast",
             "net_profit_parent": "earnings_forecast",
         },
+        "field_announcement_dates": {
+            "revenue": "2026-07-15",
+            "net_profit_parent": "2026-07-15",
+            "operating_cash_flow": "2026-04-30",
+        },
+        "field_sources": {
+            "revenue": "H1业绩预告",
+            "net_profit_parent": "H1业绩预告",
+            "operating_cash_flow": "Q1定期报告",
+        },
     }
 
     result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
@@ -152,11 +162,14 @@ def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> No
     earnings = result.payload["earnings"]["data"]
     assert earnings["financial_report"] == {
         "report_date": "2026-03-31",
-        "announcement_date": "2026-07-15",
+        "announcement_date": "2026-04-30",
+        "available_at": "2026-04-30",
         "field_periods": {"operating_cash_flow": "2026-03-31"},
+        "field_announcement_dates": {"operating_cash_flow": "2026-04-30"},
+        "field_sources": {"operating_cash_flow": "Q1定期报告"},
         "operating_cash_flow": 1_783_000_000,
-        "report_type": "financial_statement",
-        "period_consistency": "consistent",
+        "report_type": "unclassified_period_data",
+        "period_consistency": "period_consistent_disclosure_type_unverified",
     }
     assert earnings["supplemental_financial_reports"] == [{
         "report_date": "2026-06-30",
@@ -171,6 +184,15 @@ def test_fundamentals_split_mixed_field_periods_before_model_consumption() -> No
             "revenue": "earnings_forecast",
             "net_profit_parent": "earnings_forecast",
         },
+        "field_announcement_dates": {
+            "revenue": "2026-07-15",
+            "net_profit_parent": "2026-07-15",
+        },
+        "field_sources": {
+            "revenue": "H1业绩预告",
+            "net_profit_parent": "H1业绩预告",
+        },
+        "available_at": "2026-07-15",
         "report_type": "earnings_forecast",
         "period_consistency": "separated_from_mixed_provider_payload",
     }]
@@ -200,13 +222,47 @@ def test_fundamentals_do_not_label_a_single_h1_field_group_as_declared_q1() -> N
     earnings = result.payload["earnings"]["data"]
     assert earnings["financial_report"] == {
         "report_date": "2026-03-31",
-        "announcement_date": "2026-07-15",
         "field_periods": {},
-        "report_type": "financial_statement",
+        "report_type": "unclassified_period_data",
         "period_consistency": "declared_period_without_attributed_values",
     }
     assert earnings["supplemental_financial_reports"][0]["report_date"] == "2026-06-30"
     assert earnings["supplemental_financial_reports"][0]["report_type"] == "earnings_forecast"
+
+
+def test_fundamentals_split_same_period_when_disclosure_types_differ() -> None:
+    payload = fundamental_payload()
+    payload["earnings"]["data"]["financial_report"] = {
+        "report_date": "2026-03-31",
+        "revenue": 1_000,
+        "operating_cash_flow": 300,
+        "field_periods": {
+            "revenue": "2026-03-31",
+            "operating_cash_flow": "2026-03-31",
+        },
+        "field_report_types": {
+            "revenue": "earnings_forecast",
+            "operating_cash_flow": "financial_statement",
+        },
+    }
+
+    result = ContextEvidenceAdapter(manager=FundamentalManager(payload)).fetch_fundamentals(
+        run_id="same-period-mixed-types", symbol="603986",
+        trade_date=date(2026, 7, 31), timeout=12,
+    )
+
+    earnings = result.payload["earnings"]["data"]
+    assert earnings["financial_report"]["operating_cash_flow"] == 300
+    assert earnings["financial_report"]["report_type"] == "financial_statement"
+    assert "revenue" not in earnings["financial_report"]
+    assert earnings["supplemental_financial_reports"] == [{
+        "report_date": "2026-03-31",
+        "revenue": 1_000,
+        "field_periods": {"revenue": "2026-03-31"},
+        "field_report_types": {"revenue": "earnings_forecast"},
+        "report_type": "earnings_forecast",
+        "period_consistency": "separated_from_mixed_provider_payload",
+    }]
 
 
 def test_fundamentals_expire_only_after_one_year() -> None:

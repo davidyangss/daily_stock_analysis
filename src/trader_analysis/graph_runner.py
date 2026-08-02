@@ -20,6 +20,46 @@ class TradingAgentsCancelledError(RuntimeError):
     pass
 
 
+def _proposal_price_rules(toolkit: DsaTradingAgentsToolkit) -> str:
+    """Build deterministic A-share proposal constraints from canonical evidence."""
+    ledger = getattr(toolkit, "ledger", None)
+    envelopes = getattr(ledger, "envelopes", {}) if ledger is not None else {}
+    snapshot = envelopes.get("verified_market_snapshot") if isinstance(envelopes, dict) else None
+    daily = envelopes.get("market_daily_bars") if isinstance(envelopes, dict) else None
+    snapshot_payload = getattr(snapshot, "payload", None) or {}
+    daily_payload = getattr(daily, "payload", None) or {}
+
+    def number(value: Any) -> Optional[float]:
+        try:
+            return float(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    current_price = number(snapshot_payload.get("last_price"))
+    rows = [row for row in daily_payload.get("rows", []) if isinstance(row, dict)]
+    recent_lows = [number(row.get("low")) for row in rows[-5:]]
+    recent_lows = [value for value in recent_lows if value is not None]
+    closes = [number(row.get("close")) for row in rows[-200:]]
+    closes = [value for value in closes if value is not None]
+    five_day_low = min(recent_lows) if recent_lows else None
+    sma_200 = sum(closes) / 200 if len(closes) == 200 else None
+
+    def display(value: Optional[float]) -> str:
+        return "不可用" if value is None else f"{value:.4f}".rstrip("0").rstrip(".")
+
+    return (
+        f"本次已核验价位证据：当前价格={display(current_price)} CNY；"
+        f"最近5个交易日最低价={display(five_day_low)} CNY；"
+        f"200日简单移动平均线={display(sma_200)} CNY。"
+        "A股普通股按多头现货语义处理：Sell 表示减仓或退出多头，不表示开立空头；"
+        "Sell 提案中的 entry_price 是卖出执行参考价，不是新增长仓成本。"
+        "stop_loss 仅表示剩余多头仓位的下行退出价，必须严格低于已核验当前价，"
+        "并在已知多头成本时同时低于该成本。高于当前价的 EMA、均线或阻力位只能作为"
+        "重新评估或重新入场条件；若固定结构化 schema 没有对应字段，必须把 stop_loss 设为 null，"
+        "不得把上方重新评估位写成 Stop Loss。"
+    )
+
+
 class TradingAgentsGraphRunner:
     def __init__(self, config: TraderAnalysisConfig, graph_factory: Optional[Callable[..., Any]] = None) -> None:
         self.config = config
@@ -42,6 +82,7 @@ class TradingAgentsGraphRunner:
                 "installed TradingAgents lacks required data_toolkit/role_llms injection seams"
             )
         graph_config = self._graph_config()
+        proposal_price_rules = _proposal_price_rules(toolkit)
 
         # Identity resolution is run-scoped and deterministic; this override only
         # replaces upstream yfinance identity lookup and does not alter graph shape.
@@ -59,6 +100,7 @@ class TradingAgentsGraphRunner:
                     "TradingAgents 固定结构化枚举、股票代码和 A 股通用英文缩写可以保留。"
                     "严格使用 DSA 工具返回的数据、字段定义、报告期、公告日、复权与单位；"
                     "缺失或明确不可用的数据必须如实披露，不得虚构或用海外市场数据替代。"
+                    f"{proposal_price_rules}"
                 )
 
             def _run_signature(self, asset_type: str) -> str:
