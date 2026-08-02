@@ -25,8 +25,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Body
+from fastapi import APIRouter, HTTPException, Depends, Query, Body, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.deps import get_config_dep
@@ -86,6 +87,7 @@ from src.services.task_queue import (
 )
 from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.services.run_flow import build_task_run_flow_snapshot
+from src.services.analysis_report_markdown import render_analysis_result_markdown
 from src.utils.data_processing import (
     normalize_model_used,
     parse_json_field,
@@ -1304,6 +1306,22 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
     # 3. 任务不存在
     raise api_error(404, "not_found", f"任务 {task_id} 不存在或已过期")
+
+
+@router.get("/status/{task_id}/download/markdown")
+def download_analysis_markdown(task_id: str) -> Response:
+    """Download the completed public strategy-analysis result as Markdown."""
+    status_payload = get_analysis_status(task_id)
+    if status_payload.status != TaskStatusEnum.COMPLETED or status_payload.result is None:
+        raise api_error(409, "analysis_report_not_ready", "策略分析报告尚未生成，暂时不能下载")
+    result = status_payload.result
+    filename = f"{result.stock_code}_策略分析报告.md"
+    disposition = f"attachment; filename=strategy-analysis-{result.stock_code}.md; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=render_analysis_result_markdown(result),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": disposition},
+    )
 
 
 # ============================================================
