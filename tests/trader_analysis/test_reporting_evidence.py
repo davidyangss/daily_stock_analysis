@@ -100,6 +100,25 @@ def test_complete_evidence_manifest_distinguishes_loaded_and_consumed_data() -> 
     assert '"search_provider": "Anspire"' in content
 
 
+def test_market_report_discloses_unadjusted_historical_indicator_basis() -> None:
+    ledger = EvidenceLedger(
+        run_id="run-1", symbol="603986", trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 1, 10, 0),
+    )
+    ledger.add(_envelope("market_daily_bars", {
+        "adjustment": "none",
+        "rows": [{"trade_date": "2026-07-31", "close": 378.6}],
+    }, "TushareFetcher"))
+
+    reports = reports_from_state({"market_report": "# 市场技术分析\n\n趋势方向保持不变。"}, ledger=ledger)
+    market = next(report.content for report in reports if report.kind == "market")
+
+    assert market.startswith("> 数据口径（adjustment=`none`）")
+    assert "技术指标基于不复权日线数据计算" in market
+    assert "历史指标值可能与前复权行情软件显示存在差异" in market
+    assert "趋势方向保持不变" in market
+
+
 def test_reports_add_evidence_manifest_even_without_graph_reports() -> None:
     ledger = EvidenceLedger(
         run_id="run-1", symbol="600519", trade_date=date(2026, 7, 31),

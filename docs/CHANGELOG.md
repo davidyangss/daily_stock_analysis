@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 交易员市场工具和报告显式展示日线复权口径，不复权历史指标提示与前复权行情软件的可预期差异
 - [修复] 问财财务按来源说明拆分业绩预告与正式报告、前十大股东统计拒绝截断明细，并在交易员报告发布前将高于现价的多头止损重分类为重新评估位
 - [文档] 固定记录交易员分析依赖的 TradingAgents 官方上游、DSA 兼容源、分支和完整 commit SHA，并补充可复现安装方式
 - [文档] 新增 TradingAgents A 股全流程重建契约，明确每一环节的输入输出、字段格式、时点规则、质量门、审计血缘和 conformance 测试

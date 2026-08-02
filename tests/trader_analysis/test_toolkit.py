@@ -17,11 +17,16 @@ def test_toolkit_uses_one_canonical_daily_dataset_for_csv_and_indicators() -> No
     ledger.add(EvidenceEnvelope(
         evidence_id="daily", run_id="r", capability="market_daily_bars", symbol="600519",
         trade_date=date(2026, 7, 31), fetched_at=datetime.now(), status=EvidenceStatus.OK,
-        provider="fixture", payload={"rows": rows},
+        provider="fixture", payload={"adjustment": "none", "rows": rows},
     ))
     toolkit = DsaTradingAgentsToolkit(ledger)
-    assert "2026-07-31" in toolkit.get_stock_data("600519", "2026-07-01", "2026-07-31")
-    assert "close_10_ema" in toolkit.get_indicators("600519", "close_10_ema", "2026-07-31")
+    daily = pd.read_csv(StringIO(toolkit.get_stock_data("600519", "2026-07-01", "2026-07-31")))
+    ema = pd.read_csv(StringIO(toolkit.get_indicators("600519", "close_10_ema", "2026-07-31")))
+
+    assert str(daily["trade_date"].iloc[-1]) == "2026-07-31"
+    assert daily["adjustment"].unique().tolist() == ["none"]
+    assert "close_10_ema" in ema
+    assert ema["adjustment"].unique().tolist() == ["none"]
 
 
 def test_toolkit_uses_dif_double_macd_histogram_and_wilder_rsi() -> None:

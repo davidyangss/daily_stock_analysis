@@ -392,8 +392,8 @@ DSA 兼容构建支持可选 `sections[]`：只有注入 toolkit 提供该字段
 
 | 工具 | 输入 | 输出 | 不可用行为 |
 | --- | --- | --- | --- |
-| `get_stock_data` | `ticker,start_date,end_date` | 指定窗口标准日线 CSV；`volume` 为股、`amount` 为元 | `NO_DATA_AVAILABLE` |
-| `get_indicators` | `ticker,indicator,curr_date,look_back_days` | `trade_date + 指标值` CSV | 指标不支持或历史不足时 `NO_DATA_AVAILABLE` |
+| `get_stock_data` | `ticker,start_date,end_date` | 指定窗口标准日线 CSV；`volume` 为股、`amount` 为元，`adjustment` 为复权口径 | `NO_DATA_AVAILABLE` |
+| `get_indicators` | `ticker,indicator,curr_date,look_back_days` | `trade_date + adjustment + 指标值` CSV | 指标不支持或历史不足时 `NO_DATA_AVAILABLE` |
 | `get_verified_market_snapshot` | `ticker,curr_date` | JSON：status/provider/as_of + snapshot payload | 缺 envelope 为契约错误 |
 | `get_news` | `ticker,start_date,end_date` | 过滤后的新闻 JSON array | 空数组或明确缺失 |
 | `get_global_news` | `curr_date,look_back_days,limit` | 独立宏观新闻；当前为明确不可用字符串 | 不得返回个股新闻 |
@@ -587,6 +587,7 @@ LLM trace 必须记录实际 message list、invocation params、response、token
 - issue code 在 API/Trace 中保持稳定英文标识；`data_quality` Markdown 与 Web 展示中文名称和原始 message。
 - 所有正式角色报告以中文为主；TradingAgents 固定字段名和枚举采用中文在前、英文对照在后，技术缩写、证券代码、来源专名和 URL 不翻译。
 - 市场技术报告在正式展示层移除首个中文 Markdown 标题之前可明确识别的英文分析草稿；所有角色报告本地化固定英文交易建议，原始 LLM 响应仍保留在 Trace 中供审计。
+- 市场技术报告根据 canonical 日线 `adjustment` 自动显示复权口径；`none` 明确标注不复权，并提示历史指标可能与前复权行情软件存在差异。工具返回的日线和指标 CSV 同时携带该字段，避免模型猜测口径。
 - Sell 交易计划的 `Entry Price` 公开为“执行价格（Execution Price）”；方向非法的上方 `Stop Loss` 公开为“重新评估价格（Reassessment Price）”，同时在数据质量报告披露修正，不改写原始 Trace。
 - News/Sentiment 报告附交叉核验证据摘要。
 - `data_evidence` 保存完整标准化输入和实际消费标记。

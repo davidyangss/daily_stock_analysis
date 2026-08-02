@@ -61,17 +61,21 @@ class DsaTradingAgentsToolkit:
 
     def get_stock_data(self, ticker: str, start_date: str, end_date: str) -> str:
         self._require_symbol(ticker)
-        rows = list((self._envelope("market_daily_bars").payload or {}).get("rows") or [])
+        payload = self._envelope("market_daily_bars").payload or {}
+        rows = list(payload.get("rows") or [])
         selected = [row for row in rows if start_date <= str(row.get("trade_date", "")) <= end_date]
         if not selected:
             return "NO_DATA_AVAILABLE: requested date range has no verified DSA daily bars."
-        return pd.DataFrame(selected).rename(
+        output = pd.DataFrame(selected).rename(
             columns={"volume_shares": "volume", "amount_cny": "amount"}
-        ).to_csv(index=False)
+        )
+        output.insert(1, "adjustment", str(payload.get("adjustment") or "unknown"))
+        return output.to_csv(index=False)
 
     def get_indicators(self, ticker: str, indicator: str, curr_date: str, look_back_days: int = 30) -> str:
         self._require_symbol(ticker)
-        rows = list((self._envelope("market_daily_bars").payload or {}).get("rows") or [])
+        payload = self._envelope("market_daily_bars").payload or {}
+        rows = list(payload.get("rows") or [])
         frame = pd.DataFrame(rows)
         if frame.empty or "close" not in frame:
             return "NO_DATA_AVAILABLE: verified daily bars are unavailable."
@@ -109,6 +113,7 @@ class DsaTradingAgentsToolkit:
         else:
             return f"NO_DATA_AVAILABLE: unsupported deterministic indicator {indicator}."
         output = pd.DataFrame({"trade_date": frame["trade_date"], indicator: values}).dropna().tail(max(1, look_back_days))
+        output.insert(1, "adjustment", str(payload.get("adjustment") or "unknown"))
         return output.to_csv(index=False) if not output.empty else "NO_DATA_AVAILABLE: insufficient bars for indicator."
 
     def get_verified_market_snapshot(self, ticker: str, curr_date: str) -> str:
@@ -445,12 +450,14 @@ class DsaTradingAgentsToolkit:
         return (
             self._tool(
                 "get_stock_data",
-                "获取 DSA 已核验的 A 股日线 OHLCV CSV；volume 为股、amount 为人民币，复权口径见证据清单。",
+                "获取 DSA 已核验的 A 股日线 OHLCV CSV；volume 为股、amount 为人民币，"
+                "adjustment 明确标识 qfq/auto_adjust/none/unknown 复权口径。",
             ),
             self._tool(
                 "get_indicators",
                 "基于同一 A 股日线确定性计算指标：macd=DIF，macds=DEA，macdh=2*(DIF-DEA)，"
-                "BOLL 为 20 日中轨/上轨/下轨；只能解释工具实际返回的日期和值。",
+                "BOLL 为 20 日中轨/上轨/下轨；adjustment 标识复权口径；"
+                "只能解释工具实际返回的日期和值。",
             ),
             self._tool("get_verified_market_snapshot", "获取已核验的 A 股价格快照、价格类型和数据时点。"),
         )

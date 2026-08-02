@@ -102,6 +102,16 @@ _MARKET_WORKPAD_MARKER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+_MARKET_ADJUSTMENT_NOTES = {
+    "none": (
+        "技术指标基于不复权日线数据计算；受历史分红除权影响，"
+        "历史指标值可能与前复权行情软件显示存在差异。"
+    ),
+    "qfq": "技术指标基于前复权日线数据计算。",
+    "auto_adjust": "技术指标基于数据源自动复权日线数据计算。",
+    "unknown": "技术指标所用日线的复权口径未确认；历史指标值不宜与其他行情软件直接比较。",
+}
+
 
 def _strip_market_workpad_prefix(content: str) -> str:
     """Drop a recognizable English workpad before the formal Chinese report."""
@@ -177,6 +187,13 @@ def _localize_formal_report(kind: str, content: str) -> str:
 
 def _clean_cell(value: Any) -> str:
     return str("" if value is None else value).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _market_adjustment_disclosure(ledger: EvidenceLedger) -> str:
+    envelope = ledger.envelopes.get("market_daily_bars")
+    adjustment = str(((envelope.payload or {}).get("adjustment") if envelope else None) or "unknown")
+    note = _MARKET_ADJUSTMENT_NOTES.get(adjustment, _MARKET_ADJUSTMENT_NOTES["unknown"])
+    return f"> 数据口径（adjustment=`{adjustment}`）：{note}"
 
 
 def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> str:
@@ -349,6 +366,10 @@ def reports_from_state(
         "sentiment": _evidence_appendix(ledger.envelopes.get("sentiment"), item_key="social_items"),
     }
     for report in reports:
+        if report.kind == "market":
+            disclosure = _market_adjustment_disclosure(ledger)
+            if disclosure not in report.content:
+                report.content = f"{disclosure}\n\n{report.content}"
         appendix = appendices.get(report.kind)
         if appendix:
             report.content = f"{report.content.rstrip()}\n\n{appendix}"

@@ -97,6 +97,7 @@ pip install "git+https://github.com/davidyangss/TradingAgents.git@ab0909306075e4
 
 - Market、News、Fundamentals Analyst 与对应 ToolNode 使用同一组 run-scoped DSA 工具对象。
 - 日线、确定性指标、快照、新闻、情绪和财务均先进入 canonical evidence ledger；阻断问题不会作为正常工具文本进入 Graph。
+- 日线与技术指标工具通过 `adjustment` 字段向模型明确传递复权口径；市场技术报告会自动展示该口径。使用不复权日线时，报告提示历史指标值可能因分红除权而与前复权行情软件存在差异，避免把口径差异误判为计算错误。
 - News 使用 DSA 新闻 provider/fallback 链；Sentiment 保留原版“新闻机构视角 + 快速零售观点 + 长文讨论”的多源逻辑，但数据改为国内新闻/公告以及 SearXNG 定向检索的雪球、知乎、微博观点。站点限定会在返回后再校验域名；无社区结果时独立降级，不用新闻伪装成社区观点。DSA 兼容构建通过可选 provider-neutral `sections` 读取真实国内标签和字段，并把外部证据放入独立 human evidence message；未注入 sections 时原版 Yahoo/StockTwits/Reddit 路径不变。
 - 新闻和社区条目明确区分 `search_provider`、`publisher/source`、`source_domain`、`published_date` 与 `fetched_at`。工具按请求日期窗口过滤有日期条目，无日期条目只作为低置信度运行时证据保留。Sentiment 检索窗口固定为 7 天。
 - 新闻分析和情绪分析的正式报告都会追加确定性证据表，逐条展示摘要、来源、内容时间、采集时间和原文链接；provider 未返回内容时间或链接时明确标记“未提供”，不自行推断。
