@@ -15,7 +15,7 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchService, SearXNGSearchProvider
+from src.search_service import SearchResponse, SearchResult, SearchService, SearXNGSearchProvider
 
 
 class TestSearXNGSearchProvider(unittest.TestCase):
@@ -440,6 +440,37 @@ class TestSearXNGSearchProvider(unittest.TestCase):
 
         self.assertTrue(service.is_available)
         self.assertTrue(any(provider.name == "SearXNG" for provider in service._providers))
+
+    def test_community_search_filters_wrong_domains_and_unrelated_entities(self):
+        service = SearchService(
+            searxng_base_urls=["https://searx.example.org"],
+            searxng_public_instances_enabled=False,
+        )
+        provider = next(item for item in service._providers if item.name == "SearXNG")
+        provider.search = MagicMock(return_value=SearchResponse(
+            query="community",
+            provider="SearXNG",
+            success=True,
+            results=[
+                SearchResult(
+                    title="兆易创新怎么样", snippet="SH603986 估值讨论",
+                    url="https://xueqiu.com/S/SH603986/hots", source="xueqiu.com",
+                ),
+                SearchResult(
+                    title="招商银行怎么样", snippet="03968 热门讨论；导航词：兆易创新 603986",
+                    url="https://xueqiu.com/S/03968/hots", source="xueqiu.com",
+                ),
+                SearchResult(
+                    title="兆易创新评论", snippet="无关站点",
+                    url="https://spam.example/603986", source="spam.example",
+                ),
+            ],
+        ))
+
+        response = service.search_community_sentiment("603986", "兆易创新", max_results=5)
+
+        self.assertTrue(response.success)
+        self.assertEqual([item.url for item in response.results], ["https://xueqiu.com/S/SH603986/hots"])
 
 
 if __name__ == "__main__":

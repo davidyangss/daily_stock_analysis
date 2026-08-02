@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from data_provider.base import DataFetcherManager
+from src.core.trading_calendar import get_effective_trading_date
 from src.trader_analysis.schemas.evidence import (
     EvidenceEnvelope,
     EvidenceIssue,
@@ -18,9 +19,15 @@ from src.trader_analysis.schemas.evidence import (
 class ContextEvidenceAdapter:
     """Collect fundamentals and news through DSA's existing fallback layers."""
 
-    def __init__(self, manager: Optional[DataFetcherManager] = None, search_service: Any = None) -> None:
+    def __init__(
+        self,
+        manager: Optional[DataFetcherManager] = None,
+        search_service: Any = None,
+        now_provider: Callable[[], datetime] = datetime.now,
+    ) -> None:
         self.manager = manager or DataFetcherManager()
         self.search_service = search_service
+        self.now_provider = now_provider
 
     def fetch_fundamentals(self, *, run_id: str, symbol: str, trade_date: date, timeout: float) -> EvidenceEnvelope:
         if trade_date < date.today():
@@ -55,7 +62,9 @@ class ContextEvidenceAdapter:
         )
 
     def fetch_news(self, *, run_id: str, symbol: str, name: str, trade_date: date) -> EvidenceEnvelope:
-        if trade_date < date.today():
+        now = self.now_provider()
+        latest_completed_session = get_effective_trading_date("cn", current_time=now)
+        if trade_date < latest_completed_session:
             return self._envelope(
                 run_id, "news", symbol, trade_date, EvidenceStatus.UNAVAILABLE, None, {},
                 [self._issue(
@@ -83,6 +92,7 @@ class ContextEvidenceAdapter:
                         "url": str(getattr(item, "url", "")),
                         "source": str(getattr(item, "source", "")),
                         "published_date": getattr(item, "published_date", None),
+                        "fetched_at": now.isoformat(),
                     }
                     for item in results
                 ],
@@ -92,25 +102,74 @@ class ContextEvidenceAdapter:
         except Exception as exc:
             return self._unavailable(run_id, "news", symbol, trade_date, exc)
         issues = [] if success else [self._issue("news_unavailable", "news", "未取得可核验的个股新闻", blocking=False)]
+        if success and trade_date < now.date():
+            issues.append(self._issue(
+                "runtime_news_not_point_in_time",
+                "news",
+                "新闻按本次运行时间检索，用于最近交易日分析，但不代表历史时点快照",
+                blocking=False,
+            ))
         return self._envelope(
             run_id, "news", symbol, trade_date,
-            EvidenceStatus.OK if success else EvidenceStatus.UNAVAILABLE,
+            EvidenceStatus.PARTIAL if success and issues else EvidenceStatus.OK if success else EvidenceStatus.UNAVAILABLE,
             provider, payload, issues, [provider] if provider else [],
         )
 
-    def build_sentiment(self, *, run_id: str, symbol: str, trade_date: date, news: EvidenceEnvelope) -> EvidenceEnvelope:
-        """Expose a conservative sentiment bundle without fabricating social data."""
-        items = list((news.payload or {}).get("items") or [])
-        issues = [self._issue(
-            "social_sources_unavailable", "sentiment",
-            "A 股 StockTwits/Reddit 数据未接入；情绪分析仅使用已核验新闻并降低置信度",
+    def fetch_sentiment(
+        self, *, run_id: str, symbol: str, name: str, trade_date: date,
+    ) -> EvidenceEnvelope:
+        """Collect community opinion independently from company news."""
+        now = self.now_provider()
+        latest_completed_session = get_effective_trading_date("cn", current_time=now)
+        if trade_date < latest_completed_session:
+            return self._envelope(
+                run_id, "sentiment", symbol, trade_date, EvidenceStatus.UNAVAILABLE, None, {},
+                [self._issue(
+                    "historical_sentiment_not_point_in_time", "sentiment",
+                    "社区检索按运行时间查询，历史分析不使用未快照的当前讨论",
+                    blocking=False,
+                )], [],
+            )
+        try:
+            if self.search_service is None:
+                from src.search_service import get_search_service
+
+                service = get_search_service()
+            else:
+                service = self.search_service
+            response = service.search_community_sentiment(symbol, name or symbol, max_results=10)
+            results = list(getattr(response, "results", None) or [])
+            items = [
+                {
+                    "title": str(getattr(item, "title", "")),
+                    "snippet": str(getattr(item, "snippet", "")),
+                    "url": str(getattr(item, "url", "")),
+                    "source": str(getattr(item, "source", "")),
+                    "published_date": getattr(item, "published_date", None),
+                    "fetched_at": now.isoformat(),
+                }
+                for item in results
+            ]
+            provider = str(getattr(response, "provider", "") or "") or None
+            success = bool(getattr(response, "success", False)) and bool(items)
+        except Exception as exc:
+            return self._unavailable(run_id, "sentiment", symbol, trade_date, exc)
+        issues = [] if success else [self._issue(
+            "community_sentiment_unavailable", "sentiment",
+            "未取得可核验的投资社区观点；不使用新闻充当社区情绪",
             blocking=False,
         )]
+        if success and trade_date < now.date():
+            issues.append(self._issue(
+                "runtime_sentiment_not_point_in_time", "sentiment",
+                "社区观点按本次运行时间检索，不代表历史时点快照",
+                blocking=False,
+            ))
         return self._envelope(
             run_id, "sentiment", symbol, trade_date,
-            EvidenceStatus.PARTIAL if items else EvidenceStatus.UNAVAILABLE,
-            news.provider, {"news_items": items, "social_items": [], "confidence": "low"},
-            issues, list(news.source_chain),
+            EvidenceStatus.PARTIAL if success and issues else EvidenceStatus.OK if success else EvidenceStatus.UNAVAILABLE,
+            provider, {"query": getattr(response, "query", ""), "social_items": items},
+            issues, [provider] if provider else [],
         )
 
     @staticmethod

@@ -136,10 +136,29 @@ class DsaTradingAgentsToolkit:
 
     def prefetch_sentiment(self, ticker: str, start_date: str, end_date: str) -> dict[str, str]:
         self._require_symbol(ticker)
-        payload = self._envelope("sentiment").payload or {}
+        envelope = self._envelope("sentiment")
+        payload = envelope.payload or {}
+        social_items = payload.get("social_items") or []
+        social_block = (
+            "DSA SOURCE CONTRACT: The records below are public investor-community search results "
+            "collected through SearXNG from allowlisted Xueqiu, Zhihu, or Weibo pages. They are NOT "
+            "StockTwits messages. Each record contains a title and search-engine snippet, not a "
+            "verified full page body. The model has no browser or external tools in this analyst "
+            "stage: do not claim to have opened a URL, searched the web, read comments, or verified "
+            "content beyond these records. Cite the supplied source, published_date/fetched_at, and "
+            "URL; lower confidence when snippets are missing, truncated, undated, or too few.\n\n"
+            f"{_json(social_items)}"
+        )
         return {
-            "news": _json(payload.get("news_items") or []),
-            "stocktwits": "<unavailable: A-share StockTwits source is not configured>",
+            "news": "<not used: news evidence belongs to the News Analyst>",
+            # TradingAgents 0.3.1 exposes only the legacy news/stocktwits/reddit
+            # bundle keys. Put the DSA community block in the second slot and
+            # make its true identity explicit until the pinned upstream adds a
+            # provider-neutral community key.
+            "stocktwits": social_block,
+            "social": _json(social_items),
+            "social_source": envelope.provider or "unavailable",
+            "social_as_of": str(envelope.fetched_at),
             "reddit": "<unavailable: A-share Reddit source is not configured>",
         }
 

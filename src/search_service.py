@@ -4028,6 +4028,77 @@ class SearchService:
             success=False,
             error_message="事件搜索失败"
         )
+
+    def search_community_sentiment(
+        self,
+        stock_code: str,
+        stock_name: str,
+        max_results: int = 10,
+        days: int = 30,
+    ) -> SearchResponse:
+        """Search investor-community pages without reusing the news provider chain.
+
+        SearXNG is intentionally required here because it preserves site filters
+        better than semantic news providers.  The company name is mandatory in
+        every query so a numeric A-share code cannot drift into unrelated SEO
+        pages.
+        """
+        provider = next(
+            (item for item in self._providers if isinstance(item, SearXNGSearchProvider) and item.is_available),
+            None,
+        )
+        if provider is None:
+            return SearchResponse(
+                query=f"{stock_name} {stock_code} 社区评价",
+                results=[],
+                provider="SearXNG",
+                success=False,
+                error_message="未配置可用的 SearXNG 社区检索实例",
+            )
+
+        queries = (
+            f'site:xueqiu.com "{stock_name}" {stock_code} 讨论 评价',
+            f'site:zhihu.com "{stock_name}" 股票 分析',
+            f'site:weibo.com "{stock_name}" {stock_code}',
+        )
+        allowed_domains = ("xueqiu.com", "zhihu.com", "weibo.com")
+        results: List[SearchResult] = []
+        seen_urls: set[str] = set()
+        errors: List[str] = []
+        per_query = max(3, max_results)
+        for query in queries:
+            response = provider.search(query, max_results=per_query, days=days)
+            if not response.success:
+                if response.error_message:
+                    errors.append(response.error_message)
+                continue
+            for item in response.results:
+                domain = urlparse(item.url).netloc.lower().split(":", 1)[0]
+                if not any(domain == allowed or domain.endswith(f".{allowed}") for allowed in allowed_domains):
+                    continue
+                # SearXNG snippets can contain query-term navigation text even
+                # when the linked page is about another instrument.  Entity
+                # admission therefore uses only the title and URL; snippets
+                # remain evidence content but cannot establish ownership.
+                relevance_surface = f"{item.title} {item.url}".lower()
+                if stock_name.lower() not in relevance_surface and stock_code.lower() not in relevance_surface:
+                    continue
+                if item.url in seen_urls:
+                    continue
+                seen_urls.add(item.url)
+                results.append(item)
+                if len(results) >= max_results:
+                    break
+            if len(results) >= max_results:
+                break
+
+        return SearchResponse(
+            query=" | ".join(queries),
+            results=results,
+            provider=provider.name,
+            success=bool(results),
+            error_message=None if results else "; ".join(dict.fromkeys(errors)) or "未检索到可核验的社区观点",
+        )
     
     def search_comprehensive_intel(
         self,

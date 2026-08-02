@@ -68,8 +68,10 @@ TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 
 - Market、News、Fundamentals Analyst 与对应 ToolNode 使用同一组 run-scoped DSA 工具对象。
 - 日线、确定性指标、快照、新闻、情绪和财务均先进入 canonical evidence ledger；阻断问题不会作为正常工具文本进入 Graph。
-- Sentiment 第一阶段使用已核验新闻；StockTwits/Reddit 对 A 股明确标为不可用并降低置信度。
-- 历史日期不会读取当前实时价、当前新闻或缺少公告可得日期的当前财务数据；当 point-in-time 证据不足时返回 `insufficient_evidence`。
+- News 使用 DSA 新闻 provider/fallback 链；Sentiment 独立使用 SearXNG 定向检索雪球、知乎和微博的可核验社区观点，不再把新闻重复包装为社交情绪。站点限定会在返回后再校验域名；无社区结果时明确降级，不使用 Anspire 新闻兜底。StockTwits/Reddit 对 A 股仍明确标为不可用。
+- 新闻分析和情绪分析的正式报告都会追加确定性证据表，逐条展示摘要、来源、内容时间、采集时间和原文链接；provider 未返回内容时间或链接时明确标记“未提供”，不自行推断。
+- Sentiment 当前传给模型的社区证据是“标题 + 搜索摘要 + 来源 + 内容/采集时间 + URL”，不是网页完整正文。TradingAgents 0.3.1 的 Sentiment 节点没有浏览器或外部搜索工具；提示明确禁止模型声称已打开链接、自行联网或读取未提供的评论/正文，摘要截断、无日期或样本过少时必须降低置信度。
+- 当分析日期为今天或最近已完成交易日时，新闻通过 DSA `SearchService` 的现有 provider/fallback 链按运行时间检索；最近交易日的运行时新闻标记为 `runtime_news_not_point_in_time` 并降级披露。更早的历史日期不会读取当前实时价、当前新闻或缺少公告可得日期的当前财务数据；当 point-in-time 证据不足时返回 `insufficient_evidence`。
 - 新上市标的截至分析日已有至少 3 个有效交易日、但少于建议历史长度时，以 `limited_daily_history` 降级继续分析；报告必须明确短历史限制，不得把不成熟的技术指标解释成高置信度趋势。少于 3 个有效交易日仍阻断分析。
 - 历史分析具备日线与核验价格且无阻断问题时，即使新闻、财务和情绪因 point-in-time 约束不可用，也会以 `degraded` 运行 Graph 并生成各角色报告；缺失能力必须保留在数据质量报告中，不得使用当前数据回填历史上下文。
 - 运行、分角色报告、Debug 事件和脱敏后的 LLM/工具 trace 以 `run_id` 为外键持久化到 `TRADER_ANALYSIS_RESULTS_DIR/trader_analysis.sqlite3`；同时继续双写 `runs/<run_id>/` 下的 JSON 文件用于兼容回滚，升级时会把旧 JSON 任务懒迁移到 SQLite，不写入 `analysis_history`。

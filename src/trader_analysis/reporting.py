@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger
 from src.trader_analysis.schemas.result import TraderAnalysisReport, TraderAnalysisRun
 
 
@@ -41,7 +42,43 @@ def _localize_market_report_prefix(content: str) -> str:
     )
 
 
-def reports_from_state(state: Mapping[str, Any]) -> list[TraderAnalysisReport]:
+def _clean_cell(value: Any) -> str:
+    return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> str:
+    if envelope is None:
+        return ""
+    items = list((envelope.payload or {}).get(item_key) or [])
+    if not items:
+        return (
+            "### 证据摘要与来源\n\n"
+            f"- 本次未取得可交叉核验的条目；数据状态：`{envelope.status.value}`。"
+        )
+    lines = [
+        "### 证据摘要与来源",
+        "",
+        f"> 证据采集时间：{envelope.fetched_at.isoformat()}；内容时间为来源返回值，“未提供”表示不得自行推断。",
+        "",
+        "| # | 摘要 | 来源 | 内容时间 | 采集时间 | 原文 |",
+        "| ---: | --- | --- | --- | --- | --- |",
+    ]
+    for index, item in enumerate(items[:10], start=1):
+        title = _clean_cell(item.get("title")) or "无标题"
+        snippet = _clean_cell(item.get("snippet"))
+        summary = title if not snippet else f"{title}：{snippet[:240]}"
+        source = _clean_cell(item.get("source")) or _clean_cell(envelope.provider) or "未知来源"
+        published = _clean_cell(item.get("published_date")) or "未提供"
+        fetched = _clean_cell(item.get("fetched_at")) or envelope.fetched_at.isoformat()
+        url = str(item.get("url") or "").strip()
+        link = f"[查看]({url})" if url.startswith(("http://", "https://")) else "未提供"
+        lines.append(f"| {index} | {summary} | {source} | {published} | {fetched} | {link} |")
+    return "\n".join(lines)
+
+
+def reports_from_state(
+    state: Mapping[str, Any], *, ledger: EvidenceLedger | None = None,
+) -> list[TraderAnalysisReport]:
     """Extract all public report modules from one final TradingAgents state."""
     research = state.get("investment_debate_state") or {}
     risk = state.get("risk_debate_state") or {}
@@ -67,11 +104,22 @@ def reports_from_state(state: Mapping[str, Any]) -> list[TraderAnalysisReport]:
         "investment_advice": state.get("investment_plan"),
     }
     titles = dict(REPORT_MODULES)
-    return [
+    reports = [
         TraderAnalysisReport(kind=kind, title=titles[kind], content=content)
         for kind, _title in REPORT_MODULES
         if (content := str(values.get(kind) or "").strip())
     ]
+    if ledger is None:
+        return reports
+    appendices = {
+        "news": _evidence_appendix(ledger.envelopes.get("news"), item_key="items"),
+        "sentiment": _evidence_appendix(ledger.envelopes.get("sentiment"), item_key="social_items"),
+    }
+    for report in reports:
+        appendix = appendices.get(report.kind)
+        if appendix:
+            report.content = f"{report.content.rstrip()}\n\n{appendix}"
+    return reports
 
 
 def render_run_markdown(run: TraderAnalysisRun) -> str:

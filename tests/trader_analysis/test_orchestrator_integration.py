@@ -77,8 +77,8 @@ class ContextAdapter:
     def fetch_news(self, **kwargs):
         return envelope("news", {"items": [{"title": "verified"}]})
 
-    def build_sentiment(self, **kwargs):
-        return envelope("sentiment", {"news_items": [{"title": "verified"}]}, EvidenceStatus.PARTIAL)
+    def fetch_sentiment(self, **kwargs):
+        return envelope("sentiment", {"social_items": [{"title": "verified community opinion"}]}, EvidenceStatus.PARTIAL)
 
 
 class GraphRunner:

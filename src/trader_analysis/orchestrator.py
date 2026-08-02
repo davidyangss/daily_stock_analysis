@@ -206,13 +206,13 @@ class TraderAnalysisOrchestrator:
 
         emit("evidence.started", {"capability": "sentiment", "input": {
             "symbol": instrument.symbol, "trade_date": trade_date.isoformat(),
-            "news_evidence_id": news.evidence_id,
+            "name": instrument.name,
         }})
-        sentiment = self.context_adapter.build_sentiment(
+        sentiment = self.context_adapter.fetch_sentiment(
             run_id=run_id,
             symbol=instrument.symbol,
+            name=instrument.name,
             trade_date=trade_date,
-            news=news,
         )
         ledger.add(sentiment)
         emit("evidence.completed", {"capability": sentiment.capability, "output": {
@@ -278,7 +278,7 @@ class TraderAnalysisOrchestrator:
             emit("run.cancelled", {})
             return run
 
-        for report in reports_from_state(state):
+        for report in reports_from_state(state, ledger=ledger):
             run.reports.append(report)
             emit("report.written", {"kind": report.kind})
         run.reports.append(TraderAnalysisReport(
