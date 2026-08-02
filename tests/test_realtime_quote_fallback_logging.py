@@ -143,6 +143,31 @@ def test_manager_supplement_does_not_mark_fallback_from(mock_get_config):
 
 
 @patch("src.config.get_config")
+def test_manager_uses_all_configured_sources_to_fill_missing_quote_fields(mock_get_config):
+    mock_get_config.return_value = SimpleNamespace(
+        enable_realtime_quote=True,
+        realtime_source_priority="efinance,tushare,akshare_em",
+    )
+    primary = _make_quote(source=RealtimeSource.EFINANCE)
+    second = _make_quote(source=RealtimeSource.TUSHARE, volume_ratio=1.7)
+    third = _make_quote(source=RealtimeSource.AKSHARE_EM, turnover_rate=2.8)
+    manager = DataFetcherManager(
+        fetchers=[
+            _DummyFetcher("EfinanceFetcher", 0, result=primary),
+            _DummyFetcher("TushareFetcher", 1, result=second),
+            _DummyFetcher("AkshareFetcher", 2, result=third),
+        ]
+    )
+
+    quote = manager.get_realtime_quote("600519")
+
+    assert quote is primary
+    assert quote.volume_ratio == 1.7
+    assert quote.turnover_rate == 2.8
+    assert quote.source == RealtimeSource.EFINANCE
+
+
+@patch("src.config.get_config")
 def test_manager_fallback_from_records_highest_priority_failed_source(mock_get_config):
     mock_get_config.return_value = SimpleNamespace(
         enable_realtime_quote=True,

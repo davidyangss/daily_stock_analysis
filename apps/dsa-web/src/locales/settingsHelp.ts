@@ -348,6 +348,24 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响现价、盘中分析和依赖实时价格的报告字段。'],
     notes: ['单一数据源失败应降级到后续数据源，不应拖垮主流程。'],
   },
+  'settings.data_source.PROVIDER_LOOP_TIMEOUT_SECONDS': {
+    title: '默认单数据源超时',
+    summary: '限制一次 provider 调用最多等待的秒数，超时后继续尝试优先级列表中的下一项。',
+    usage: '默认 60 秒；已在独立超时映射中配置的 provider 不使用此值。',
+    impact: ['过短可能导致慢数据源频繁降级，过长会增加缺失数据时的分析等待时间。'],
+  },
+  'settings.data_source.PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS': {
+    title: '数据源循环总超时',
+    summary: '限制一个数据能力遍历全部 provider 的总等待时间。',
+    usage: '默认 600 秒，应覆盖期望执行的 provider 数量和各自超时。',
+    impact: ['总预算耗尽后不再调用后续来源，但保留此前已经获取的有效数据。'],
+  },
+  'settings.data_source.PROVIDER_TIMEOUT_OVERRIDES': {
+    title: '数据源独立超时',
+    summary: '按 provider token 分别覆盖单次调用超时。',
+    usage: '使用 provider=秒 格式并以英文逗号分隔，例如 iwencai=60,tushare=60,akshare_em=90。',
+    notes: ['Provider 名称应与对应 *_SOURCE_PRIORITY 列表中的 token 一致；未列出的来源使用默认单数据源超时。'],
+  },
   'settings.data_source.realtime_quotes': {
     title: '实时行情配置',
     summary: '控制实时行情和盘中技术指标是否启用。',
@@ -1553,6 +1571,24 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Earlier providers are preferred; failures fall back to later providers.'],
     impact: ['Affects current price, intraday analysis, and report fields that depend on realtime prices.'],
     notes: ['A single provider failure should fall back to the next source.'],
+  },
+  'settings.data_source.PROVIDER_LOOP_TIMEOUT_SECONDS': {
+    title: 'Default Provider Timeout',
+    summary: 'Limits one provider call before the loop continues to the next configured source.',
+    usage: 'Defaults to 60 seconds. Providers listed in the override map do not use this value.',
+    impact: ['A value that is too short causes frequent fallback; a value that is too long delays analysis when data is unavailable.'],
+  },
+  'settings.data_source.PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS': {
+    title: 'Provider Loop Total Timeout',
+    summary: 'Limits the total wait across all providers for one data capability.',
+    usage: 'Defaults to 600 seconds and should cover the intended provider count and per-provider limits.',
+    impact: ['When the budget expires, later providers are skipped while previously collected valid data is retained.'],
+  },
+  'settings.data_source.PROVIDER_TIMEOUT_OVERRIDES': {
+    title: 'Provider Timeout Overrides',
+    summary: 'Overrides the call timeout separately for individual provider tokens.',
+    usage: 'Use comma-separated provider=seconds entries, for example iwencai=60,tushare=60,akshare_em=90.',
+    notes: ['Provider names must match tokens in the corresponding *_SOURCE_PRIORITY list. Unlisted providers use the default timeout.'],
   },
   'settings.data_source.realtime_quotes': {
     title: 'Realtime Quotes',

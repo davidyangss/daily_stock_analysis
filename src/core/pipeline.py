@@ -87,6 +87,7 @@ from src.services.run_diagnostics import (
     record_llm_run,
     record_llm_run_started,
     record_notification_run,
+    record_provider_run,
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
@@ -363,6 +364,14 @@ class StockAnalysisPipeline:
             if not force_refresh and self.db.has_today_data(code, target_date):
                 logger.info(
                     f"{stock_name}({code}) {target_date} 数据已存在，跳过获取（断点续传）"
+                )
+                record_provider_run(
+                    data_type="daily_data",
+                    provider="analysis_history_db",
+                    operation="reuse_saved_daily_data",
+                    success=True,
+                    latency_ms=0,
+                    record_count=1,
                 )
                 return True, None
 

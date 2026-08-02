@@ -28,6 +28,7 @@ from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.services.provider_loop import ProviderAttempt, ProviderCall, run_provider_loop
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .iwencai_adapter import IwencaiAdapter
 from .eastmoney_mx_adapter import EastmoneyMxAdapter
@@ -731,6 +732,14 @@ class DataFetcherManager:
                 "[日线缓存命中] %s market=%s adjustment=%s rows=%s",
                 stock_code, market, adjustment, len(frame),
             )
+            record_provider_run(
+                data_type="daily_data",
+                provider="market_data_db",
+                operation="load_cached_daily_data",
+                success=True,
+                latency_ms=0,
+                record_count=len(frame),
+            )
             return frame, "market_data_db"
         except Exception as exc:
             logger.warning("[日线缓存读取失败] %s: %s", stock_code, exc)
@@ -835,7 +844,27 @@ class DataFetcherManager:
             for key in ("main_net_inflow", "inflow_5d", "inflow_10d")
         )
 
-    def _get_cn_fundamental_bundle(self, stock_code: str, config: Any) -> Dict[str, Any]:
+    @staticmethod
+    def _is_usable_fundamental_candidate(candidate: Any) -> bool:
+        """Accept returned business data, but never treat an explicit failure as partial data."""
+        if not isinstance(candidate, dict):
+            return False
+        status = str(candidate.get("status") or "").strip().lower()
+        if status in {"failed", "error", "empty", "disabled", "not_supported"}:
+            return False
+        return any(
+            isinstance(candidate.get(block), dict) and bool(candidate.get(block))
+            for block in ("growth", "earnings", "institution")
+        )
+
+    def _get_cn_fundamental_bundle(
+        self,
+        stock_code: str,
+        config: Any,
+        *,
+        total_timeout_seconds: Optional[float] = None,
+        provider_timeout_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Merge normalized fundamentals in configured provider order."""
         financial_priorities = [
             item.strip().lower()
@@ -851,43 +880,176 @@ class DataFetcherManager:
             "status": "not_supported", "growth": {}, "earnings": {}, "institution": {},
             "source_chain": [], "errors": [], "missing_reasons": {},
         }
-        tried_akshare = False
-        # Merge every consulted provider immediately so a slower fallback cannot
-        # discard earlier results. Stop only after the report-visible financial,
-        # earnings and governance contract is complete.
         provider_order = list(dict.fromkeys(financial_priorities + governance_priorities))
+        provider_calls: List[ProviderCall[Dict[str, Any]]] = []
+        added_akshare = False
+
+        def bounded_call(source: str, task: Callable[[], Dict[str, Any]], timeout: float) -> Dict[str, Any]:
+            # A provider gets one bounded call. Returned failures and raised
+            # exceptions must fall through to the next provider immediately;
+            # only a call that does not return consumes the full timeout.
+            payload, error, _duration_ms = self._run_with_timeout(task, timeout, f"fundamental_{source}")
+            if error:
+                raise TimeoutError(error) if "timeout" in error.lower() else RuntimeError(error)
+            if not isinstance(payload, dict):
+                return {}
+            return payload
+
         for source in provider_order:
-            try:
-                if source == "iwencai":
-                    adapter = self._get_iwencai_adapter()
-                    if adapter is None:
-                        continue
-                    candidate = adapter.get_fundamental_bundle(stock_code)
-                elif source in {"akshare", "akshare_em", "eastmoney", "efinance"}:
-                    if tried_akshare:
-                        continue
-                    tried_akshare = True
-                    candidate = self._fundamental_adapter.get_fundamental_bundle(stock_code)
-                else:
-                    # Current fetcher contracts do not expose a normalized
-                    # fundamental bundle for this provider yet.
+            if source == "iwencai":
+                adapter = self._get_iwencai_adapter()
+                if adapter is None:
+                    reason = (
+                        "disabled"
+                        if not getattr(config, "iwencai_enabled", False)
+                        else "missing_credentials"
+                    )
+                    provider_calls.append(ProviderCall("iwencai", skip_reason=reason))
                     continue
-            except Exception as exc:
-                merged["errors"].append(f"{source}:{type(exc).__name__}")
-                continue
-            if not isinstance(candidate, dict):
-                continue
+
+                def call_iwencai(
+                    timeout: float,
+                    configured_adapter: Any = adapter,
+                ) -> Dict[str, Any]:
+                    isolated = (
+                        IwencaiAdapter(configured_adapter.api_key, timeout=timeout)
+                        if isinstance(configured_adapter, IwencaiAdapter)
+                        else configured_adapter
+                    )
+                    return bounded_call("iwencai", lambda: isolated.get_fundamental_bundle(stock_code), timeout)
+
+                provider_calls.append(ProviderCall("iwencai", call_iwencai))
+            elif source in {"akshare", "akshare_em", "eastmoney", "efinance"} and not added_akshare:
+                added_akshare = True
+                provider_calls.append(ProviderCall(
+                    "akshare_em",
+                    lambda timeout: bounded_call(
+                        "akshare_em",
+                        lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                        timeout,
+                    ),
+                ))
+            elif source in {"akshare", "akshare_em", "eastmoney", "efinance"}:
+                provider_calls.append(ProviderCall(source, skip_reason="duplicate_adapter"))
+            elif source == "tushare":
+                fetcher = self._get_fetcher_by_name("TushareFetcher", capability="fundamental_bundle")
+                if (
+                    fetcher is None
+                    or not getattr(config, "tushare_token", None)
+                    or not hasattr(fetcher, "get_fundamental_bundle")
+                ):
+                    provider_calls.append(ProviderCall(
+                        "tushare",
+                        skip_reason=(
+                            "missing_credentials"
+                            if not getattr(config, "tushare_token", None)
+                            else "not_available"
+                        ),
+                    ))
+                else:
+                    provider_calls.append(ProviderCall(
+                        "tushare",
+                        lambda timeout, current=fetcher: bounded_call(
+                            "tushare",
+                            lambda: current.get_fundamental_bundle(stock_code),
+                            timeout,
+                        ),
+                    ))
+            elif source in {"longbridge", "yfinance"}:
+                provider_calls.append(ProviderCall(source, skip_reason="not_supported_for_cn"))
+            else:
+                provider_calls.append(ProviderCall(source, skip_reason="unknown_provider"))
+
+        def merge_candidate(
+            current: Dict[str, Any],
+            candidate: Dict[str, Any],
+            _provider: str,
+        ) -> Dict[str, Any]:
             for block in ("growth", "earnings", "institution"):
                 payload = candidate.get(block)
                 if isinstance(payload, dict):
-                    self._merge_missing_mapping(merged[block], payload)
-            merged["source_chain"].extend(candidate.get("source_chain") or [])
-            merged["errors"].extend(candidate.get("errors") or [])
+                    self._merge_missing_mapping(current[block], payload)
+            current["source_chain"].extend(candidate.get("source_chain") or [])
+            current["errors"].extend(candidate.get("errors") or [])
             candidate_reasons = candidate.get("missing_reasons")
             if isinstance(candidate_reasons, dict):
-                merged["missing_reasons"].update(candidate_reasons)
-            if self._has_complete_financial_strategy_fields(merged):
-                break
+                current["missing_reasons"].update(candidate_reasons)
+            return current
+
+        total_timeout = float(
+            total_timeout_seconds
+            if total_timeout_seconds is not None
+            else getattr(config, "fundamental_stage_timeout_seconds", 60.0)
+        )
+        provider_timeout = float(
+            provider_timeout_seconds
+            if provider_timeout_seconds is not None
+            else getattr(config, "fundamental_fetch_timeout_seconds", 15.0)
+        )
+
+        def record_started(provider: str, _timeout: float) -> None:
+            record_provider_run_started(
+                data_type="fundamental_bundle",
+                provider=provider,
+                operation="get_fundamental_bundle",
+            )
+
+        def record_attempt(attempt: ProviderAttempt) -> None:
+            success = attempt.status == "ok"
+            record_provider_run(
+                data_type="fundamental_bundle",
+                provider=attempt.provider,
+                operation="get_fundamental_bundle",
+                success=success,
+                latency_ms=attempt.duration_ms,
+                error_type=None if success else attempt.status,
+                error_message=attempt.error,
+                record_count=1 if success else 0,
+            )
+
+        def classify_unusable(candidate: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+            status = str(candidate.get("status") or "").strip().lower()
+            errors = candidate.get("errors")
+            error = "; ".join(str(item) for item in errors if item) if isinstance(errors, list) else None
+            if status in {"failed", "error"}:
+                return "failed", error or f"provider returned {status}"
+            if status in {"disabled", "not_supported"}:
+                return "skipped", error or f"provider returned {status}"
+            return "empty", error
+
+        loop_result = run_provider_loop(
+            provider_calls,
+            initial=merged,
+            merge=merge_candidate,
+            is_usable=self._is_usable_fundamental_candidate,
+            is_complete=self._has_complete_financial_strategy_fields,
+            total_timeout_seconds=total_timeout,
+            provider_timeout_seconds=provider_timeout,
+            provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+            error_summary=lambda exc: str(exc) or type(exc).__name__,
+            on_start=record_started,
+            on_attempt=record_attempt,
+            classify_unusable=classify_unusable,
+        )
+        merged = loop_result.value
+        for attempt in loop_result.attempts:
+            if attempt.status not in {"ok", "skipped"}:
+                merged["errors"].append(
+                    f"{attempt.provider}:{attempt.error or attempt.status}"
+                )
+            if not any(
+                item.get("provider") == attempt.provider
+                for item in merged["source_chain"]
+                if isinstance(item, dict)
+            ):
+                merged["source_chain"].append({
+                    "provider": attempt.provider,
+                    "result": attempt.status,
+                    "duration_ms": attempt.duration_ms,
+                    **({"error": attempt.error} if attempt.error else {}),
+                })
+        if loop_result.budget_exhausted:
+            merged["errors"].append("fundamental provider budget exhausted")
         if any(merged[block] for block in ("growth", "earnings", "institution")):
             merged["status"] = "partial"
         merged["missing_reasons"] = {
@@ -917,6 +1079,41 @@ class DataFetcherManager:
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
             return list(getattr(self, "_fetchers", []))
+
+    def _resolve_configured_fetchers(
+        self,
+        priority: str,
+        *,
+        token_map: Dict[str, str],
+        capability: str,
+    ) -> List[Tuple[str, Optional[BaseFetcher], Optional[str]]]:
+        """Resolve every configured token without silently dropping iterations."""
+        fetchers = {fetcher.name: fetcher for fetcher in self._get_fetchers_snapshot()}
+        resolved: List[Tuple[str, Optional[BaseFetcher], Optional[str]]] = []
+        used_fetchers: set[str] = set()
+        for raw_source in str(priority or "").split(","):
+            source = raw_source.strip().lower()
+            if not source:
+                continue
+            fetcher_name = token_map.get(source)
+            if fetcher_name is None:
+                resolved.append((source, None, "unknown_provider"))
+                continue
+            if fetcher_name in used_fetchers:
+                resolved.append((source, None, "duplicate_adapter"))
+                continue
+            fetcher = fetchers.get(fetcher_name)
+            if fetcher is None and fetcher_name == "TickFlowFetcher":
+                fetcher = self._get_tickflow_fetcher()
+            if fetcher is None:
+                resolved.append((source, None, "not_configured"))
+                continue
+            if not self._is_fetcher_available(fetcher, capability):
+                resolved.append((source, None, "not_available"))
+                continue
+            used_fetchers.add(fetcher_name)
+            resolved.append((source, fetcher, None))
+        return resolved
 
     def _refresh_fetcher_indexes_locked(self) -> None:
         self._fetchers_by_name = {fetcher.name: fetcher for fetcher in self._fetchers}
@@ -2173,6 +2370,7 @@ class DataFetcherManager:
             fetcher = None
             try:
                 quote = None
+                attempted = False
                 
                 if source == "efinance":
                     fetcher = self._get_fetcher_by_name("EfinanceFetcher", capability="realtime_quote")
@@ -2182,6 +2380,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
                 
                 elif source == "akshare_em":
@@ -2192,6 +2391,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em")
                 
                 elif source == "akshare_sina":
@@ -2202,6 +2402,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="sina")
                 
                 elif source in ("tencent", "akshare_qq"):
@@ -2212,6 +2413,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
                 
                 elif source == "tushare":
@@ -2222,6 +2424,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
                 elif source == "tickflow":
@@ -2232,6 +2435,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
                 elif source == "iwencai":
@@ -2242,6 +2446,7 @@ class DataFetcherManager:
                             provider="iwencai",
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = iwencai.get_realtime_quote(stock_code)
 
                 elif source == "eastmoney_mx":
@@ -2252,6 +2457,7 @@ class DataFetcherManager:
                             provider="eastmoney_mx",
                             operation="get_realtime_quote",
                         )
+                        attempted = True
                         quote = mx.get_realtime_quote(stock_code)
 
                 elif source == "eastmoney_browser":
@@ -2264,6 +2470,7 @@ class DataFetcherManager:
                                 provider="eastmoney_browser",
                                 operation="get_realtime_quote",
                             )
+                            attempted = True
                             quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em")
 
                 provider_name = fetcher.name if fetcher is not None else source
@@ -2292,13 +2499,9 @@ class DataFetcherManager:
                             )
                         # Otherwise, continue to try later sources for missing fields
                         logger.debug(f"[实时行情] {stock_code} 部分字段缺失，尝试从后续数据源补充")
-                        supplement_attempts = 0
                     else:
-                        # Supplement missing fields from this source (limit attempts)
-                        supplement_attempts += 1
-                        if supplement_attempts > 1:
-                            logger.debug(f"[实时行情] {stock_code} 补充尝试已达上限，停止继续")
-                            break
+                        # Continue through the configured list until the quote
+                        # converges; each later provider only fills missing fields.
                         merged = self._merge_quote_fields(primary_quote, quote)
                         if merged:
                             logger.info(f"[实时行情] {stock_code} 从 {source} 补充了缺失字段: {merged}")
@@ -2312,8 +2515,12 @@ class DataFetcherManager:
                         operation="get_realtime_quote",
                         success=False,
                         latency_ms=int((time.time() - attempt_start) * 1000),
-                        error_type="empty",
-                        error_message="empty or incomplete quote",
+                        error_type="empty" if attempted else "skipped",
+                        error_message=(
+                            "empty or incomplete quote"
+                            if attempted
+                            else "provider disabled, unavailable, or unsupported"
+                        ),
                         fallback_to=fallback_to,
                         record_count=0,
                     )
@@ -2825,99 +3032,63 @@ class DataFetcherManager:
 
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
-        if region == "cn":
-            tickflow_fetcher = self._get_tickflow_fetcher()
-            if tickflow_fetcher is not None:
-                try:
-                    data = tickflow_fetcher.get_main_indices(region=region)
-                    if data:
-                        logger.info("[TickFlowFetcher] 获取指数行情成功")
-                        return data
-                except Exception as e:
-                    logger.warning(f"[TickFlowFetcher] 获取指数行情失败: {e}")
+        from src.config import get_config
 
-        for fetcher in self._fetchers:
-            if region == "cn" and fetcher.name == "TickFlowFetcher":
-                continue
-            try:
-                data = fetcher.get_main_indices(region=region)
-                if data:
-                    logger.info(f"[{fetcher.name}] 获取指数行情成功")
-                    return data
-            except Exception as e:
-                logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
-                continue
-        return []
+        config = get_config()
+        entries = self._resolve_configured_fetchers(
+            getattr(config, "index_source_priority", "tickflow,tushare,efinance,akshare,yfinance"),
+            token_map={
+                "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
+                "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
+                "yfinance": "YfinanceFetcher",
+            },
+            capability="main_indices",
+        )
+        providers = [
+            (
+                source,
+                (lambda current=fetcher: current.get_main_indices(region=region))
+                if fetcher is not None
+                else None,
+                reason,
+            )
+            for source, fetcher, reason in entries
+        ]
+        result = self._run_atomic_provider_loop(
+            capability="main_indices",
+            providers=providers,
+            is_usable=lambda value: isinstance(value, list) and bool(value),
+        )
+        return result or []
 
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
-        tickflow_fetcher = self._get_tickflow_fetcher()
-        if tickflow_fetcher is not None:
-            started_at = time.monotonic()
-            try:
-                data = tickflow_fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
-                if data:
-                    logger.info(
-                        "[MarketStats] component=market_stats action=provider_success "
-                        "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
-                        purpose,
-                        elapsed,
-                    )
-                    return data
-                logger.info(
-                    "[MarketStats] component=market_stats action=provider_empty "
-                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
-                    purpose,
-                    elapsed,
-                )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
-                logger.warning(
-                    "[MarketStats] component=market_stats action=provider_failed "
-                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs error=%s",
-                    purpose,
-                    elapsed,
-                    e,
-                )
+        from src.config import get_config
 
-        for fetcher in self._fetchers:
-            if fetcher.name == "TickFlowFetcher":
-                continue
-            started_at = time.monotonic()
-            try:
-                data = fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
-                if data:
-                    logger.info(
-                        "[MarketStats] component=market_stats action=provider_success "
-                        "purpose=%s provider=%s elapsed=%.2fs",
-                        purpose,
-                        fetcher.name,
-                        elapsed,
-                    )
-                    return data
-                logger.info(
-                    "[MarketStats] component=market_stats action=provider_empty "
-                    "purpose=%s provider=%s elapsed=%.2fs",
-                    purpose,
-                    fetcher.name,
-                    elapsed,
-                )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
-                logger.warning(
-                    "[MarketStats] component=market_stats action=provider_failed "
-                    "purpose=%s provider=%s elapsed=%.2fs error=%s",
-                    purpose,
-                    fetcher.name,
-                    elapsed,
-                    e,
-                )
-                continue
-        logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
-        return {}
+        config = get_config()
+        entries = self._resolve_configured_fetchers(
+            getattr(config, "market_stats_source_priority", "tickflow,tushare,efinance,akshare"),
+            token_map={
+                "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
+                "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
+            },
+            capability="market_stats",
+        )
+        providers = [
+            (
+                source,
+                fetcher.get_market_stats if fetcher is not None else None,
+                reason,
+            )
+            for source, fetcher, reason in entries
+        ]
+        result = self._run_atomic_provider_loop(
+            capability="market_stats",
+            providers=providers,
+            is_usable=lambda value: isinstance(value, dict) and bool(value),
+        )
+        return result or {}
 
     def _run_with_timeout(
         self,
@@ -2999,6 +3170,92 @@ class DataFetcherManager:
                 break
 
         return None, last_error, total_cost_ms
+
+    def _run_atomic_provider_loop(
+        self,
+        *,
+        capability: str,
+        providers: List[Tuple[Any, ...]],
+        is_usable: Callable[[Any], bool],
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> Any:
+        """Return the first coherent provider result with bounded fallback.
+
+        Atomic capabilities (rankings, pools, snapshots and distributions) must
+        never be assembled field-by-field across providers with incompatible
+        methodologies.  The common loop still records every attempt and applies
+        per-provider and total budgets.
+        """
+        from src.config import get_config
+
+        config = get_config()
+        provider_timeout = float(
+            provider_timeout_seconds
+            if provider_timeout_seconds is not None
+            else getattr(config, "provider_loop_timeout_seconds", 60.0)
+        )
+        total_timeout = float(
+            total_timeout_seconds
+            if total_timeout_seconds is not None
+            else getattr(config, "provider_loop_total_timeout_seconds", 60.0)
+        )
+
+        def bounded(name: str, task: Callable[[], Any], timeout: float) -> Any:
+            value, error, _duration_ms = self._run_with_timeout(
+                task,
+                timeout,
+                f"{capability}_{name}",
+            )
+            if error:
+                raise TimeoutError(error) if "timeout" in error.lower() else RuntimeError(error)
+            return value
+
+        calls: List[ProviderCall[Any]] = []
+        for entry in providers:
+            name = str(entry[0])
+            task = entry[1] if len(entry) > 1 else None
+            skip_reason = str(entry[2]) if len(entry) > 2 and entry[2] else None
+            if task is None:
+                calls.append(ProviderCall(name, skip_reason=skip_reason or "not_available"))
+                continue
+            calls.append(ProviderCall(
+                name,
+                lambda timeout, provider_name=name, current_task=task: bounded(
+                    provider_name,
+                    current_task,
+                    timeout,
+                ),
+            ))
+        loop_result = run_provider_loop(
+            calls,
+            initial=None,
+            merge=lambda _current, candidate, _provider: candidate,
+            is_usable=is_usable,
+            is_complete=lambda value: value is not None and is_usable(value),
+            total_timeout_seconds=total_timeout,
+            provider_timeout_seconds=provider_timeout,
+            provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+            error_summary=lambda exc: str(exc) or type(exc).__name__,
+        )
+        for index, attempt in enumerate(loop_result.attempts):
+            fallback_to = (
+                loop_result.attempts[index + 1].provider
+                if attempt.status != "ok" and index + 1 < len(loop_result.attempts)
+                else None
+            )
+            record_provider_run(
+                data_type=capability,
+                provider=attempt.provider,
+                operation=f"get_{capability}",
+                success=attempt.status == "ok",
+                latency_ms=attempt.duration_ms,
+                error_type=None if attempt.status == "ok" else attempt.status,
+                error_message=attempt.error,
+                fallback_to=fallback_to,
+                record_count=1 if attempt.status == "ok" else 0,
+            )
+        return loop_result.value
 
     def _get_fundamental_config(self):
         from src.config import get_config
@@ -3586,11 +3843,22 @@ class DataFetcherManager:
             bundle_ms = 0
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
-            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._get_cn_fundamental_bundle(stock_code, config),
-                bundle_timeout,
-                "fundamental_bundle",
-            )
+            bundle_started = time.monotonic()
+            bundle_err_msg = None
+            try:
+                bundle_payload = self._get_cn_fundamental_bundle(
+                    stock_code,
+                    config,
+                    total_timeout_seconds=remaining_seconds,
+                    provider_timeout_seconds=min(
+                        bundle_timeout,
+                        float(getattr(config, "provider_loop_timeout_seconds", 60.0)),
+                    ),
+                )
+            except Exception as exc:
+                bundle_payload = None
+                bundle_err_msg = str(exc)
+            bundle_ms = int((time.monotonic() - bundle_started) * 1000)
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):
                 bundle_status = "failed"
@@ -3804,72 +4072,154 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
                 ["fundamental stage timeout"],
             )
-        def _fetch_capital_flow_by_priority() -> Dict[str, Any]:
-            priorities = [
-                item.strip().lower()
-                for item in getattr(
-                    config,
-                    "capital_flow_source_priority",
-                    "iwencai,eastmoney_browser,akshare_em,efinance",
-                ).split(",")
-                if item.strip()
-            ]
-            merged: Dict[str, Any] = {
-                "status": "not_supported",
-                "stock_flow": {},
-                "sector_rankings": {"top": [], "bottom": []},
-                "source_chain": [],
-                "errors": [],
-            }
-            tried_eastmoney = False
-            for source in priorities:
-                try:
-                    if source == "iwencai":
-                        adapter = self._get_iwencai_adapter()
-                        if adapter is None:
-                            continue
-                        candidate = adapter.get_capital_flow(stock_code)
-                    elif source == "eastmoney_mx":
-                        adapter = self._get_eastmoney_mx_adapter()
-                        if adapter is None:
-                            continue
-                        candidate = adapter.get_capital_flow(stock_code)
-                    elif source in {"eastmoney_browser", "eastmoney", "akshare_em", "efinance", "akshare"}:
-                        # The existing adapter capability-probes these transports;
-                        # avoid repeating the same upstream request under aliases.
-                        if tried_eastmoney:
-                            continue
-                        tried_eastmoney = True
-                        candidate = self._fundamental_adapter.get_capital_flow(stock_code)
-                    else:
-                        continue
-                except Exception as exc:
-                    merged["errors"].append(f"{source}:{type(exc).__name__}")
-                    continue
-                if not isinstance(candidate, dict):
-                    continue
+        priorities = [
+            item.strip().lower()
+            for item in getattr(
+                config,
+                "capital_flow_source_priority",
+                "iwencai,eastmoney_browser,akshare_em,efinance",
+            ).split(",")
+            if item.strip()
+        ]
+        merged: Dict[str, Any] = {
+            "status": "not_supported",
+            "stock_flow": {},
+            "sector_rankings": {"top": [], "bottom": []},
+            "source_chain": [],
+            "errors": [],
+        }
+        calls: List[ProviderCall[Dict[str, Any]]] = []
+        added_eastmoney = False
+
+        def bounded(source: str, task: Callable[[], Dict[str, Any]], call_timeout: float) -> Dict[str, Any]:
+            value, error, _cost_ms = self._run_with_retry(
+                task,
+                call_timeout,
+                f"capital_flow_{source}",
+            )
+            if error:
+                raise TimeoutError(error) if "timeout" in error.lower() else RuntimeError(error)
+            return value if isinstance(value, dict) else {}
+
+        for source in priorities:
+            if source == "iwencai":
+                adapter = self._get_iwencai_adapter()
+                if adapter is None:
+                    calls.append(ProviderCall(
+                        source,
+                        skip_reason=(
+                            "disabled"
+                            if not getattr(config, "iwencai_enabled", False)
+                            else "missing_credentials"
+                        ),
+                    ))
+                else:
+                    def call_iwencai(
+                        call_timeout: float,
+                        configured_adapter: Any = adapter,
+                    ) -> Dict[str, Any]:
+                        isolated = (
+                            IwencaiAdapter(configured_adapter.api_key, timeout=call_timeout)
+                            if isinstance(configured_adapter, IwencaiAdapter)
+                            else configured_adapter
+                        )
+                        return bounded(
+                            "iwencai",
+                            lambda: isolated.get_capital_flow(stock_code),
+                            call_timeout,
+                        )
+
+                    calls.append(ProviderCall(source, call_iwencai))
+            elif source == "eastmoney_mx":
+                adapter = self._get_eastmoney_mx_adapter()
+                if adapter is None:
+                    calls.append(ProviderCall(
+                        source,
+                        skip_reason=(
+                            "disabled"
+                            if not getattr(config, "eastmoney_mx_enabled", False)
+                            else "missing_credentials"
+                        ),
+                    ))
+                else:
+                    calls.append(ProviderCall(
+                        source,
+                        lambda call_timeout, configured_adapter=adapter: bounded(
+                            "eastmoney_mx",
+                            lambda: configured_adapter.get_capital_flow(stock_code),
+                            call_timeout,
+                        ),
+                    ))
+            elif source in {"eastmoney_browser", "eastmoney", "akshare_em", "efinance", "akshare"}:
+                if added_eastmoney:
+                    calls.append(ProviderCall(source, skip_reason="duplicate_adapter"))
+                else:
+                    added_eastmoney = True
+                    calls.append(ProviderCall(
+                        source,
+                        lambda call_timeout: bounded(
+                            source,
+                            lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+                            call_timeout,
+                        ),
+                    ))
+            else:
+                calls.append(ProviderCall(source, skip_reason="unknown_provider"))
+
+        def merge_capital_flow(
+            current: Dict[str, Any],
+            candidate: Dict[str, Any],
+            _provider: str,
+        ) -> Dict[str, Any]:
                 candidate_flow = candidate.get("stock_flow") or {}
                 for key in ("main_net_inflow", "inflow_5d", "inflow_10d"):
-                    if merged["stock_flow"].get(key) is None and candidate_flow.get(key) is not None:
-                        merged["stock_flow"][key] = candidate_flow[key]
+                    if current["stock_flow"].get(key) is None and candidate_flow.get(key) is not None:
+                        current["stock_flow"][key] = candidate_flow[key]
                 rankings = candidate.get("sector_rankings") or {}
-                if not merged["sector_rankings"]["top"] and rankings.get("top"):
-                    merged["sector_rankings"]["top"] = rankings["top"]
-                if not merged["sector_rankings"]["bottom"] and rankings.get("bottom"):
-                    merged["sector_rankings"]["bottom"] = rankings["bottom"]
-                merged["source_chain"].extend(candidate.get("source_chain") or [])
-                merged["errors"].extend(candidate.get("errors") or [])
-                if self._has_complete_capital_flow(merged["stock_flow"]):
-                    break
-            if any(value is not None for value in merged["stock_flow"].values()) or any(merged["sector_rankings"].values()):
-                merged["status"] = "partial"
-            return merged
+                if not current["sector_rankings"]["top"] and rankings.get("top"):
+                    current["sector_rankings"]["top"] = rankings["top"]
+                if not current["sector_rankings"]["bottom"] and rankings.get("bottom"):
+                    current["sector_rankings"]["bottom"] = rankings["bottom"]
+                current["source_chain"].extend(candidate.get("source_chain") or [])
+                current["errors"].extend(candidate.get("errors") or [])
+                return current
 
-        payload, err, cost_ms = self._run_with_retry(
-            _fetch_capital_flow_by_priority,
-            timeout,
-            "capital_flow",
+        loop_result = run_provider_loop(
+            calls,
+            initial=merged,
+            merge=merge_capital_flow,
+            is_usable=lambda candidate: isinstance(candidate, dict) and (
+                any(value is not None for value in (candidate.get("stock_flow") or {}).values())
+                or bool((candidate.get("sector_rankings") or {}).get("top"))
+                or bool((candidate.get("sector_rankings") or {}).get("bottom"))
+            ),
+            is_complete=lambda current: self._has_complete_capital_flow(current.get("stock_flow") or {}),
+            total_timeout_seconds=timeout,
+            provider_timeout_seconds=min(
+                timeout,
+                float(getattr(config, "provider_loop_timeout_seconds", 60.0)),
+            ),
+            provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+            error_summary=lambda exc: str(exc) or type(exc).__name__,
         )
+        payload = loop_result.value
+        cost_ms = sum(attempt.duration_ms for attempt in loop_result.attempts)
+        err = "capital flow provider budget exhausted" if loop_result.budget_exhausted else None
+        for attempt in loop_result.attempts:
+            if attempt.status not in {"ok", "skipped"}:
+                payload["errors"].append(f"{attempt.provider}:{attempt.error or attempt.status}")
+            if not any(
+                isinstance(item, dict) and item.get("provider") == attempt.provider
+                for item in payload["source_chain"]
+            ):
+                payload["source_chain"].append({
+                    "provider": attempt.provider,
+                    "result": attempt.status,
+                    "duration_ms": attempt.duration_ms,
+                    **({"error": attempt.error} if attempt.error else {}),
+                })
+        if any(value is not None for value in payload["stock_flow"].values()) or any(payload["sector_rankings"].values()):
+            payload["status"] = "partial"
         if not isinstance(payload, dict):
             return self._build_fundamental_block(
                 "failed",
@@ -4020,52 +4370,100 @@ class DataFetcherManager:
             n: int = 5,
         ) -> Tuple[List[Dict], List[Dict], List[Dict[str, Any]], str]:
             """Get sector rankings with ordered fallback chain metadata."""
-            source_chain: List[Dict[str, Any]] = []
-            last_error = ""
+            from src.config import get_config
 
-            # 直接遍历管理器已经按 priority 排好序的数据源列表
-            for fetcher in self._fetchers:
-                if not hasattr(fetcher, 'get_sector_rankings'):
+            config = get_config()
+            priorities = [
+                item.strip().lower()
+                for item in getattr(
+                    config,
+                    "sector_source_priority",
+                    "eastmoney,tushare,akshare,efinance",
+                ).split(",")
+                if item.strip()
+            ]
+            fetchers = {fetcher.name: fetcher for fetcher in self._get_fetchers_snapshot()}
+            token_map = {
+                "eastmoney": "AkshareFetcher",
+                "akshare": "AkshareFetcher",
+                "akshare_em": "AkshareFetcher",
+                "tushare": "TushareFetcher",
+                "efinance": "EfinanceFetcher",
+                "tickflow": "TickFlowFetcher",
+            }
+            calls: List[ProviderCall[Any]] = []
+            used_fetchers: set[str] = set()
+
+            def call_rankings(current: BaseFetcher, source: str, call_timeout: float) -> Any:
+                value, error, _duration_ms = self._run_with_timeout(
+                    lambda: current.get_sector_rankings(n),
+                    call_timeout,
+                    f"sector_rankings_{source}",
+                )
+                if error:
+                    raise TimeoutError(error) if "timeout" in error.lower() else RuntimeError(error)
+                return value
+
+            for source in priorities:
+                fetcher_name = token_map.get(source)
+                if fetcher_name is None:
+                    calls.append(ProviderCall(source, skip_reason="not_supported"))
                     continue
+                if fetcher_name in used_fetchers:
+                    calls.append(ProviderCall(source, skip_reason="duplicate_adapter"))
+                    continue
+                fetcher = fetchers.get(fetcher_name)
+                if fetcher is None or not self._is_fetcher_available(fetcher, "sector_rankings"):
+                    calls.append(ProviderCall(source, skip_reason="not_available"))
+                    continue
+                used_fetchers.add(fetcher_name)
+                calls.append(ProviderCall(
+                    source,
+                    lambda call_timeout, current=fetcher, token=source: call_rankings(
+                        current,
+                        token,
+                        call_timeout,
+                    ),
+                ))
 
-                start = time.time()
-                try:
-                    data = fetcher.get_sector_rankings(n)
-                    duration_ms = int((time.time() - start) * 1000)
-                    if data and data[0] is not None and data[1] is not None:
-                        source_chain.append(
-                            {
-                                "provider": fetcher.name,
-                                "result": "ok",
-                                "duration_ms": duration_ms,
-                            }
-                        )
-                        logger.info(f"[{fetcher.name}] 获取板块排行成功")
-                        return data[0], data[1], source_chain, ""
-
-                    last_error = f"{fetcher.name}返回空结果"
-                    source_chain.append(
-                        {
-                            "provider": fetcher.name,
-                            "result": "empty",
-                            "duration_ms": duration_ms,
-                            "error": last_error,
-                        }
-                    )
-                except Exception as e:
-                    error_type, error_reason = summarize_exception(e)
-                    last_error = f"{fetcher.name} ({error_type}) {error_reason}"
-                    duration_ms = int((time.time() - start) * 1000)
-                    source_chain.append(
-                        {
-                            "provider": fetcher.name,
-                            "result": "failed",
-                            "duration_ms": duration_ms,
-                            "error": error_reason,
-                        }
-                    )
-                    logger.warning(f"[{fetcher.name}] 获取板块排行失败: {error_reason}")
-
+            loop_result = run_provider_loop(
+                calls,
+                initial=None,
+                merge=lambda _current, candidate, _provider: candidate,
+                is_usable=lambda value: (
+                    isinstance(value, tuple)
+                    and len(value) >= 2
+                    and bool(value[0] or value[1])
+                ),
+                is_complete=lambda value: value is not None,
+                total_timeout_seconds=float(
+                    getattr(config, "provider_loop_total_timeout_seconds", 60.0)
+                ),
+                provider_timeout_seconds=float(
+                    getattr(config, "provider_loop_timeout_seconds", 60.0)
+                ),
+                provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+                error_summary=lambda exc: summarize_exception(exc)[1],
+            )
+            source_chain = [
+                {
+                    "provider": attempt.provider,
+                    "result": attempt.status,
+                    "duration_ms": attempt.duration_ms,
+                    **({"error": attempt.error} if attempt.error else {}),
+                }
+                for attempt in loop_result.attempts
+            ]
+            if isinstance(loop_result.value, tuple) and len(loop_result.value) >= 2:
+                return loop_result.value[0] or [], loop_result.value[1] or [], source_chain, ""
+            last_error = next(
+                (
+                    attempt.error or attempt.status
+                    for attempt in reversed(loop_result.attempts)
+                    if attempt.status not in {"ok", "skipped"}
+                ),
+                "sector rankings unavailable",
+            )
             return [], [], source_chain, last_error
 
     def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
@@ -4102,23 +4500,43 @@ class DataFetcherManager:
             cached = self.__class__._concept_rankings_cache.get(normalized_n)
             if cached and cached[0] > now:
                 logger.debug("[概念排行] 命中共享缓存 n=%s", normalized_n)
+                record_provider_run(
+                    data_type="concept_rankings",
+                    provider="memory_cache",
+                    operation="get_concept_rankings",
+                    success=True,
+                    latency_ms=0,
+                    record_count=len(cached[1]) + len(cached[2]),
+                )
                 return self._copy_ranking_rows(cached[1]), self._copy_ranking_rows(cached[2])
 
-            top: List[Dict] = []
-            bottom: List[Dict] = []
-            for fetcher in self._get_fetchers_snapshot():
-                try:
-                    data = fetcher.get_concept_rankings(normalized_n)
-                    if data and (data[0] or data[1]):
-                        top = data[0] or []
-                        bottom = data[1] or []
-                        logger.info(f"[{fetcher.name}] 获取概念排行成功")
-                        break
-                    last_error = f"{fetcher.name}返回空结果"
-                except Exception as e:
-                    error_type, error_reason = summarize_exception(e)
-                    last_error = f"{fetcher.name} ({error_type}) {error_reason}"
-                    logger.warning(f"[{fetcher.name}] 获取概念排行失败: {error_reason}")
+            from src.config import get_config
+
+            config = get_config()
+            entries = self._resolve_configured_fetchers(
+                getattr(config, "concept_source_priority", "akshare"),
+                token_map={"akshare": "AkshareFetcher", "eastmoney": "AkshareFetcher"},
+                capability="concept_rankings",
+            )
+            data = self._run_atomic_provider_loop(
+                capability="concept_rankings",
+                providers=[
+                    (
+                        source,
+                        (lambda current=fetcher: current.get_concept_rankings(normalized_n))
+                        if fetcher is not None else None,
+                        reason,
+                    )
+                    for source, fetcher, reason in entries
+                ],
+                is_usable=lambda value: (
+                    isinstance(value, tuple) and len(value) >= 2 and bool(value[0] or value[1])
+                ),
+            )
+            top = data[0] if isinstance(data, tuple) and len(data) >= 2 else []
+            bottom = data[1] if isinstance(data, tuple) and len(data) >= 2 else []
+            if not top and not bottom:
+                last_error = "configured providers returned no concept rankings"
 
             if not top and not bottom and last_error:
                 logger.warning(f"[概念排行] 所有数据源均失败，最终错误: {last_error}")
@@ -4139,21 +4557,29 @@ class DataFetcherManager:
 
     def get_hot_stocks(self, n: int = 10) -> List[Dict[str, Any]]:
         """获取市场人气股榜（自动切换数据源）。"""
-        last_error = ""
-        for fetcher in self._fetchers:
-            try:
-                data = fetcher.get_hot_stocks(n)
-                if data:
-                    logger.info(f"[{fetcher.name}] 获取人气股成功")
-                    return data[:n]
-                last_error = f"{fetcher.name}返回空结果"
-            except Exception as e:
-                error_type, error_reason = summarize_exception(e)
-                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
-                logger.warning(f"[{fetcher.name}] 获取人气股失败: {error_reason}")
-        if last_error:
-            logger.warning(f"[人气股] 所有数据源均失败，最终错误: {last_error}")
-        return []
+        from src.config import get_config
+
+        config = get_config()
+        entries = self._resolve_configured_fetchers(
+            getattr(config, "hot_stock_source_priority", "akshare"),
+            token_map={"akshare": "AkshareFetcher", "eastmoney": "AkshareFetcher"},
+            capability="hot_stocks",
+        )
+        result = self._run_atomic_provider_loop(
+            capability="hot_stocks",
+            providers=[
+                (
+                    source,
+                    (lambda current=fetcher: current.get_hot_stocks(n))
+                    if fetcher is not None
+                    else None,
+                    reason,
+                )
+                for source, fetcher, reason in entries
+            ],
+            is_usable=lambda value: isinstance(value, list) and bool(value),
+        )
+        return (result or [])[:n]
 
     def get_limit_up_pool(
         self,
@@ -4161,18 +4587,26 @@ class DataFetcherManager:
         n: int = 20,
     ) -> List[Dict[str, Any]]:
         """获取涨停池与连板梯队（自动切换数据源）。"""
-        last_error = ""
-        for fetcher in self._fetchers:
-            try:
-                data = fetcher.get_limit_up_pool(date=date, n=n)
-                if data:
-                    logger.info(f"[{fetcher.name}] 获取涨停池成功")
-                    return data[:n]
-                last_error = f"{fetcher.name}返回空结果"
-            except Exception as e:
-                error_type, error_reason = summarize_exception(e)
-                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
-                logger.warning(f"[{fetcher.name}] 获取涨停池失败: {error_reason}")
-        if last_error:
-            logger.warning(f"[涨停池] 所有数据源均失败，最终错误: {last_error}")
-        return []
+        from src.config import get_config
+
+        config = get_config()
+        entries = self._resolve_configured_fetchers(
+            getattr(config, "limit_up_source_priority", "akshare"),
+            token_map={"akshare": "AkshareFetcher", "eastmoney": "AkshareFetcher"},
+            capability="limit_up_pool",
+        )
+        result = self._run_atomic_provider_loop(
+            capability="limit_up_pool",
+            providers=[
+                (
+                    source,
+                    (lambda current=fetcher: current.get_limit_up_pool(date=date, n=n))
+                    if fetcher is not None
+                    else None,
+                    reason,
+                )
+                for source, fetcher, reason in entries
+            ],
+            is_usable=lambda value: isinstance(value, list) and bool(value),
+        )
+        return (result or [])[:n]

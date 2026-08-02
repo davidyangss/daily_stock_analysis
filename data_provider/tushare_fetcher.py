@@ -697,6 +697,154 @@ class TushareFetcher(BaseFetcher):
             logger.warning(f"Tushare 获取股票列表失败: {e}")
 
         return None
+
+    def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
+        """Return a report-period coherent A-share fundamental bundle.
+
+        Tushare statement endpoints may publish revisions independently.  Pick
+        the newest financial-indicator period first, then request the matching
+        period from every statement instead of combining each endpoint's newest
+        row blindly.
+        """
+        if self._api is None or _is_hk_market(stock_code) or _is_us_code(stock_code):
+            return {
+                "status": "not_supported",
+                "growth": {},
+                "earnings": {},
+                "institution": {},
+                "source_chain": [],
+                "errors": [],
+            }
+
+        ts_code = self._convert_stock_code(stock_code)
+        source_chain: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        def fetch(api_name: str, fields: str, **params: Any) -> pd.DataFrame:
+            started = time.monotonic()
+            try:
+                frame = self._call_api_with_rate_limit(
+                    api_name,
+                    ts_code=ts_code,
+                    fields=fields,
+                    **params,
+                )
+                source_chain.append({
+                    "provider": f"tushare:{api_name}",
+                    "result": "ok" if frame is not None and not frame.empty else "empty",
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                })
+                return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+            except Exception as exc:
+                source_chain.append({
+                    "provider": f"tushare:{api_name}",
+                    "result": "failed",
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "error": type(exc).__name__,
+                })
+                errors.append(f"{api_name}:{type(exc).__name__}")
+                return pd.DataFrame()
+
+        indicator = fetch(
+            "fina_indicator",
+            "ts_code,ann_date,end_date,tr_yoy,netprofit_yoy,roe,grossprofit_margin",
+        )
+        if indicator.empty or "end_date" not in indicator.columns:
+            return {
+                "status": "not_supported",
+                "growth": {},
+                "earnings": {},
+                "institution": {},
+                "source_chain": source_chain,
+                "errors": errors,
+                "missing_reasons": {"growth": "fina_indicator_unavailable"},
+            }
+
+        indicator = indicator.sort_values(
+            [column for column in ("end_date", "ann_date") if column in indicator.columns],
+            ascending=False,
+        )
+        indicator_row = indicator.iloc[0]
+        end_date = str(indicator_row.get("end_date") or "")
+        income = fetch(
+            "income",
+            "ts_code,ann_date,end_date,revenue,n_income_attr_p",
+            period=end_date,
+        )
+        cashflow = fetch(
+            "cashflow",
+            "ts_code,ann_date,end_date,n_cashflow_act",
+            period=end_date,
+        )
+        balance = fetch(
+            "balancesheet",
+            "ts_code,ann_date,end_date,total_assets,total_liab,total_hldr_eqy_exc_min_int",
+            period=end_date,
+        )
+
+        def row_for_period(frame: pd.DataFrame) -> Dict[str, Any]:
+            if frame.empty:
+                return {}
+            matched = frame
+            if "end_date" in frame.columns:
+                matched = frame[frame["end_date"].astype(str) == end_date]
+            if matched.empty:
+                return {}
+            sort_columns = [column for column in ("ann_date",) if column in matched.columns]
+            if sort_columns:
+                matched = matched.sort_values(sort_columns, ascending=False)
+            return matched.iloc[0].to_dict()
+
+        def number(value: Any) -> Optional[float]:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if pd.notna(parsed) else None
+
+        income_row = row_for_period(income)
+        cashflow_row = row_for_period(cashflow)
+        balance_row = row_for_period(balance)
+        growth = {
+            key: value
+            for key, value in {
+                "revenue_yoy": number(indicator_row.get("tr_yoy")),
+                "net_profit_yoy": number(indicator_row.get("netprofit_yoy")),
+                "roe": number(indicator_row.get("roe")),
+                "gross_margin": number(indicator_row.get("grossprofit_margin")),
+            }.items()
+            if value is not None
+        }
+        financial_report = {
+            key: value
+            for key, value in {
+                "report_date": end_date or None,
+                "announcement_date": str(indicator_row.get("ann_date") or "") or None,
+                "document_type": "financial_report",
+                "revenue": number(income_row.get("revenue")),
+                "net_profit_parent": number(income_row.get("n_income_attr_p")),
+                "operating_cash_flow": number(cashflow_row.get("n_cashflow_act")),
+                "roe": number(indicator_row.get("roe")),
+                "total_assets": number(balance_row.get("total_assets")),
+                "total_liabilities": number(balance_row.get("total_liab")),
+                "equity_parent": number(balance_row.get("total_hldr_eqy_exc_min_int")),
+                "currency": "CNY",
+            }.items()
+            if value not in (None, "")
+        }
+        has_data = bool(growth or financial_report)
+        return {
+            "status": "partial" if has_data else "not_supported",
+            "growth": growth,
+            "earnings": {"financial_report": financial_report} if financial_report else {},
+            "institution": {},
+            "source_chain": source_chain,
+            "errors": errors,
+            "missing_reasons": {
+                "earnings.quick_report_summary": "not_provided_by_tushare_statements",
+                "institution.top10_holder_change": "not_requested_from_tushare",
+            },
+        }
     
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """

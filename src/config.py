@@ -306,6 +306,30 @@ def parse_env_float(
     return parsed
 
 
+def parse_provider_timeout_overrides(value: Optional[str]) -> Dict[str, float]:
+    """Parse ``provider=seconds`` entries, ignoring malformed overrides."""
+    result: Dict[str, float] = {}
+    for entry in str(value or "").split(","):
+        raw = entry.strip()
+        if not raw:
+            continue
+        name, separator, seconds = raw.partition("=")
+        normalized_name = name.strip().lower()
+        if not separator or not normalized_name:
+            logger.warning("Ignoring invalid PROVIDER_TIMEOUT_OVERRIDES entry: %r", raw)
+            continue
+        try:
+            parsed = float(seconds.strip())
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid PROVIDER_TIMEOUT_OVERRIDES entry: %r", raw)
+            continue
+        if parsed < 0.1:
+            logger.warning("Ignoring non-positive PROVIDER_TIMEOUT_OVERRIDES entry: %r", raw)
+            continue
+        result[normalized_name] = parsed
+    return result
+
+
 def normalize_news_strategy_profile(value: Optional[str]) -> str:
     """Normalize news strategy profile to known values."""
     candidate = (value or "short").strip().lower()
@@ -1132,6 +1156,15 @@ class Config:
     research_source_priority: str = "iwencai_report,iwencai_insresearch,broker_website,news"
     macro_source_priority: str = "iwencai,tushare,financial_media"
     chip_source_priority: str = "eastmoney_browser,akshare_em,iwencai,local_estimate"
+    index_source_priority: str = "tickflow,tushare,efinance,akshare,yfinance"
+    market_stats_source_priority: str = "tickflow,tushare,efinance,akshare"
+    concept_source_priority: str = "akshare"
+    hot_stock_source_priority: str = "akshare"
+    limit_up_source_priority: str = "akshare"
+    # Ordered provider-loop budgets shared by non-fundamental capabilities.
+    provider_loop_timeout_seconds: float = 60.0
+    provider_loop_total_timeout_seconds: float = 600.0
+    provider_timeout_overrides: Dict[str, float] = field(default_factory=dict)
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -2165,6 +2198,26 @@ class Config:
             research_source_priority=os.getenv('RESEARCH_SOURCE_PRIORITY', 'iwencai_report,iwencai_insresearch,broker_website,news'),
             macro_source_priority=os.getenv('MACRO_SOURCE_PRIORITY', 'iwencai,tushare,financial_media'),
             chip_source_priority=os.getenv('CHIP_SOURCE_PRIORITY', 'eastmoney_browser,akshare_em,iwencai,local_estimate'),
+            index_source_priority=os.getenv('INDEX_SOURCE_PRIORITY', 'tickflow,tushare,efinance,akshare,yfinance'),
+            market_stats_source_priority=os.getenv('MARKET_STATS_SOURCE_PRIORITY', 'tickflow,tushare,efinance,akshare'),
+            concept_source_priority=os.getenv('CONCEPT_SOURCE_PRIORITY', 'akshare'),
+            hot_stock_source_priority=os.getenv('HOT_STOCK_SOURCE_PRIORITY', 'akshare'),
+            limit_up_source_priority=os.getenv('LIMIT_UP_SOURCE_PRIORITY', 'akshare'),
+            provider_loop_timeout_seconds=parse_env_float(
+                os.getenv('PROVIDER_LOOP_TIMEOUT_SECONDS'),
+                60.0,
+                field_name='PROVIDER_LOOP_TIMEOUT_SECONDS',
+                minimum=0.1,
+            ),
+            provider_loop_total_timeout_seconds=parse_env_float(
+                os.getenv('PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS'),
+                600.0,
+                field_name='PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS',
+                minimum=0.1,
+            ),
+            provider_timeout_overrides=parse_provider_timeout_overrides(
+                os.getenv('PROVIDER_TIMEOUT_OVERRIDES')
+            ),
             realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
             circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
             enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',

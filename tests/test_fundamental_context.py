@@ -39,6 +39,54 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def test_explicit_failed_fundamental_payload_is_not_usable(self) -> None:
+        self.assertFalse(DataFetcherManager._is_usable_fundamental_candidate({
+            "status": "failed",
+            "growth": {"roe": 6.6},
+        }))
+        self.assertFalse(DataFetcherManager._is_usable_fundamental_candidate({
+            "status": "not_supported",
+            "growth": {"roe": 6.6},
+        }))
+        self.assertTrue(DataFetcherManager._is_usable_fundamental_candidate({
+            "status": "partial",
+            "growth": {"roe": 6.6},
+        }))
+
+    def test_cn_fundamentals_immediately_fall_back_after_explicit_failure(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            financial_source_priority="iwencai,akshare_em",
+            governance_source_priority="iwencai,akshare_em",
+            fundamental_retry_max=1,
+        )
+        iwencai = MagicMock()
+        iwencai.get_fundamental_bundle.return_value = {
+            "status": "failed",
+            "growth": {"roe": 999.0},
+            "earnings": {},
+            "institution": {},
+        }
+        fallback_payload = {
+            "status": "partial",
+            "growth": {"roe": 6.6},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [{"provider": "akshare_em", "result": "partial"}],
+            "errors": [],
+        }
+
+        with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_fundamental_bundle",
+                    return_value=fallback_payload,
+                ) as fallback:
+            bundle = manager._get_cn_fundamental_bundle("603986", cfg)
+
+        fallback.assert_called_once_with("603986")
+        self.assertEqual(bundle["growth"]["roe"], 6.6)
+
     def test_cn_fundamentals_stop_after_complete_higher_priority_source(self) -> None:
         manager = DataFetcherManager(fetchers=[])
         cfg = SimpleNamespace(
@@ -132,6 +180,44 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertEqual(bundle["missing_reasons"], {
             "earnings.quick_report_summary": "no_matching_quick_report",
         })
+
+    def test_cn_fundamentals_keep_iwencai_partial_result_when_fallback_times_out(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            financial_source_priority="iwencai,akshare_em",
+            governance_source_priority="iwencai,akshare_em",
+            fundamental_retry_max=1,
+        )
+        iwencai = MagicMock()
+        iwencai.get_fundamental_bundle.return_value = {
+            "growth": {
+                "net_profit_yoy": 1099.0083,
+                "roe": 6.5999,
+                "gross_margin": 57.0767,
+            },
+            "earnings": {},
+            "institution": {},
+            "source_chain": [{"provider": "iwencai", "result": "partial", "duration_ms": 1}],
+            "errors": [],
+        }
+
+        def slow_fallback(_stock_code: str):
+            time.sleep(0.2)
+            return {}
+
+        with patch.object(manager, "_get_iwencai_adapter", return_value=iwencai), \
+                patch.object(manager._fundamental_adapter, "get_fundamental_bundle", side_effect=slow_fallback):
+            bundle = manager._get_cn_fundamental_bundle(
+                "603986",
+                cfg,
+                total_timeout_seconds=0.05,
+                provider_timeout_seconds=0.02,
+            )
+
+        self.assertEqual(bundle["growth"]["net_profit_yoy"], 1099.0083)
+        self.assertEqual(bundle["growth"]["roe"], 6.5999)
+        self.assertEqual(bundle["growth"]["gross_margin"], 57.0767)
+        self.assertTrue(any("akshare_em" in error for error in bundle["errors"]))
 
     def test_capital_flow_stops_when_higher_priority_windows_are_complete(self) -> None:
         manager = DataFetcherManager(fetchers=[])
@@ -375,7 +461,13 @@ class TestFundamentalContext(unittest.TestCase):
             rankings=([{"name": "地产", "change_pct": 2.0}], [{"name": "煤炭", "change_pct": -2.0}]),
         )
         manager = DataFetcherManager(fetchers=[efinance, tushare, akshare])
-        top, bottom = manager.get_sector_rankings(1)
+        cfg = SimpleNamespace(
+            sector_source_priority="efinance,tushare,eastmoney",
+            provider_loop_timeout_seconds=1.0,
+            provider_loop_total_timeout_seconds=3.0,
+        )
+        with patch("src.config.get_config", return_value=cfg):
+            top, bottom = manager.get_sector_rankings(1)
         self.assertEqual(top[0]["name"], "地产")
         self.assertEqual(bottom[0]["name"], "煤炭")
 

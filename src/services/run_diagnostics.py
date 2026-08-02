@@ -543,6 +543,7 @@ _DATA_TYPE_LABELS = {
     "news_search": "新闻舆情",
     "fundamental": "基本面",
     "fundamentals": "基本面",
+    "fundamental_bundle": "基本面",
     "belong_boards": "所属板块",
     "chip": "筹码结构",
 }
@@ -651,20 +652,32 @@ def _provider_flow_event(
     provider_key = _safe_event_key(run.provider) or "unknown"
     label = _DATA_TYPE_LABELS.get(data_type, data_type)
     fallback = bool(run.fallback_from or run.fallback_to)
-    status = _flow_status_for_success(run.success, fallback=fallback)
+    error_type = str(run.error_type or "").strip().lower()
+    skipped = error_type == "skipped"
+    status = (
+        "timeout"
+        if error_type == "timeout"
+        else _flow_status_for_success(run.success, fallback=fallback, skipped=skipped)
+    )
     node_id = f"provider_{data_type}_{provider_key}_{index}"
     started_at = _started_at_from_end_and_duration(run.created_at, run.latency_ms)
-    message = (
-        f"{label} {run.provider} 成功"
-        if run.success
-        else f"{label} {run.provider} 失败：{run.error_message_sanitized or run.error_type or '未知错误'}"
-    )
+    outcome_label = {
+        "success": "成功",
+        "fallback": "成功",
+        "skipped": "跳过",
+        "timeout": "超时",
+        "failed": "失败",
+    }.get(status, "失败")
+    detail = run.error_message_sanitized or run.error_type or "未知错误"
+    message = f"{label} {run.provider} {outcome_label}"
+    if not run.success:
+        message = f"{message}：{detail}"
     return {
         "timestamp": run.created_at,
-        "severity": "success" if run.success else "warning",
+        "severity": "success" if run.success else ("info" if skipped else "warning"),
         "type": "provider_run",
         "node_id": node_id,
-        "title": f"{label}{'成功' if run.success else '失败'}",
+        "title": f"{label}{outcome_label}",
         "message": sanitize_diagnostic_text(message, max_length=220),
         "metadata": _clean_metadata(
             {

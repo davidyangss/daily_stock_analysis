@@ -8,6 +8,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
@@ -169,6 +171,57 @@ class TestTushareFetcherCustomHttpUrl(unittest.TestCase):
             },
             timeout=30,
         )
+
+
+class TestTushareFundamentalBundle(unittest.TestCase):
+    def test_uses_one_report_period_across_statement_endpoints(self) -> None:
+        fetcher = TushareFetcher.__new__(TushareFetcher)
+        fetcher._api = object()
+        frames = {
+            "fina_indicator": pd.DataFrame([
+                {
+                    "ts_code": "603986.SH", "ann_date": "20260420", "end_date": "20260331",
+                    "tr_yoy": 17.7, "netprofit_yoy": 109.0, "roe": 6.6,
+                    "grossprofit_margin": 57.1,
+                },
+            ]),
+            "income": pd.DataFrame([
+                {
+                    "ts_code": "603986.SH", "ann_date": "20260420", "end_date": "20260331",
+                    "revenue": 11_500_000_000, "n_income_attr_p": 6_900_000_000,
+                },
+            ]),
+            "cashflow": pd.DataFrame([
+                {
+                    "ts_code": "603986.SH", "ann_date": "20260420", "end_date": "20260331",
+                    "n_cashflow_act": 1_783_000_000,
+                },
+            ]),
+            "balancesheet": pd.DataFrame([
+                {
+                    "ts_code": "603986.SH", "ann_date": "20260420", "end_date": "20260331",
+                    "total_assets": 20_000_000_000, "total_liab": 8_000_000_000,
+                    "total_hldr_eqy_exc_min_int": 12_000_000_000,
+                },
+            ]),
+        }
+        fetcher._call_api_with_rate_limit = MagicMock(
+            side_effect=lambda api_name, **_kwargs: frames[api_name]
+        )
+
+        result = fetcher.get_fundamental_bundle("603986")
+
+        self.assertEqual(result["growth"]["revenue_yoy"], 17.7)
+        self.assertEqual(result["growth"]["roe"], 6.6)
+        report = result["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "20260331")
+        self.assertEqual(report["revenue"], 11_500_000_000.0)
+        self.assertEqual(report["operating_cash_flow"], 1_783_000_000.0)
+        requested_periods = [
+            call.kwargs.get("period")
+            for call in fetcher._call_api_with_rate_limit.call_args_list[1:]
+        ]
+        self.assertEqual(requested_periods, ["20260331", "20260331", "20260331"])
 
 
 if __name__ == "__main__":

@@ -46,6 +46,22 @@ EASTMONEY_BROWSER_ENABLED=false
 
 “已配置”表示配置契约和推荐顺序已建立，不代表每个 provider 都已拥有相同的结构化适配器。运行时只调用已经实现对应能力契约的 provider，其他 token 会安全跳过。
 
+## Provider 循环语义
+
+每项能力都把对应的 `*_SOURCE_PRIORITY` 视为有序 provider 列表。列表项数量是该能力的最大循环次数；每轮只调用一个 provider。被禁用、缺少凭据、运行时不可用、能力未实现或配置项未知时，该轮记录为 `skipped`，并继续下一项，不会静默改用列表外的数据源。
+
+每个 provider 默认最多使用 `PROVIDER_LOOP_TIMEOUT_SECONDS` 秒，也可通过 `PROVIDER_TIMEOUT_OVERRIDES` 按 token 单独覆盖，例如 `iwencai=60,tushare=60,akshare_em=90`。整条链最多使用 `PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS` 秒。单项超时、空结果或校验失败不会清除前面已经取得的有效数据。循环在数据满足能力契约、列表耗尽或总预算耗尽时结束。
+
+不同能力保持各自的数据一致性边界：
+
+- 财务、治理、宏观等结构化字段按字段补缺，高优先级有效值不被低优先级覆盖。
+- 实时行情按相互关联的字段组补缺，并保留主来源身份。
+- 日线按完整序列和交易日校验，禁止把不同 provider 的字段拼成一根 K 线。
+- 筹码、榜单、池和排名等口径敏感数据采用原子结果，第一个完整可用的数据集胜出。
+- 新闻、公告和情绪类内容允许跨来源累积，但必须去重、保留来源并重新排序。
+
+当前超时保护属于调用预算上限；底层第三方库若不支持取消，超时后其后台调用可能短暂继续运行。优先使用 provider 自身的网络超时或可终止子进程实现硬取消。
+
 ## 质量排序与运行时排序
 
 跨市场的数据质量参考顺序为：
@@ -81,6 +97,9 @@ EASTMONEY_BROWSER_ENABLED=false
 | 研报 | `RESEARCH_SOURCE_PRIORITY` | `iwencai_report,iwencai_insresearch,broker_website,news` |
 | 宏观 | `MACRO_SOURCE_PRIORITY` | `iwencai,tushare,financial_media` |
 | 筹码 | `CHIP_SOURCE_PRIORITY` | `eastmoney_browser,akshare_em,iwencai,local_estimate` |
+| 默认单 provider 预算 | `PROVIDER_LOOP_TIMEOUT_SECONDS` | `60` |
+| provider 独立预算 | `PROVIDER_TIMEOUT_OVERRIDES` | 空（例：`iwencai=60,tushare=60`） |
+| 单能力总预算 | `PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS` | `600` |
 
 ## 历史日线本地存储
 

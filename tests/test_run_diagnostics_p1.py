@@ -302,6 +302,39 @@ class RunDiagnosticsP1TestCase(unittest.TestCase):
             ],
         )
 
+    def test_fundamental_provider_events_keep_localized_timeout_and_skipped_status(self) -> None:
+        events = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-fundamental-status",
+            task_id="task-fundamental-status",
+            stock_code="600519",
+            event_sink=events.append,
+        )
+        try:
+            record_provider_run(
+                data_type="fundamental_bundle",
+                provider="iwencai",
+                operation="get_fundamental_bundle",
+                success=False,
+                error_type="timeout",
+                error_message="no response",
+            )
+            record_provider_run(
+                data_type="fundamental_bundle",
+                provider="yfinance",
+                operation="get_fundamental_bundle",
+                success=False,
+                error_type="skipped",
+                error_message="not supported for cn",
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        nodes = [event["metadata"]["node"] for event in events]
+        self.assertEqual([node["status"] for node in nodes], ["timeout", "skipped"])
+        self.assertEqual([node["label"] for node in nodes], ["基本面 · iwencai", "基本面 · yfinance"])
+        self.assertEqual([event["title"] for event in events], ["基本面超时", "基本面跳过"])
+
     def test_live_flow_event_sink_redacts_paths_and_sensitive_metadata(self) -> None:
         events = []
         context = RunDiagnosticContext(trace_id="trace-live-redaction", event_sink=events.append)
