@@ -42,6 +42,30 @@ def test_daily_bars_accepts_manager_frame_provider_tuple() -> None:
     )
 
 
+def test_daily_bars_exposes_provider_adjustment_without_guessing() -> None:
+    manager = Mock()
+    manager.get_daily_data.return_value = (_daily_frame(), "AkshareFetcher")
+
+    evidence = MarketEvidenceAdapter(manager).fetch_daily_bars(
+        run_id="run-adjustment",
+        symbol="603986",
+        trade_date=date(2026, 7, 30),
+        min_daily_bars=30,
+    )
+
+    assert evidence.payload["adjustment"] == "qfq"
+
+    manager.get_daily_data.return_value = (_daily_frame(), "unmapped-provider")
+    unknown = MarketEvidenceAdapter(manager).fetch_daily_bars(
+        run_id="run-unknown-adjustment",
+        symbol="603986",
+        trade_date=date(2026, 7, 30),
+        min_daily_bars=30,
+    )
+
+    assert unknown.payload["adjustment"] == "unknown"
+
+
 def test_single_invalid_historical_bar_warns_but_does_not_stop_analysis() -> None:
     frame = _daily_frame()
     frame.loc[0, "low"] = 103.0

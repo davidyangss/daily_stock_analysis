@@ -333,6 +333,15 @@ def test_graph_requires_simplified_chinese_from_the_first_market_report_sentence
     assert runner._graph_config()["output_language"] == "Simplified Chinese"
     assert "第一句话也必须使用中文" in captured[0]
     assert "不得以 `FINAL TRANSACTION PROPOSAL`" in captured[0]
+    assert "从工具返回日线的 low 列取该区间精确最小值" in captured[0]
+    assert "指标值必须与所写交易日来自工具输出的同一行" in captured[0]
+    assert "不得把月中或月末数据描述为月初数据" in captured[0]
+    assert "上影线=high-max(open,close)" in captured[0]
+    assert "当 open=high 时上影线为 0，禁止描述为长上影" in captured[0]
+    assert "应描述为高开长阴或光头阴线" in captured[0]
+    assert "`价格倍数` 必须写为 P/L" in captured[0]
+    assert "`累计涨幅` 必须写为 (P/L-1)*100%" in captured[0]
+    assert "adjustment=unknown 时必须说明复权口径未知" in captured[0]
 
 
 def test_repository_relates_reports_debug_events_and_llm_trace_by_run_id(tmp_path: Path) -> None:

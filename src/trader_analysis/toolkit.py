@@ -72,17 +72,19 @@ class DsaTradingAgentsToolkit:
         elif name == "close_10_ema":
             values = close.ewm(span=10, adjust=False).mean()
         elif name in {"macd", "macds", "macdh"}:
-            macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-            signal = macd.ewm(span=9, adjust=False).mean()
-            values = {"macd": macd, "macds": signal, "macdh": macd - signal}[name]
+            dif = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+            dea = dif.ewm(span=9, adjust=False).mean()
+            values = {"macd": dif, "macds": dea, "macdh": 2 * (dif - dea)}[name]
         elif name == "rsi":
             delta = close.diff()
-            gain = delta.clip(lower=0).rolling(14).mean()
-            loss = -delta.clip(upper=0).rolling(14).mean()
-            values = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
+            values = (100 - (100 / (1 + avg_gain / avg_loss))).fillna(50)
         elif name in {"boll", "boll_ub", "boll_lb"}:
             middle = close.rolling(20).mean()
-            deviation = close.rolling(20).std()
+            deviation = close.rolling(20).std(ddof=0)
             values = {"boll": middle, "boll_ub": middle + 2 * deviation, "boll_lb": middle - 2 * deviation}[name]
         elif name == "atr" and {"high", "low"}.issubset(frame.columns):
             high = pd.to_numeric(frame["high"], errors="coerce")

@@ -106,6 +106,9 @@ class MarketEvidenceAdapter:
         rows = normalized["rows"]
         provider = normalized["provider"]
         issues.extend(normalized["issues"])
+        adjustment = str(df.attrs.get("adjustment") or DataFetcherManager._daily_adjustment(provider or ""))
+        if adjustment not in {"qfq", "auto_adjust", "none"}:
+            adjustment = "unknown"
 
         if len(rows) < 3:
             issues.append(EvidenceIssue(
@@ -140,7 +143,7 @@ class MarketEvidenceAdapter:
             status = EvidenceStatus.PARTIAL
 
         payload = {
-            "adjustment": "unknown",
+            "adjustment": adjustment,
             "rows": rows,
             "first_date": rows[0]["trade_date"] if rows else None,
             "last_date": rows[-1]["trade_date"] if rows else None,
