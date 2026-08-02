@@ -40,6 +40,15 @@ class SearchService:
         )
 
 
+class PageReader:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def enrich_items(self, items, *, run_id):
+        self.calls.append((items, run_id))
+        return [{**item, "content_excerpt": "正文摘录", "content_kind": "browser_excerpt"} for item in items]
+
+
 def test_news_for_latest_completed_session_uses_runtime_dsa_provider(monkeypatch) -> None:
     service = SearchService()
     monkeypatch.setattr(
@@ -106,3 +115,27 @@ def test_sentiment_uses_independent_community_search(monkeypatch) -> None:
     assert result.payload["social_items"][0]["source"] == "xueqiu.com"
     assert result.payload["social_items"][0]["fetched_at"] == "2026-08-01T10:00:00"
     assert [issue.code for issue in result.issues] == ["runtime_sentiment_not_point_in_time"]
+
+
+def test_news_and_sentiment_use_the_shared_page_reader(monkeypatch) -> None:
+    service = SearchService()
+    reader = PageReader()
+    monkeypatch.setattr(
+        "src.trader_analysis.adapters.context.get_effective_trading_date",
+        lambda market, current_time: date(2026, 7, 31),
+    )
+    adapter = ContextEvidenceAdapter(
+        manager=object(), search_service=service, page_reader=reader,
+        now_provider=lambda: datetime(2026, 8, 1, 10, 0),
+    )
+
+    news = adapter.fetch_news(
+        run_id="run-news", symbol="600519", name="贵州茅台", trade_date=date(2026, 7, 31),
+    )
+    sentiment = adapter.fetch_sentiment(
+        run_id="run-sentiment", symbol="600519", name="贵州茅台", trade_date=date(2026, 7, 31),
+    )
+
+    assert [call[1] for call in reader.calls] == ["run-news", "run-sentiment"]
+    assert news.payload["items"][0]["content_excerpt"] == "正文摘录"
+    assert sentiment.payload["social_items"][0]["content_excerpt"] == "正文摘录"

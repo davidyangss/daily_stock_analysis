@@ -764,6 +764,15 @@ class Config:
     trader_analysis_model_risk_debate: str = ""
     trader_analysis_model_portfolio_manager: str = ""
     trader_analysis_trace_content_max_chars: int = 65536
+    trader_analysis_browser_reader_enabled: bool = False
+    trader_analysis_browser_reader_command: str = "agent-browser"
+    trader_analysis_browser_reader_max_pages: int = 3
+    trader_analysis_browser_reader_timeout_seconds: int = 20
+    trader_analysis_browser_reader_max_chars: int = 12000
+    trader_analysis_browser_reader_allowed_domains: List[str] = field(default_factory=lambda: [
+        "xueqiu.com", "zhihu.com", "weibo.com", "sse.com.cn", "szse.cn",
+        "cninfo.com.cn", "cnstock.com", "eastmoney.com", "sina.com.cn",
+    ])
 
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
@@ -2222,6 +2231,34 @@ class Config:
                 else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
             ),
             trader_analysis_enabled=parse_env_bool(os.getenv('TRADER_ANALYSIS_ENABLED'), default=False),
+            trader_analysis_browser_reader_enabled=parse_env_bool(
+                os.getenv('TRADER_ANALYSIS_BROWSER_READER_ENABLED'), default=False,
+            ),
+            trader_analysis_browser_reader_command=(
+                os.getenv('TRADER_ANALYSIS_BROWSER_READER_COMMAND', 'agent-browser').strip()
+                or 'agent-browser'
+            ),
+            trader_analysis_browser_reader_max_pages=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_BROWSER_READER_MAX_PAGES'), 3,
+                field_name='TRADER_ANALYSIS_BROWSER_READER_MAX_PAGES', minimum=1, maximum=10,
+            ),
+            trader_analysis_browser_reader_timeout_seconds=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_BROWSER_READER_TIMEOUT_SECONDS'), 20,
+                field_name='TRADER_ANALYSIS_BROWSER_READER_TIMEOUT_SECONDS', minimum=3, maximum=60,
+            ),
+            trader_analysis_browser_reader_max_chars=parse_env_int(
+                os.getenv('TRADER_ANALYSIS_BROWSER_READER_MAX_CHARS'), 12000,
+                field_name='TRADER_ANALYSIS_BROWSER_READER_MAX_CHARS', minimum=1000, maximum=50000,
+            ),
+            trader_analysis_browser_reader_allowed_domains=[
+                value.strip().lower().lstrip('.')
+                for value in os.getenv(
+                    'TRADER_ANALYSIS_BROWSER_READER_ALLOWED_DOMAINS',
+                    'xueqiu.com,zhihu.com,weibo.com,sse.com.cn,szse.cn,cninfo.com.cn,'
+                    'cnstock.com,eastmoney.com,sina.com.cn',
+                ).split(',')
+                if value.strip()
+            ],
             trader_analysis_max_concurrency=parse_env_int(
                 os.getenv('TRADER_ANALYSIS_MAX_CONCURRENCY'),
                 1,

@@ -32,6 +32,12 @@ TRADER_ANALYSIS_MODEL_TRADER=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_MODEL_RISK_DEBATE=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_MODEL_PORTFOLIO_MANAGER=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
+TRADER_ANALYSIS_BROWSER_READER_ENABLED=false
+TRADER_ANALYSIS_BROWSER_READER_COMMAND=agent-browser
+TRADER_ANALYSIS_BROWSER_READER_MAX_PAGES=3
+TRADER_ANALYSIS_BROWSER_READER_TIMEOUT_SECONDS=20
+TRADER_ANALYSIS_BROWSER_READER_MAX_CHARS=12000
+TRADER_ANALYSIS_BROWSER_READER_ALLOWED_DOMAINS=xueqiu.com,zhihu.com,weibo.com,sse.com.cn,szse.cn,cninfo.com.cn,cnstock.com,eastmoney.com,sina.com.cn
 ```
 
 角色配置按 `model_name` 精确查找 DSA 已加载的 LiteLLM deployment，再使用其中的实际 `provider/model`、`api_base` 和凭据创建客户端。Market、Sentiment、News、Fundamentals、研究辩论、Research Manager、Trader、风险辩论和 Portfolio Manager 均可独立路由并允许跨 provider。留空角色继承 quick/deep 默认 deployment；deployment 不存在或不完整时任务返回 `configuration_error`，不会静默换模型。凭据只进入内存客户端，不进入请求、报告、trace 或持久化元数据。
@@ -71,6 +77,7 @@ TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 - News 使用 DSA 新闻 provider/fallback 链；Sentiment 独立使用 SearXNG 定向检索雪球、知乎和微博的可核验社区观点，不再把新闻重复包装为社交情绪。站点限定会在返回后再校验域名；无社区结果时明确降级，不使用 Anspire 新闻兜底。StockTwits/Reddit 对 A 股仍明确标为不可用。
 - 新闻分析和情绪分析的正式报告都会追加确定性证据表，逐条展示摘要、来源、内容时间、采集时间和原文链接；provider 未返回内容时间或链接时明确标记“未提供”，不自行推断。
 - Sentiment 当前传给模型的社区证据是“标题 + 搜索摘要 + 来源 + 内容/采集时间 + URL”，不是网页完整正文。TradingAgents 0.3.1 的 Sentiment 节点没有浏览器或外部搜索工具；提示明确禁止模型声称已打开链接、自行联网或读取未提供的评论/正文，摘要截断、无日期或样本过少时必须降低置信度。
+- 开启 `TRADER_ANALYSIS_BROWSER_READER_ENABLED` 后，News 和 Sentiment 会对各自搜索结果中最多 `MAX_PAGES` 条允许域名页面调用后端 `agent-browser read`，把受 `MAX_CHARS` 限制的公开正文摘录写入 canonical evidence。仅允许 HTTPS、配置白名单域名和公网 DNS 解析；不使用登录态、Cookie、点击、下载、JavaScript 执行或持久会话。浏览器超时、域名未允许或正文不可读时 fail-open 保留搜索摘要，报告的“证据类型”会区分“浏览器正文摘录”与“搜索摘要（正文不可用）”。
 - 当分析日期为今天或最近已完成交易日时，新闻通过 DSA `SearchService` 的现有 provider/fallback 链按运行时间检索；最近交易日的运行时新闻标记为 `runtime_news_not_point_in_time` 并降级披露。更早的历史日期不会读取当前实时价、当前新闻或缺少公告可得日期的当前财务数据；当 point-in-time 证据不足时返回 `insufficient_evidence`。
 - 新上市标的截至分析日已有至少 3 个有效交易日、但少于建议历史长度时，以 `limited_daily_history` 降级继续分析；报告必须明确短历史限制，不得把不成熟的技术指标解释成高置信度趋势。少于 3 个有效交易日仍阻断分析。
 - 历史分析具备日线与核验价格且无阻断问题时，即使新闻、财务和情绪因 point-in-time 约束不可用，也会以 `degraded` 运行 Graph 并生成各角色报告；缺失能力必须保留在数据质量报告中，不得使用当前数据回填历史上下文。

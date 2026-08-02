@@ -60,19 +60,27 @@ def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> s
         "",
         f"> 证据采集时间：{envelope.fetched_at.isoformat()}；内容时间为来源返回值，“未提供”表示不得自行推断。",
         "",
-        "| # | 摘要 | 来源 | 内容时间 | 采集时间 | 原文 |",
-        "| ---: | --- | --- | --- | --- | --- |",
+        "| # | 证据类型 | 摘要 | 来源 | 内容时间 | 采集时间 | 原文 |",
+        "| ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for index, item in enumerate(items[:10], start=1):
         title = _clean_cell(item.get("title")) or "无标题"
-        snippet = _clean_cell(item.get("snippet"))
+        excerpt = _clean_cell(item.get("content_excerpt"))
+        snippet = excerpt or _clean_cell(item.get("search_snippet") or item.get("snippet"))
         summary = title if not snippet else f"{title}：{snippet[:240]}"
+        evidence_type = "浏览器正文摘录" if excerpt else "搜索摘要"
+        if item.get("content_fetch_status") == "unavailable":
+            evidence_type += "（正文不可用）"
         source = _clean_cell(item.get("source")) or _clean_cell(envelope.provider) or "未知来源"
         published = _clean_cell(item.get("published_date")) or "未提供"
-        fetched = _clean_cell(item.get("fetched_at")) or envelope.fetched_at.isoformat()
+        fetched = _clean_cell(
+            item.get("content_fetched_at") if excerpt else item.get("fetched_at")
+        ) or envelope.fetched_at.isoformat()
         url = str(item.get("url") or "").strip()
         link = f"[查看]({url})" if url.startswith(("http://", "https://")) else "未提供"
-        lines.append(f"| {index} | {summary} | {source} | {published} | {fetched} | {link} |")
+        lines.append(
+            f"| {index} | {evidence_type} | {summary} | {source} | {published} | {fetched} | {link} |"
+        )
     return "\n".join(lines)
 
 

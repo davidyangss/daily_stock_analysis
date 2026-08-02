@@ -46,3 +46,23 @@ def test_news_and_sentiment_reports_append_cross_checkable_evidence() -> None:
     assert "xueqiu.com" in by_kind["sentiment"]
     assert "未提供" in by_kind["sentiment"]
     assert "https://xueqiu.com/example" in by_kind["sentiment"]
+
+
+def test_report_prefers_browser_excerpt_and_labels_evidence_type() -> None:
+    ledger = EvidenceLedger(
+        run_id="run-1", symbol="600519", trade_date=date(2026, 7, 31),
+        created_at=datetime(2026, 8, 1, 10, 0),
+    )
+    ledger.add(_envelope("news", {"items": [{
+        "title": "公告解读", "search_snippet": "搜索摘要", "content_excerpt": "浏览器读取的正文",
+        "content_kind": "browser_excerpt", "content_fetch_status": "ok",
+        "content_fetched_at": "2026-08-01T10:05:00",
+        "source": "sse.com.cn", "url": "https://sse.com.cn/example",
+    }]}, "Anspire"))
+
+    report = reports_from_state({"news_report": "新闻结论"}, ledger=ledger)[0]
+
+    assert "浏览器正文摘录" in report.content
+    assert "浏览器读取的正文" in report.content
+    assert "公告解读：搜索摘要" not in report.content
+    assert "2026-08-01T10:05:00" in report.content

@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from src.trader_analysis.adapters.market import MarketEvidenceAdapter
 from src.trader_analysis.adapters.context import ContextEvidenceAdapter
+from src.trader_analysis.adapters.browser_reader import BrowserReaderConfig, CommunityPageReader
 from src.trader_analysis.config import TraderAnalysisConfig
 from src.trader_analysis.errors import build_error
 from src.trader_analysis.evidence.ledger import create_ledger
@@ -45,7 +46,17 @@ class TraderAnalysisOrchestrator:
     ) -> None:
         self.config = config
         self.market_adapter = market_adapter or MarketEvidenceAdapter()
-        self.context_adapter = context_adapter or ContextEvidenceAdapter(self.market_adapter.manager)
+        self.context_adapter = context_adapter or ContextEvidenceAdapter(
+            self.market_adapter.manager,
+            page_reader=CommunityPageReader(BrowserReaderConfig(
+                enabled=config.browser_reader_enabled,
+                command=config.browser_reader_command,
+                max_pages=config.browser_reader_max_pages,
+                timeout_seconds=config.browser_reader_timeout_seconds,
+                max_chars=config.browser_reader_max_chars,
+                allowed_domains=config.browser_reader_allowed_domains,
+            )),
+        )
         self.graph_runner = graph_runner or TradingAgentsGraphRunner(config)
 
     def run(

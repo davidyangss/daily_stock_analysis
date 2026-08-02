@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from data_provider.base import DataFetcherManager
 from src.core.trading_calendar import get_effective_trading_date
+from src.trader_analysis.adapters.browser_reader import CommunityPageReader
 from src.trader_analysis.schemas.evidence import (
     EvidenceEnvelope,
     EvidenceIssue,
@@ -23,10 +24,12 @@ class ContextEvidenceAdapter:
         self,
         manager: Optional[DataFetcherManager] = None,
         search_service: Any = None,
+        page_reader: Optional[CommunityPageReader] = None,
         now_provider: Callable[[], datetime] = datetime.now,
     ) -> None:
         self.manager = manager or DataFetcherManager()
         self.search_service = search_service
+        self.page_reader = page_reader
         self.now_provider = now_provider
 
     def fetch_fundamentals(self, *, run_id: str, symbol: str, trade_date: date, timeout: float) -> EvidenceEnvelope:
@@ -83,19 +86,24 @@ class ContextEvidenceAdapter:
                 service = self.search_service
             response = service.search_stock_news(symbol, name or symbol, max_results=10)
             results = list(getattr(response, "results", None) or [])
+            items = [
+                {
+                    "title": str(getattr(item, "title", "")),
+                    "snippet": str(getattr(item, "snippet", "")),
+                    "search_snippet": str(getattr(item, "snippet", "")),
+                    "url": str(getattr(item, "url", "")),
+                    "source": str(getattr(item, "source", "")),
+                    "published_date": getattr(item, "published_date", None),
+                    "fetched_at": now.isoformat(),
+                    "content_kind": "search_snippet",
+                }
+                for item in results
+            ]
+            if self.page_reader is not None:
+                items = self.page_reader.enrich_items(items, run_id=run_id)
             payload = {
                 "query": getattr(response, "query", ""),
-                "items": [
-                    {
-                        "title": str(getattr(item, "title", "")),
-                        "snippet": str(getattr(item, "snippet", "")),
-                        "url": str(getattr(item, "url", "")),
-                        "source": str(getattr(item, "source", "")),
-                        "published_date": getattr(item, "published_date", None),
-                        "fetched_at": now.isoformat(),
-                    }
-                    for item in results
-                ],
+                "items": items,
             }
             provider = str(getattr(response, "provider", "") or "") or None
             success = bool(getattr(response, "success", False)) and bool(results)
@@ -143,13 +151,17 @@ class ContextEvidenceAdapter:
                 {
                     "title": str(getattr(item, "title", "")),
                     "snippet": str(getattr(item, "snippet", "")),
+                    "search_snippet": str(getattr(item, "snippet", "")),
                     "url": str(getattr(item, "url", "")),
                     "source": str(getattr(item, "source", "")),
                     "published_date": getattr(item, "published_date", None),
                     "fetched_at": now.isoformat(),
+                    "content_kind": "search_snippet",
                 }
                 for item in results
             ]
+            if self.page_reader is not None:
+                items = self.page_reader.enrich_items(items, run_id=run_id)
             provider = str(getattr(response, "provider", "") or "") or None
             success = bool(getattr(response, "success", False)) and bool(items)
         except Exception as exc:

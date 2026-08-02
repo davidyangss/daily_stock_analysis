@@ -37,7 +37,8 @@ def test_sentiment_prefetch_uses_social_evidence_without_news() -> None:
     assert bundle["social_as_of"] == "2026-08-01 10:00:00"
     assert "雪球讨论" in bundle["social"]
     assert "NOT StockTwits" in bundle["stocktwits"]
-    assert "title and search-engine snippet" in bundle["stocktwits"]
+    assert "content_kind=browser_excerpt" in bundle["stocktwits"]
+    assert "content_kind=search_snippet" in bundle["stocktwits"]
     assert "no browser or external tools" in bundle["stocktwits"]
     assert "雪球讨论" in bundle["stocktwits"]
     assert "not used" in bundle["news"]

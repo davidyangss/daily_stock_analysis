@@ -142,11 +142,13 @@ class DsaTradingAgentsToolkit:
         social_block = (
             "DSA SOURCE CONTRACT: The records below are public investor-community search results "
             "collected through SearXNG from allowlisted Xueqiu, Zhihu, or Weibo pages. They are NOT "
-            "StockTwits messages. Each record contains a title and search-engine snippet, not a "
-            "verified full page body. The model has no browser or external tools in this analyst "
-            "stage: do not claim to have opened a URL, searched the web, read comments, or verified "
-            "content beyond these records. Cite the supplied source, published_date/fetched_at, and "
-            "URL; lower confidence when snippets are missing, truncated, undated, or too few.\n\n"
+            "StockTwits messages. A record with content_kind=browser_excerpt contains a bounded "
+            "public-page excerpt collected by the DSA backend; content_kind=search_snippet contains "
+            "only a search-engine snippet. Neither is guaranteed to be the complete page or comment "
+            "thread. The model has no browser or external tools in this analyst stage: do not claim "
+            "to have opened a URL or searched the web yourself, and do not infer content beyond the "
+            "supplied fields. Cite source, published_date, content_fetched_at/fetched_at, and URL; "
+            "lower confidence when evidence is truncated, undated, unavailable, or too sparse.\n\n"
             f"{_json(social_items)}"
         )
         return {

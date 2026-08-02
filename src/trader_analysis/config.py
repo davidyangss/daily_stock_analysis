@@ -47,6 +47,15 @@ class TraderAnalysisConfig:
     llm_backend_url: str
     model_routes: dict[str, ModelRoute] = field(default_factory=dict)
     trace_content_max_chars: int = 65536
+    browser_reader_enabled: bool = False
+    browser_reader_command: str = "agent-browser"
+    browser_reader_max_pages: int = 3
+    browser_reader_timeout_seconds: int = 20
+    browser_reader_max_chars: int = 12000
+    browser_reader_allowed_domains: tuple[str, ...] = (
+        "xueqiu.com", "zhihu.com", "weibo.com", "sse.com.cn", "szse.cn",
+        "cninfo.com.cn", "cnstock.com", "eastmoney.com", "sina.com.cn",
+    )
     data_toolkit_version: str = "dsa-trader-toolkit-v1"
     evidence_policy_version: str = "trader-evidence-policy-v1"
 
@@ -105,4 +114,16 @@ class TraderAnalysisConfig:
             ),
             model_routes=routes,
             trace_content_max_chars=int(getattr(config, "trader_analysis_trace_content_max_chars", 65536)),
+            browser_reader_enabled=bool(getattr(config, "trader_analysis_browser_reader_enabled", False)),
+            browser_reader_command=str(getattr(
+                config, "trader_analysis_browser_reader_command", "agent-browser",
+            )),
+            browser_reader_max_pages=int(getattr(config, "trader_analysis_browser_reader_max_pages", 3)),
+            browser_reader_timeout_seconds=int(getattr(
+                config, "trader_analysis_browser_reader_timeout_seconds", 20,
+            )),
+            browser_reader_max_chars=int(getattr(config, "trader_analysis_browser_reader_max_chars", 12000)),
+            browser_reader_allowed_domains=tuple(getattr(
+                config, "trader_analysis_browser_reader_allowed_domains", ["xueqiu.com"],
+            )),
         )

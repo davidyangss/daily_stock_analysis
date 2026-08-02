@@ -456,6 +456,29 @@ def test_config_maps_existing_dsa_litellm_route_without_model_hardcoding(tmp_pat
     assert mapped.llm_backend_url == "https://gateway.example/v1"
 
 
+def test_config_maps_bounded_browser_reader_settings(tmp_path: Path) -> None:
+    app_config = SimpleNamespace(
+        trader_analysis_enabled=True,
+        trader_analysis_results_dir=str(tmp_path),
+        trader_analysis_checkpoint_db=str(tmp_path / "checkpoint.sqlite"),
+        trader_analysis_browser_reader_enabled=True,
+        trader_analysis_browser_reader_command="/opt/bin/agent-browser",
+        trader_analysis_browser_reader_max_pages=2,
+        trader_analysis_browser_reader_timeout_seconds=15,
+        trader_analysis_browser_reader_max_chars=8000,
+        trader_analysis_browser_reader_allowed_domains=["xueqiu.com", "sse.com.cn"],
+    )
+
+    mapped = TraderAnalysisConfig.from_app_config(app_config)
+
+    assert mapped.browser_reader_enabled is True
+    assert mapped.browser_reader_command == "/opt/bin/agent-browser"
+    assert mapped.browser_reader_max_pages == 2
+    assert mapped.browser_reader_timeout_seconds == 15
+    assert mapped.browser_reader_max_chars == 8000
+    assert mapped.browser_reader_allowed_domains == ("xueqiu.com", "sse.com.cn")
+
+
 def test_config_resolves_independent_role_deployments(tmp_path: Path) -> None:
     app_config = SimpleNamespace(
         trader_analysis_enabled=True,
