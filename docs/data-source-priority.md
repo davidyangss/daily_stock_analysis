@@ -52,6 +52,8 @@ EASTMONEY_BROWSER_ENABLED=false
 
 每个 provider 默认最多使用 `PROVIDER_LOOP_TIMEOUT_SECONDS` 秒，也可通过 `PROVIDER_TIMEOUT_OVERRIDES` 按 token 单独覆盖，例如 `iwencai=60,tushare=60,akshare_em=90`。整条链最多使用 `PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS` 秒。单项超时、空结果或校验失败不会清除前面已经取得的有效数据。循环在数据满足能力契约、列表耗尽或总预算耗尽时结束。
 
+数据源调用遇到连接中断、超时、HTTP 429 或典型临时 5xx 时，会在当前 provider 内按 full-jitter 指数退避有限重试；默认总调用 `DATA_PROVIDER_MAX_ATTEMPTS=3` 次，退避上限从 `DATA_PROVIDER_RETRY_BASE_DELAY_SECONDS=0.5` 秒增长到 `DATA_PROVIDER_RETRY_MAX_DELAY_SECONDS=2` 秒。被禁用、缺少凭证、不支持当前能力、请求参数错误、鉴权错误或有效空结果不会重试，而是直接跳过或进入下一个 provider。所有重试仍受当前能力的 provider 与整链总预算约束。
+
 不同能力保持各自的数据一致性边界：
 
 - 财务、治理、宏观等结构化字段按字段补缺，高优先级有效值不被低优先级覆盖。
@@ -99,6 +101,9 @@ EASTMONEY_BROWSER_ENABLED=false
 | 筹码 | `CHIP_SOURCE_PRIORITY` | `eastmoney_browser,akshare_em,iwencai,local_estimate` |
 | 默认单 provider 预算 | `PROVIDER_LOOP_TIMEOUT_SECONDS` | `60` |
 | provider 独立预算 | `PROVIDER_TIMEOUT_OVERRIDES` | 空（例：`iwencai=60,tushare=60`） |
+| 单 provider 总调用次数（含首次） | `DATA_PROVIDER_MAX_ATTEMPTS` | `3` |
+| 重试基础退避秒数 | `DATA_PROVIDER_RETRY_BASE_DELAY_SECONDS` | `0.5` |
+| 重试最大退避秒数 | `DATA_PROVIDER_RETRY_MAX_DELAY_SECONDS` | `2` |
 | 单能力总预算 | `PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS` | `600` |
 
 ## 历史日线本地存储

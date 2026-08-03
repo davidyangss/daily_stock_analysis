@@ -35,6 +35,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    get_litellm_router_kwargs,
     resolve_news_window_days,
 )
 from src.llm.hermes import (
@@ -2491,8 +2492,7 @@ class GeminiAnalyzer:
             try:
                 self._router = Router(
                     model_list=router_model_list,
-                    routing_strategy="simple-shuffle",
-                    num_retries=2,
+                    **get_litellm_router_kwargs(config),
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
@@ -2536,8 +2536,7 @@ class GeminiAnalyzer:
             try:
                 self._router = Router(
                     model_list=legacy_model_list,
-                    routing_strategy="simple-shuffle",
-                    num_retries=2,
+                    **get_litellm_router_kwargs(config),
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")

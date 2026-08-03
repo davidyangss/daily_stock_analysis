@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 数据源调用对连接、超时、限流和临时服务错误执行有界抖动重试，并在禁用、缺配置或能力不匹配时直接跳过
+- [修复] Agent 跨模型 fallback 不再叠加 Router 已负责的限流退避，并区分不可通过换模型恢复的请求错误
+- [修复] LiteLLM YAML 的 router_settings 经校验后传入分析与 Agent Router，避免 routing_strategy 和重试次数被运行时硬编码覆盖
 - [修复] 交易员分析优先使用复权日线、隔离不复权除权断点，并在发布前纠正行情计算与移除无证据资金流数值
 - [修复] 系统配置接口统一 Provider 循环超时默认值的字符串类型，避免配置响应校验失败并返回 HTTP 500
 - [修复] 交易员市场工具和报告显式展示日线复权口径，不复权历史指标提示与前复权行情软件的可预期差异

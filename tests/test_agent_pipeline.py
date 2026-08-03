@@ -3087,8 +3087,8 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
 
     @patch("src.agent.llm_adapter.Router")
-    def test_llm_adapter_rate_limit_backoff_is_bounded_by_remaining_timeout(self, _mock_router):
-        """Rate-limit backoff should sleep, but never longer than the remaining timeout budget."""
+    def test_llm_adapter_rate_limit_falls_back_without_duplicate_backoff(self, _mock_router):
+        """Router owns deployment retry/backoff; adapter switches models immediately."""
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
@@ -3108,15 +3108,10 @@ class TestAgentConstructionChain(unittest.TestCase):
             pass
 
         timeouts = []
-        sleep_calls = []
         clock = {"value": 0.0}
 
         def fake_time():
             return clock["value"]
-
-        def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-            clock["value"] += seconds
 
         def fake_call(_messages, _tools, model, **kwargs):
             timeouts.append((model, kwargs.get("timeout")))
@@ -3130,7 +3125,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         with patch("src.agent.llm_adapter.litellm.RateLimitError", FakeRateLimitError), \
              patch("src.agent.llm_adapter.logger.warning"), \
              patch("src.agent.llm_adapter.time.time", side_effect=fake_time), \
-             patch("src.agent.llm_adapter.time.sleep", side_effect=fake_sleep) as mock_sleep:
+             patch("src.agent.llm_adapter.time.sleep") as mock_sleep:
             result = adapter.call_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[],
@@ -3140,13 +3135,9 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertEqual(result.content, "ok")
         self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
         self.assertEqual(timeouts[1][0], "openai/gpt-4.1-mini")
-        expected_backoff = min(2.0, 8.0 * 0.1 + 0.5)
-        expected_next_timeout = 10.0 - (8.0 + expected_backoff)
-        self.assertAlmostEqual(timeouts[1][1], expected_next_timeout)
-        mock_sleep.assert_called_once()
-        self.assertAlmostEqual(mock_sleep.call_args.args[0], expected_backoff)
-        self.assertAlmostEqual(sleep_calls[0], expected_backoff)
-        self.assertAlmostEqual(clock["value"], 8.0 + expected_backoff)
+        self.assertAlmostEqual(timeouts[1][1], 2.0)
+        mock_sleep.assert_not_called()
+        self.assertAlmostEqual(clock["value"], 8.0)
 
     @patch("src.agent.llm_adapter.Router")
     def test_llm_adapter_context_window_error_skips_sleep(self, _mock_router):
@@ -3184,6 +3175,44 @@ class TestAgentConstructionChain(unittest.TestCase):
 
         self.assertEqual(result.content, "ok")
         mock_sleep.assert_not_called()
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_does_not_fallback_for_invalid_request(self, _mock_router):
+        """Changing models must not hide a malformed request contract."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeBadRequestError(Exception):
+            pass
+
+        adapter._call_litellm_model = MagicMock(
+            side_effect=FakeBadRequestError("invalid tool schema")
+        )
+
+        with patch(
+            "src.agent.llm_adapter.litellm.BadRequestError",
+            FakeBadRequestError,
+            create=True,
+        ):
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+
+        self.assertEqual(result.provider, "error")
+        adapter._call_litellm_model.assert_called_once()
 
     @patch("src.agent.llm_adapter.Router")
     def test_llm_adapter_reports_rate_limit_suffix_when_any_fallback_hit_limit(self, _mock_router):

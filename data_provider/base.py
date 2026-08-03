@@ -29,7 +29,12 @@ from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
-from src.services.provider_loop import ProviderAttempt, ProviderCall, run_provider_loop
+from src.services.provider_loop import (
+    ProviderAttempt,
+    ProviderCall,
+    call_provider_with_retry,
+    run_provider_loop,
+)
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .iwencai_adapter import IwencaiAdapter
 from .eastmoney_mx_adapter import EastmoneyMxAdapter
@@ -1079,6 +1084,9 @@ class DataFetcherManager:
             on_start=record_started,
             on_attempt=record_attempt,
             classify_unusable=classify_unusable,
+            max_attempts=getattr(config, "data_provider_max_attempts", 3),
+            retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+            retry_max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
         )
         merged = loop_result.value
         for attempt in loop_result.attempts:
@@ -1220,10 +1228,23 @@ class DataFetcherManager:
             return lock
 
     def _call_fetcher_method(self, fetcher: BaseFetcher, method_name: str, *args, **kwargs):
-        """Serialize shared fetcher state access through manager-owned per-instance locks."""
+        """Serialize a provider call and retry transient transport failures only."""
+        from src.config import get_config
+
         method = getattr(fetcher, method_name)
-        with self._get_fetcher_call_lock(fetcher):
-            return method(*args, **kwargs)
+        config = get_config()
+
+        def call_once():
+            with self._get_fetcher_call_lock(fetcher):
+                return method(*args, **kwargs)
+
+        return call_provider_with_retry(
+            call_once,
+            provider=f"{fetcher.name}.{method_name}",
+            max_attempts=getattr(config, "data_provider_max_attempts", 3),
+            base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+            max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
+        )
 
     @classmethod
     def _filter_daily_fetchers_for_market(
@@ -3323,6 +3344,9 @@ class DataFetcherManager:
             provider_timeout_seconds=provider_timeout,
             provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
             error_summary=lambda exc: str(exc) or type(exc).__name__,
+            max_attempts=getattr(config, "data_provider_max_attempts", 3),
+            retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+            retry_max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
         )
         for index, attempt in enumerate(loop_result.attempts):
             fallback_to = (
@@ -4287,6 +4311,9 @@ class DataFetcherManager:
             ),
             provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
             error_summary=lambda exc: str(exc) or type(exc).__name__,
+            max_attempts=getattr(config, "data_provider_max_attempts", 3),
+            retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+            retry_max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
         )
         payload = loop_result.value
         cost_ms = sum(attempt.duration_ms for attempt in loop_result.attempts)
@@ -4530,6 +4557,9 @@ class DataFetcherManager:
                 ),
                 provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
                 error_summary=lambda exc: summarize_exception(exc)[1],
+                max_attempts=getattr(config, "data_provider_max_attempts", 3),
+                retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+                retry_max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
             )
             source_chain = [
                 {

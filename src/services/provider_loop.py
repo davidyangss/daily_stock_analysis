@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import random
 import time
 from typing import Callable, Generic, Iterable, Mapping, Optional, TypeVar
 
@@ -17,6 +18,75 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 logger = logging.getLogger(__name__)
+
+
+def is_retryable_provider_error(exc: BaseException) -> bool:
+    """Return whether a provider failure is likely transient.
+
+    Configuration, authentication, validation and unsupported-capability errors
+    deliberately remain non-retryable and fall through to the next provider.
+    """
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, ConnectionError)):
+            return True
+        status = getattr(getattr(current, "response", None), "status_code", None)
+        status = status if status is not None else getattr(current, "status_code", None)
+        if status in {408, 425, 429, 500, 502, 503, 504}:
+            return True
+        name = type(current).__name__.lower()
+        text = str(current).lower()
+        if any(token in name for token in ("timeout", "connectionerror", "ratelimit", "remotedisconnected", "incompleteread")):
+            return True
+        if any(token in text for token in ("connection reset", "connection aborted", "temporarily unavailable", "too many requests")):
+            return True
+        for linked in (getattr(current, "__cause__", None), getattr(current, "__context__", None)):
+            if isinstance(linked, BaseException):
+                pending.append(linked)
+    return False
+
+
+def call_provider_with_retry(
+    call: Callable[[], T],
+    *,
+    provider: str,
+    max_attempts: int,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+    deadline: Optional[float] = None,
+) -> T:
+    """Retry one already-eligible provider only for transient exceptions."""
+    attempts = max(1, int(max_attempts))
+    base_delay = max(0.0, float(base_delay_seconds))
+    max_delay = max(base_delay, float(max_delay_seconds))
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if attempt >= attempts or not is_retryable_provider_error(exc):
+                raise
+            delay_cap = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            delay = random.uniform(0.0, delay_cap) if delay_cap > 0 else 0.0
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or delay >= remaining:
+                    raise
+            logger.warning(
+                "数据源 %s 瞬时失败，%.2f 秒后重试（%d/%d）: %s",
+                provider,
+                delay,
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+            )
+            if delay > 0:
+                time.sleep(delay)
+    raise RuntimeError("unreachable provider retry state")
 
 
 @dataclass(frozen=True)
@@ -56,6 +126,9 @@ def run_provider_loop(
     on_start: Optional[Callable[[str, float], None]] = None,
     on_attempt: Optional[Callable[[ProviderAttempt], None]] = None,
     classify_unusable: Optional[Callable[[T], tuple[str, Optional[str]]]] = None,
+    max_attempts: int = 1,
+    retry_base_delay_seconds: float = 0.5,
+    retry_max_delay_seconds: float = 2.0,
 ) -> ProviderLoopResult[R]:
     """Run ordered providers and retain every usable partial result.
 
@@ -110,7 +183,14 @@ def run_provider_loop(
             except Exception as exc:  # diagnostics must never break fallback
                 logger.warning("provider start callback failed: %s", exc)
         try:
-            candidate = provider.call(timeout)
+            candidate = call_provider_with_retry(
+                lambda: provider.call(min(timeout, max(0.0, deadline - time.monotonic()))),
+                provider=provider.name,
+                max_attempts=max_attempts,
+                base_delay_seconds=retry_base_delay_seconds,
+                max_delay_seconds=retry_max_delay_seconds,
+                deadline=deadline,
+            )
             duration_ms = int((time.monotonic() - started) * 1000)
             if is_usable(candidate):
                 result.value = merge(result.value, candidate, provider.name)

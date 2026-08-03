@@ -22,6 +22,7 @@ from src.config import (
     get_config,
     get_configured_llm_models,
     get_effective_agent_primary_model,
+    get_litellm_router_kwargs,
 )
 from src.agent.litellm_route_resolution import (
     AgentLiteLLMRouteResolution,
@@ -476,8 +477,7 @@ class LLMToolAdapter:
                 return
             self._router = Router(
                 model_list=model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
+                **get_litellm_router_kwargs(self._config),
             )
             unique_models = list(dict.fromkeys(
                 e['litellm_params']['model'] for e in model_list
@@ -514,8 +514,7 @@ class LLMToolAdapter:
             self._legacy_router_model_list = legacy_model_list
             self._router = Router(
                 model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
+                **get_litellm_router_kwargs(self._config),
             )
             logger.info(
                 f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
@@ -612,11 +611,9 @@ class LLMToolAdapter:
             logger.error(error_msg)
             return LLMResponse(content=error_msg, provider="error")
         started_at = time.time()
-        providers = [self._get_model_provider(model) for model in models_to_try]
-
         last_error = None
         hit_rate_limit = False
-        for idx, model in enumerate(models_to_try):
+        for model in models_to_try:
             remaining_timeout = timeout
             if timeout is not None and timeout > 0:
                 remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
@@ -639,26 +636,19 @@ class LLMToolAdapter:
                     logger.warning("Agent LLM rate-limited on %s: %s", model, e)
                     last_error = e
                     hit_rate_limit = True
-
-                    # Avoid blind backoff across different providers; cross-provider
-                    # fallback usually means different accounts/rate-limit buckets.
-                    should_backoff = (
-                        idx + 1 < len(models_to_try)
-                        and providers[idx] == providers[idx + 1]
-                    )
-                    if should_backoff:
-                        backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
-                        if timeout is not None and timeout > 0:
-                            remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
-                            if remaining_timeout > 0:
-                                time.sleep(min(backoff_sleep, remaining_timeout))
-                        else:
-                            time.sleep(backoff_sleep)
                     continue
                 if isinstance(e, _resolve_litellm_exception("ContextWindowExceededError")):
                     logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
                     last_error = e
                     continue
+                if not self._is_cross_model_fallback_error(e):
+                    logger.error(
+                        "Agent LLM non-fallbackable failure on %s (%s)",
+                        model,
+                        type(e).__name__,
+                    )
+                    last_error = e
+                    break
                 logger.warning("Agent LLM call failed with %s: %s", model, e)
                 last_error = e
                 continue
@@ -674,6 +664,20 @@ class LLMToolAdapter:
         if "/" in model:
             return model.split("/", 1)[0]
         return "openai"
+
+    @staticmethod
+    def _is_cross_model_fallback_error(exc: BaseException) -> bool:
+        """Reject errors that retrying with another model cannot safely repair."""
+        non_fallbackable = (
+            "AuthenticationError",
+            "PermissionDeniedError",
+            "BadRequestError",
+            "ContentPolicyViolationError",
+        )
+        return not any(
+            isinstance(exc, _resolve_litellm_exception(name))
+            for name in non_fallbackable
+        )
 
     def _call_litellm_model(
         self,

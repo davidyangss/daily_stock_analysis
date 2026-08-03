@@ -177,3 +177,59 @@ def test_provider_loop_classifies_timeout_separately_from_immediate_failure() ->
     )
 
     assert [attempt.status for attempt in result.attempts] == ["timeout", "failed"]
+
+
+def test_provider_loop_retries_transient_error_before_fallback() -> None:
+    calls = 0
+
+    def flaky(_timeout: float) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise ConnectionError("connection reset")
+        return {"value": 1}
+
+    result = run_provider_loop(
+        [ProviderCall("flaky", flaky)],
+        initial={},
+        merge=lambda current, candidate, _provider: {**current, **candidate},
+        is_usable=bool,
+        is_complete=lambda value: "value" in value,
+        total_timeout_seconds=60,
+        provider_timeout_seconds=15,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+        retry_max_delay_seconds=0,
+    )
+
+    assert calls == 3
+    assert result.value == {"value": 1}
+    assert [attempt.status for attempt in result.attempts] == ["ok"]
+
+
+def test_provider_loop_does_not_retry_permanent_or_skipped_provider() -> None:
+    calls = 0
+
+    def invalid(_timeout: float) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        raise ValueError("invalid symbol")
+
+    result = run_provider_loop(
+        [
+            ProviderCall("disabled", skip_reason="disabled"),
+            ProviderCall("invalid", invalid),
+        ],
+        initial={},
+        merge=lambda current, candidate, _provider: {**current, **candidate},
+        is_usable=bool,
+        is_complete=lambda _value: False,
+        total_timeout_seconds=60,
+        provider_timeout_seconds=15,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+        retry_max_delay_seconds=0,
+    )
+
+    assert calls == 1
+    assert [attempt.status for attempt in result.attempts] == ["skipped", "failed"]

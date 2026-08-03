@@ -821,6 +821,8 @@ class Config:
     # --- Multi-channel LLM config (new) ---
     # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
     litellm_config_path: Optional[str] = None
+    # Validated LiteLLM Router options loaded from LITELLM_CONFIG.
+    litellm_router_settings: Dict[str, Any] = field(default_factory=dict)
     # Internal metadata: which config layer actually produced llm_model_list
     llm_models_source: str = "legacy_env"
     # LLM_CHANNELS: list of channel dicts, each with name/base_url/api_keys/models
@@ -1165,6 +1167,9 @@ class Config:
     provider_loop_timeout_seconds: float = 60.0
     provider_loop_total_timeout_seconds: float = 600.0
     provider_timeout_overrides: Dict[str, float] = field(default_factory=dict)
+    data_provider_max_attempts: int = 3
+    data_provider_retry_base_delay_seconds: float = 0.5
+    data_provider_retry_max_delay_seconds: float = 2.0
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -1477,12 +1482,14 @@ class Config:
         llm_blocks_legacy_fallback = False
         llm_blocked_hermes_routes: List[str] = []
         llm_model_list: List[Dict[str, Any]] = []
+        litellm_router_settings: Dict[str, Any] = {}
 
         # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
         if litellm_config_path:
             llm_model_list = cls._parse_litellm_yaml(litellm_config_path)
             if llm_model_list:
                 llm_models_source = "litellm_config"
+                litellm_router_settings = cls._parse_litellm_router_settings(litellm_config_path)
 
         # Priority 2: LLM_CHANNELS (env var based channel config)
         if not llm_model_list:
@@ -1769,6 +1776,7 @@ class Config:
             llm_blocks_legacy_fallback=llm_blocks_legacy_fallback,
             llm_blocked_hermes_routes=llm_blocked_hermes_routes,
             llm_model_list=llm_model_list,
+            litellm_router_settings=litellm_router_settings,
             llm_prompt_cache_telemetry_enabled=parse_env_bool(
                 os.getenv("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
                 default=True,
@@ -2218,6 +2226,18 @@ class Config:
             provider_timeout_overrides=parse_provider_timeout_overrides(
                 os.getenv('PROVIDER_TIMEOUT_OVERRIDES')
             ),
+            data_provider_max_attempts=parse_env_int(
+                os.getenv('DATA_PROVIDER_MAX_ATTEMPTS'), 3,
+                field_name='DATA_PROVIDER_MAX_ATTEMPTS', minimum=1, maximum=10,
+            ),
+            data_provider_retry_base_delay_seconds=parse_env_float(
+                os.getenv('DATA_PROVIDER_RETRY_BASE_DELAY_SECONDS'), 0.5,
+                field_name='DATA_PROVIDER_RETRY_BASE_DELAY_SECONDS', minimum=0.0, maximum=60.0,
+            ),
+            data_provider_retry_max_delay_seconds=parse_env_float(
+                os.getenv('DATA_PROVIDER_RETRY_MAX_DELAY_SECONDS'), 2.0,
+                field_name='DATA_PROVIDER_RETRY_MAX_DELAY_SECONDS', minimum=0.0, maximum=300.0,
+            ),
             realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
             circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
             enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
@@ -2427,6 +2447,49 @@ class Config:
 
         _logger.info(f"LITELLM_CONFIG: loaded {len(model_list)} model deployment(s) from {path}")
         return model_list
+
+    @classmethod
+    def _parse_litellm_router_settings(cls, config_path: str) -> Dict[str, Any]:
+        """Load the supported Router settings from a LiteLLM YAML config."""
+        import logging
+
+        _logger = logging.getLogger(__name__)
+        try:
+            import yaml
+        except ImportError:
+            return {}
+
+        path = Path(config_path)
+        if not path.is_absolute():
+            path = Path(__file__).parent.parent / path
+        if not path.exists():
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = (yaml.safe_load(f) or {}).get("router_settings", {})
+        except Exception as exc:
+            _logger.warning("Failed to parse LITELLM_CONFIG router_settings: %s", exc)
+            return {}
+        if not isinstance(raw, dict):
+            _logger.warning("LITELLM_CONFIG: router_settings must be a mapping")
+            return {}
+
+        settings: Dict[str, Any] = {}
+        strategy = raw.get("routing_strategy")
+        if isinstance(strategy, str) and strategy.strip():
+            settings["routing_strategy"] = strategy.strip()
+
+        retries = raw.get("num_retries")
+        if isinstance(retries, int) and not isinstance(retries, bool) and retries >= 0:
+            settings["num_retries"] = retries
+        allowed_fails = raw.get("allowed_fails")
+        if isinstance(allowed_fails, int) and not isinstance(allowed_fails, bool) and allowed_fails >= 0:
+            settings["allowed_fails"] = allowed_fails
+        for key in ("timeout", "cooldown_time"):
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                settings[key] = value
+        return settings
 
     @classmethod
     def _parse_llm_channels(cls, channels_str: str) -> List[Dict[str, Any]]:
@@ -3645,6 +3708,15 @@ class Config:
 
 
 # === 便捷的配置访问函数 ===
+def get_litellm_router_kwargs(config: "Config") -> Dict[str, Any]:
+    """Return validated Router kwargs while preserving legacy defaults."""
+    return {
+        "routing_strategy": "simple-shuffle",
+        "num_retries": 2,
+        **dict(getattr(config, "litellm_router_settings", {}) or {}),
+    }
+
+
 def get_config() -> Config:
     """获取全局配置实例的快捷方式"""
     return Config.get_instance()
