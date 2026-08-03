@@ -21,7 +21,7 @@ import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable, Optional, List, Tuple, Dict, Any
+from typing import Callable, Optional, List, Tuple, Dict, Any, Sequence
 
 import pandas as pd
 import numpy as np
@@ -704,6 +704,7 @@ class DataFetcherManager:
         end_date: Optional[str],
         days: int,
         min_rows: Optional[int],
+        preferred_adjustments: Optional[Sequence[str]] = None,
     ) -> Optional[Tuple[pd.DataFrame, str]]:
         try:
             requested_end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
@@ -722,6 +723,7 @@ class DataFetcherManager:
                 symbol=stock_code,
                 start_date=requested_start,
                 end_date=requested_end,
+                preferred_adjustments=preferred_adjustments,
             )
             required = max(1, int(min_rows if min_rows is not None else days))
             if frame.empty or len(frame) < required:
@@ -733,6 +735,7 @@ class DataFetcherManager:
                 "[日线缓存命中] %s market=%s adjustment=%s rows=%s",
                 stock_code, market, adjustment, len(frame),
             )
+            frame.attrs["adjustment"] = adjustment
             record_provider_run(
                 data_type="daily_data",
                 provider="market_data_db",
@@ -1725,6 +1728,7 @@ class DataFetcherManager:
         end_date: Optional[str] = None,
         days: int = 30,
         min_rows: Optional[int] = None,
+        preferred_adjustments: Optional[Sequence[str]] = None,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -1742,6 +1746,7 @@ class DataFetcherManager:
             end_date: 结束日期
             days: 获取天数
             min_rows: 可选的最低记录数；当前来源不足时继续尝试后续来源
+            preferred_adjustments: 可选的复权口径优先序；只调整本次 A 股请求的来源顺序
             
         Returns:
             Tuple[DataFrame, str]: (数据, 成功的数据源名称)
@@ -1777,6 +1782,7 @@ class DataFetcherManager:
             end_date=end_date,
             days=days,
             min_rows=min_rows,
+            preferred_adjustments=preferred_adjustments,
         )
         if cached is not None:
             return cached
@@ -1808,7 +1814,17 @@ class DataFetcherManager:
                 name = token_to_fetcher.get(token)
                 if name is not None and name not in rank:
                     rank[name] = len(rank)
-            fetchers.sort(key=lambda fetcher: (rank.get(fetcher.name, len(rank)), fetcher.priority))
+            adjustment_rank = {
+                str(value): index
+                for index, value in enumerate(preferred_adjustments or ())
+            }
+            fetchers.sort(key=lambda fetcher: (
+                adjustment_rank.get(
+                    self._daily_adjustment(fetcher.name), len(adjustment_rank),
+                ),
+                rank.get(fetcher.name, len(rank)),
+                fetcher.priority,
+            ))
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:

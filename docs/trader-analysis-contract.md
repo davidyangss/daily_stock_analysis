@@ -587,7 +587,8 @@ LLM trace 必须记录实际 message list、invocation params、response、token
 - issue code 在 API/Trace 中保持稳定英文标识；`data_quality` Markdown 与 Web 展示中文名称和原始 message。
 - 所有正式角色报告以中文为主；TradingAgents 固定字段名和枚举采用中文在前、英文对照在后，技术缩写、证券代码、来源专名和 URL 不翻译。
 - 市场技术报告在正式展示层移除首个中文 Markdown 标题之前可明确识别的英文分析草稿；所有角色报告本地化固定英文交易建议，原始 LLM 响应仍保留在 Trace 中供审计。
-- 市场技术报告根据 canonical 日线 `adjustment` 自动显示复权口径；`none` 明确标注不复权，并提示历史指标可能与前复权行情软件存在差异。工具返回的日线和指标 CSV 同时携带该字段，避免模型猜测口径。
+- A 股市场日线优先选择 `qfq`/`auto_adjust` 来源；复权来源不可用时才回退 `none`。canonical `pct_change` 必须由同一序列的相邻 `close` 重算，provider 涨跌幅只作为审计字段保留。`none` 或复权口径未知的序列中，provider 涨跌幅与相邻收盘收益显著背离时记录 `unadjusted_corporate_action_break`，指标窗口从最后断点重新开始；不足 200 个连续交易日时 `close_200_sma` 返回不可用，禁止跨断点计算或解释长期压力。
+- 发布边界根据 canonical 日线和快照复核当月低点反弹幅度、明确端点的低点反弹幅度、DIF 零轴穿越日期及止损参考价关系；发现不一致时确定性更正并产生 `report_market_fact_corrected`。资金净流入/净流出数值必须能在本次 evidence ledger 中找到来源；无来源数值从公开报告移除并产生 `report_unsupported_fund_flow_removed`。新闻自然周、最近 N 个交易日和单日资金流属于不同窗口，不得合并为同一指标。
 - Sell 交易计划的 `Entry Price` 公开为“执行价格（Execution Price）”；方向非法的上方 `Stop Loss` 公开为“重新评估价格（Reassessment Price）”，同时在数据质量报告披露修正，不改写原始 Trace。
 - News/Sentiment 报告附交叉核验证据摘要。
 - `data_evidence` 保存完整标准化输入和实际消费标记。

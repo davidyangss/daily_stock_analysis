@@ -68,6 +68,39 @@ def test_toolkit_uses_dif_double_macd_histogram_and_wilder_rsi() -> None:
     assert boll_upper["boll_ub"].iloc[-1] != pytest.approx(sample_boll_upper.iloc[-1])
 
 
+def test_toolkit_never_computes_indicators_across_unadjusted_break() -> None:
+    ledger = EvidenceLedger(
+        run_id="r", symbol="002595", trade_date=date(2026, 7, 31), created_at=datetime.now(),
+    )
+    before = [
+        {"trade_date": f"2025-{month:02d}-{day:02d}", "close": 80 + day, "high": 81 + day, "low": 79 + day}
+        for month in range(1, 6) for day in range(1, 29)
+    ]
+    after_dates = pd.bdate_range("2026-05-11", periods=60)
+    after = [
+        {"trade_date": value.date().isoformat(), "close": 50 + index / 10, "high": 51 + index / 10, "low": 49 + index / 10}
+        for index, value in enumerate(after_dates)
+    ]
+    ledger.add(EvidenceEnvelope(
+        evidence_id="daily", run_id="r", capability="market_daily_bars", symbol="002595",
+        trade_date=date(2026, 7, 31), fetched_at=datetime.now(), status=EvidenceStatus.PARTIAL,
+        provider="fixture", payload={
+            "adjustment": "none",
+            "rows": before + after,
+            "corporate_action_breaks": [{"trade_date": "2026-05-11"}],
+            "indicator_start_date": "2026-05-11",
+        },
+    ))
+    toolkit = DsaTradingAgentsToolkit(ledger)
+
+    assert "insufficient bars" in toolkit.get_indicators(
+        "002595", "close_200_sma", "2026-07-31",
+    )
+    macd = pd.read_csv(StringIO(toolkit.get_indicators("002595", "macd", "2026-07-31")))
+    assert macd["indicator_start_date"].unique().tolist() == ["2026-05-11"]
+    assert macd["trade_date"].min() >= "2026-05-11"
+
+
 def test_sentiment_prefetch_preserves_domestic_news_and_community_sources() -> None:
     trace = []
     ledger = EvidenceLedger(run_id="r", symbol="600519", trade_date=date(2026, 7, 31), created_at=datetime.now())

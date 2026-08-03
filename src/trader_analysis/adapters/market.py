@@ -62,17 +62,29 @@ class MarketEvidenceAdapter:
         issues: List[EvidenceIssue] = []
         provider = None
         try:
-            daily_result = self.manager.get_daily_data(
-                symbol,
-                end_date=trade_date.isoformat(),
-                days=max(260, min_daily_bars),
+            daily_kwargs = {
+                "end_date": trade_date.isoformat(),
+                "days": max(260, min_daily_bars),
                 # Let DataFetcherManager continue through the configured
                 # domestic provider chain when an early source has only a
                 # shallow series.  The manager still returns the deepest
                 # partial result when every source is below this preference,
                 # so newly listed stocks remain eligible for degraded grading.
-                min_rows=min_daily_bars,
-            )
+                "min_rows": min_daily_bars,
+                # Cross-corporate-action indicators require one continuous
+                # price basis.  Prefer adjusted A-share providers for this
+                # analysis domain while retaining the normal fallback chain.
+                "preferred_adjustments": ("qfq", "auto_adjust"),
+            }
+            try:
+                daily_result = self.manager.get_daily_data(symbol, **daily_kwargs)
+            except TypeError as exc:
+                if "preferred_adjustments" not in str(exc):
+                    raise
+                # Preserve the documented injection seam for older custom
+                # managers while still applying the continuity guard below.
+                daily_kwargs.pop("preferred_adjustments")
+                daily_result = self.manager.get_daily_data(symbol, **daily_kwargs)
             # DataFetcherManager returns (frame, provider).  Keep accepting a
             # bare frame as well so injected adapters and older integrations
             # remain compatible.
@@ -124,6 +136,16 @@ class MarketEvidenceAdapter:
         adjustment = str(df.attrs.get("adjustment") or DataFetcherManager._daily_adjustment(provider or ""))
         if adjustment not in {"qfq", "auto_adjust", "none"}:
             adjustment = "unknown"
+        price_change_result = self._normalize_price_changes(
+            rows, adjustment=adjustment, provider=provider,
+        )
+        issues.extend(price_change_result["issues"])
+        corporate_action_breaks = price_change_result["corporate_action_breaks"]
+        indicator_start_date = (
+            corporate_action_breaks[-1]["trade_date"]
+            if corporate_action_breaks
+            else (rows[0]["trade_date"] if rows else None)
+        )
 
         if len(rows) < 3:
             issues.append(EvidenceIssue(
@@ -159,6 +181,9 @@ class MarketEvidenceAdapter:
 
         payload = {
             "adjustment": adjustment,
+            "price_change_basis": "derived_from_adjacent_close",
+            "corporate_action_breaks": corporate_action_breaks,
+            "indicator_start_date": indicator_start_date,
             "rows": rows,
             "first_date": rows[0]["trade_date"] if rows else None,
             "last_date": rows[-1]["trade_date"] if rows else None,
@@ -395,9 +420,80 @@ class MarketEvidenceAdapter:
                 "close": close,
                 "volume_shares": int(volume or 0),
                 "amount_cny": _to_float(row[columns["amount"]]) if "amount" in columns else None,
-                "pct_change": self._pct_change(row, columns),
+                "pct_change": None,
+                "provider_pct_change": self._pct_change(row, columns),
             })
         return {"rows": rows, "provider": provider, "issues": issues}
+
+    def _normalize_price_changes(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        adjustment: str,
+        provider: Optional[str],
+    ) -> Dict[str, Any]:
+        """Derive returns from canonical closes and identify unadjusted breaks.
+
+        Provider percentage fields sometimes apply a corporate-action-adjusted
+        previous close even when the returned OHLC series is unadjusted.  They
+        are retained for audit, but never exposed as the canonical return.
+        """
+        issues: List[EvidenceIssue] = []
+        mismatches: List[Dict[str, Any]] = []
+        corporate_action_breaks: List[Dict[str, Any]] = []
+        previous_close: Optional[float] = None
+        for row in rows:
+            close = _to_float(row.get("close"))
+            derived = (
+                ((close / previous_close) - 1) * 100
+                if close is not None and previous_close not in (None, 0)
+                else None
+            )
+            row["pct_change"] = round(derived, 6) if derived is not None else None
+            provider_change = _to_float(row.get("provider_pct_change"))
+            if (
+                derived is not None
+                and provider_change is not None
+                and abs(derived - provider_change) > 0.05
+            ):
+                mismatch = {
+                    "trade_date": row.get("trade_date"),
+                    "derived_pct_change": round(derived, 6),
+                    "provider_pct_change": provider_change,
+                }
+                mismatches.append(mismatch)
+                if adjustment in {"none", "unknown"} and abs(derived - provider_change) >= 5:
+                    corporate_action_breaks.append(mismatch)
+            previous_close = close
+
+        if mismatches:
+            issues.append(EvidenceIssue(
+                code="daily_pct_change_recomputed",
+                severity=EvidenceIssueSeverity.WARNING,
+                capability="market_daily_bars",
+                provider=provider,
+                message=(
+                    "数据源涨跌幅与标准化相邻收盘价不一致；canonical pct_change 已按相邻收盘价重算"
+                ),
+                observed={"mismatch_count": len(mismatches), "samples": mismatches[:5]},
+                retriable=False,
+            ))
+        if corporate_action_breaks:
+            issues.append(EvidenceIssue(
+                code="unadjusted_corporate_action_break",
+                severity=EvidenceIssueSeverity.WARNING,
+                capability="market_daily_bars",
+                provider=provider,
+                message=(
+                    "不复权日线存在疑似除权断点；跨断点技术指标已禁用，仅使用最后断点后的连续区间"
+                ),
+                observed={"breaks": corporate_action_breaks},
+                retriable=False,
+            ))
+        return {
+            "issues": issues,
+            "corporate_action_breaks": corporate_action_breaks,
+        }
 
     def _pct_change(self, row: pd.Series, columns: Dict[str, Any]) -> Optional[float]:
         if "pct_chg" in columns:

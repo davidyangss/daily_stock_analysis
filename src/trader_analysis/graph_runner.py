@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from src.trader_analysis.config import TraderAnalysisConfig
+from src.trader_analysis.market_facts import build_market_facts
 from src.trader_analysis.schemas.instrument import InstrumentContext
 from src.trader_analysis.toolkit import DsaTradingAgentsToolkit
 
@@ -29,28 +30,42 @@ def _proposal_price_rules(toolkit: DsaTradingAgentsToolkit) -> str:
     snapshot_payload = getattr(snapshot, "payload", None) or {}
     daily_payload = getattr(daily, "payload", None) or {}
 
-    def number(value: Any) -> Optional[float]:
-        try:
-            return float(value) if value not in (None, "") else None
-        except (TypeError, ValueError):
-            return None
-
-    current_price = number(snapshot_payload.get("last_price"))
-    rows = [row for row in daily_payload.get("rows", []) if isinstance(row, dict)]
-    recent_lows = [number(row.get("low")) for row in rows[-5:]]
-    recent_lows = [value for value in recent_lows if value is not None]
-    closes = [number(row.get("close")) for row in rows[-200:]]
-    closes = [value for value in closes if value is not None]
-    five_day_low = min(recent_lows) if recent_lows else None
-    sma_200 = sum(closes) / 200 if len(closes) == 200 else None
+    facts = build_market_facts(daily_payload, snapshot_payload)
+    current_price = facts["current_price"]
+    five_day_low = (facts.get("five_day_low") or {}).get("value")
+    month_low = facts.get("calendar_month_low") or {}
+    sma_200 = facts["sma_200"]
 
     def display(value: Optional[float]) -> str:
         return "不可用" if value is None else f"{value:.4f}".rstrip("0").rstrip(".")
 
+    month_low_rule = ""
+    if month_low:
+        month_low_rule = (
+            f"当月盘中最低价={display(month_low.get('value'))} CNY"
+            f"（{month_low.get('trade_date')}），从该低点到当前价的确定性涨幅="
+            f"{display(month_low.get('return_to_current_pct'))}%；"
+        )
+    sma_rule = (
+        f"200日简单移动平均线={display(sma_200)} CNY。"
+        if sma_200 is not None
+        else "200日简单移动平均线=不可用（连续口径历史不足），不得据此判断长期压力或折溢价。"
+    )
+    macd_cross = facts.get("macd_zero_cross_date") or "未确认"
+    continuity_rule = ""
+    if facts.get("corporate_action_breaks"):
+        continuity_rule = (
+            f"不复权序列存在除权断点，所有指标只允许使用 {facts.get('indicator_start_date')} 及之后的连续区间；"
+        )
     return (
         f"本次已核验价位证据：当前价格={display(current_price)} CNY；"
         f"最近5个交易日最低价={display(five_day_low)} CNY；"
-        f"200日简单移动平均线={display(sma_200)} CNY。"
+        f"{month_low_rule}{sma_rule}"
+        f"DIF最近一次由非正转正日期={macd_cross}。"
+        f"{continuity_rule}"
+        "所有涨跌幅必须同时写明起止日期、价格字段和起止价格；区间涨跌幅不得与区间最低价反弹幅度混写。"
+        "不得引用本次 canonical evidence 中不存在的资金流数值；自然周、最近N个交易日和单日资金流必须分别标明"
+        "来源与窗口，不得直接合并或互相替代。"
         "A股普通股按多头现货语义处理：Sell 表示减仓或退出多头，不表示开立空头；"
         "Sell 提案中的 entry_price 是卖出执行参考价，不是新增长仓成本。"
         "stop_loss 仅表示剩余多头仓位的下行退出价，必须严格低于已核验当前价，"

@@ -20,6 +20,8 @@ const displayLabels: Record<string, string> = {
   queued: '已排队', collecting_evidence: '收集数据', running_graph: '生成分析', persisting: '保存结果',
   graph_running: '多角色分析',
   provider_error: '数据源调用失败', provider_empty: '数据源未返回数据', provider_invalid_payload: '数据源返回异常数据',
+  daily_pct_change_recomputed: '日线涨跌幅口径已统一', unadjusted_corporate_action_break: '不复权日线存在除权断点',
+  report_market_fact_corrected: '报告行情事实已纠正', report_unsupported_fund_flow_removed: '无证据资金流数值已移除',
   insufficient_daily_history: '历史日线不足', identity_mismatch: '证券代码不匹配', verified_snapshot_unavailable: '无法确认价格快照',
   historical_fundamentals_not_point_in_time: '历史基本面数据不满足时点要求',
   historical_news_not_point_in_time: '历史新闻数据不满足时点要求',

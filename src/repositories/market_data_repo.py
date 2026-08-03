@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import pandas as pd
 
@@ -123,6 +123,7 @@ class MarketDataRepository:
         symbol: str,
         start_date: date,
         end_date: date,
+        preferred_adjustments: Optional[Sequence[str]] = None,
     ) -> tuple[pd.DataFrame, Optional[str]]:
         """Return one internally consistent adjustment series, never a mixed one."""
         with self._connect() as connection:
@@ -139,7 +140,19 @@ class MarketDataRepository:
             ).fetchall()
         if not candidates:
             return pd.DataFrame(), None
-        adjustment = str(candidates[0]["adjustment"])
+        preference = {
+            str(value): index
+            for index, value in enumerate(preferred_adjustments or ())
+        }
+        ranked_candidates = sorted(
+            enumerate(candidates),
+            key=lambda item: (
+                preference.get(str(item[1]["adjustment"]), len(preference)),
+                -int(item[1]["row_count"]),
+                item[0],
+            ),
+        )
+        adjustment = str(ranked_candidates[0][1]["adjustment"])
         return self.load_daily_bars(
             market=market,
             symbol=symbol,

@@ -191,8 +191,14 @@ def _clean_cell(value: Any) -> str:
 
 def _market_adjustment_disclosure(ledger: EvidenceLedger) -> str:
     envelope = ledger.envelopes.get("market_daily_bars")
-    adjustment = str(((envelope.payload or {}).get("adjustment") if envelope else None) or "unknown")
+    payload = (envelope.payload or {}) if envelope else {}
+    adjustment = str(payload.get("adjustment") or "unknown")
     note = _MARKET_ADJUSTMENT_NOTES.get(adjustment, _MARKET_ADJUSTMENT_NOTES["unknown"])
+    if payload.get("corporate_action_breaks"):
+        note += (
+            f" 已检测到除权断点，跨断点指标不可用；技术指标仅使用 "
+            f"{payload.get('indicator_start_date') or '最后断点'} 及之后的连续价格区间。"
+        )
     return f"> 数据口径（adjustment=`{adjustment}`）：{note}"
 
 

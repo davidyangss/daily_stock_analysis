@@ -39,6 +39,7 @@ def test_daily_bars_accepts_manager_frame_provider_tuple() -> None:
         end_date="2026-07-30",
         days=260,
         min_rows=30,
+        preferred_adjustments=("qfq", "auto_adjust"),
     )
 
 
@@ -100,6 +101,42 @@ def test_new_listing_short_history_degrades_without_blocking() -> None:
     assert evidence.payload["trading_days"] == 3
     assert [issue.code for issue in evidence.issues] == ["limited_daily_history"]
     assert evidence.issues[0].severity.value == "warning"
+
+
+def test_unadjusted_corporate_action_recomputes_return_and_bounds_indicators() -> None:
+    frame = pd.DataFrame({
+        "date": pd.to_datetime(["2026-05-08", "2026-05-11", "2026-05-12"]),
+        "open": [87.1, 59.5, 59.22],
+        "high": [87.1, 60.3, 59.47],
+        "low": [83.36, 58.5, 57.42],
+        "close": [86.27, 59.21, 58.14],
+        "volume": [1000, 1200, 900],
+        "pct_chg": [-1.2364, 0.6802, -1.8071],
+    })
+    manager = Mock()
+    manager.get_daily_data.return_value = (frame, "TushareFetcher")
+
+    evidence = MarketEvidenceAdapter(manager).fetch_daily_bars(
+        run_id="corporate-action",
+        symbol="002595",
+        trade_date=date(2026, 5, 12),
+        min_daily_bars=3,
+    )
+
+    rows = evidence.payload["rows"]
+    assert rows[1]["pct_change"] == -31.36664
+    assert rows[1]["provider_pct_change"] == 0.6802
+    assert evidence.payload["indicator_start_date"] == "2026-05-11"
+    assert evidence.payload["corporate_action_breaks"] == [{
+        "trade_date": "2026-05-11",
+        "derived_pct_change": -31.36664,
+        "provider_pct_change": 0.6802,
+    }]
+    assert [issue.code for issue in evidence.issues] == [
+        "daily_pct_change_recomputed",
+        "unadjusted_corporate_action_break",
+    ]
+    assert evidence.status == EvidenceStatus.PARTIAL
 
 
 def _daily_envelope_for_snapshot() -> EvidenceEnvelope:

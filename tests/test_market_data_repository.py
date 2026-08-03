@@ -72,6 +72,27 @@ def test_repository_never_persists_today_and_keeps_adjustments_separate(tmp_path
     assert float(unadjusted.iloc[0]["close"]) == 20.0
 
 
+def test_repository_honors_requested_adjustment_preference(tmp_path) -> None:
+    repository = MarketDataRepository(tmp_path / "market_data.db")
+    repository.upsert_historical_bars(
+        _frame(53.24), market="cn", symbol="002595", adjustment="qfq",
+        provider="AkshareFetcher", before_date=date.today(),
+    )
+    repository.upsert_historical_bars(
+        _frame(71.18), market="cn", symbol="002595", adjustment="none",
+        provider="TushareFetcher", before_date=date.today(),
+    )
+
+    frame, adjustment = repository.load_best_daily_bars(
+        market="cn", symbol="002595",
+        start_date=date(2026, 1, 1), end_date=date.today(),
+        preferred_adjustments=("qfq", "auto_adjust"),
+    )
+
+    assert adjustment == "qfq"
+    assert float(frame.iloc[0]["close"]) == 53.24
+
+
 def test_manager_fetches_persists_then_reads_historical_window_from_cache(tmp_path) -> None:
     dates = pd.bdate_range(end="2026-07-30", periods=35)
     frame = pd.DataFrame({

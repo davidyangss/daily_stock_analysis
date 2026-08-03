@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 import pandas as pd
 
 from src.trader_analysis.schemas.evidence import EvidenceEnvelope, EvidenceLedger, EvidenceStatus
+from src.trader_analysis.market_facts import continuous_indicator_rows
 
 
 def _json(value: Any) -> str:
@@ -70,12 +71,16 @@ class DsaTradingAgentsToolkit:
             columns={"volume_shares": "volume", "amount_cny": "amount"}
         )
         output.insert(1, "adjustment", str(payload.get("adjustment") or "unknown"))
+        output.insert(
+            2, "indicator_start_date",
+            str(payload.get("indicator_start_date") or rows[0].get("trade_date") or "unknown"),
+        )
         return output.to_csv(index=False)
 
     def get_indicators(self, ticker: str, indicator: str, curr_date: str, look_back_days: int = 30) -> str:
         self._require_symbol(ticker)
         payload = self._envelope("market_daily_bars").payload or {}
-        rows = list(payload.get("rows") or [])
+        rows = continuous_indicator_rows(payload)
         frame = pd.DataFrame(rows)
         if frame.empty or "close" not in frame:
             return "NO_DATA_AVAILABLE: verified daily bars are unavailable."
@@ -114,6 +119,10 @@ class DsaTradingAgentsToolkit:
             return f"NO_DATA_AVAILABLE: unsupported deterministic indicator {indicator}."
         output = pd.DataFrame({"trade_date": frame["trade_date"], indicator: values}).dropna().tail(max(1, look_back_days))
         output.insert(1, "adjustment", str(payload.get("adjustment") or "unknown"))
+        output.insert(
+            2, "indicator_start_date",
+            str(payload.get("indicator_start_date") or frame["trade_date"].iloc[0]),
+        )
         return output.to_csv(index=False) if not output.empty else "NO_DATA_AVAILABLE: insufficient bars for indicator."
 
     def get_verified_market_snapshot(self, ticker: str, curr_date: str) -> str:

@@ -193,6 +193,39 @@ def test_proposal_guard_preserves_valid_downside_stop_loss() -> None:
     assert issues == []
 
 
+def test_orchestrator_removes_unsupported_fund_flow_before_publication(tmp_path: Path) -> None:
+    class UnsupportedFlowGraphRunner:
+        def run(self, **kwargs):
+            return ({
+                "risk_debate_state": {
+                    "conservative_history": "近5日资金净流入4618.66万元，承接改善。",
+                },
+                "final_trade_decision": "持有",
+            }, "持有")
+
+    run = TraderAnalysisOrchestrator(
+        config=config(tmp_path),
+        market_adapter=MarketAdapter(),
+        context_adapter=ContextAdapter(),
+        graph_runner=UnsupportedFlowGraphRunner(),
+    ).run(
+        run_id="unsupported-flow",
+        symbol="600519",
+        trade_date=date(2026, 7, 31),
+        emit=lambda *_args: None,
+        is_cancelled=lambda: False,
+    )
+
+    report = next(item for item in run.reports if item.kind == "conservative_analyst")
+    assert "4618.66" not in report.content
+    assert "数值未经本次证据核验" in report.content
+    assert run.analysis_status is not None and run.analysis_status.value == "degraded"
+    assert run.metadata["fact_guard_corrections"] == 1
+    assert [issue.code for issue in run.quality.warnings] == [
+        "report_unsupported_fund_flow_removed",
+    ]
+
+
 def test_orchestrator_stops_before_evidence_when_stock_name_is_unresolved(tmp_path: Path) -> None:
     class UnknownNameManager:
         def get_a_share_name_local_then_iwencai(self, symbol: str):

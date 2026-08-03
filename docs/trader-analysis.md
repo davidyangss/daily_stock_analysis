@@ -97,7 +97,7 @@ pip install "git+https://github.com/davidyangss/TradingAgents.git@ab0909306075e4
 
 - Market、News、Fundamentals Analyst 与对应 ToolNode 使用同一组 run-scoped DSA 工具对象。
 - 日线、确定性指标、快照、新闻、情绪和财务均先进入 canonical evidence ledger；阻断问题不会作为正常工具文本进入 Graph。
-- 日线与技术指标工具通过 `adjustment` 字段向模型明确传递复权口径；市场技术报告会自动展示该口径。使用不复权日线时，报告提示历史指标值可能因分红除权而与前复权行情软件存在差异，避免把口径差异误判为计算错误。
+- 交易员分析的 A 股日线优先选择 `qfq`/`auto_adjust` 连续价格来源，日线与技术指标工具通过 `adjustment` 字段向模型明确传递复权口径。只有复权来源不可用时才回退不复权日线；此时 canonical `pct_change` 一律按相邻收盘价重算，并保留 provider 原始涨跌幅供审计。若两者显著背离，系统标记疑似除权断点，所有指标只使用最后断点后的连续区间；连续历史不足时 200 日线明确不可用，不再把除权断点解释为长期空头压力。
 - News 使用 DSA 新闻 provider/fallback 链；Sentiment 保留原版“新闻机构视角 + 快速零售观点 + 长文讨论”的多源逻辑，但数据改为国内新闻/公告以及 SearXNG 定向检索的雪球、知乎、微博观点。站点限定会在返回后再校验域名；无社区结果时独立降级，不用新闻伪装成社区观点。DSA 兼容构建通过可选 provider-neutral `sections` 读取真实国内标签和字段，并把外部证据放入独立 human evidence message；未注入 sections 时原版 Yahoo/StockTwits/Reddit 路径不变。
 - 新闻和社区条目明确区分 `search_provider`、`publisher/source`、`source_domain`、`published_date` 与 `fetched_at`。工具按请求日期窗口过滤有日期条目，无日期条目只作为低置信度运行时证据保留。Sentiment 检索窗口固定为 7 天。
 - 新闻分析和情绪分析的正式报告都会追加确定性证据表，逐条展示摘要、来源、内容时间、采集时间和原文链接；provider 未返回内容时间或链接时明确标记“未提供”，不自行推断。
@@ -105,7 +105,7 @@ pip install "git+https://github.com/davidyangss/TradingAgents.git@ab0909306075e4
 - 开启 `TRADER_ANALYSIS_BROWSER_READER_ENABLED` 后，News 和 Sentiment 会对各自搜索结果中最多 `MAX_PAGES` 条允许域名页面调用后端 `agent-browser read`，把受 `MAX_CHARS` 限制的公开正文摘录写入 canonical evidence。仅允许 HTTPS、配置白名单域名和公网 DNS 解析；不使用登录态、Cookie、点击、下载、JavaScript 执行或持久会话。浏览器超时、域名未允许或正文不可读时 fail-open 保留搜索摘要，报告的“证据类型”会区分“浏览器正文摘录”与“搜索摘要（正文不可用）”。
 - 当分析日期为今天或最近已完成交易日时，新闻通过 DSA `SearchService` 的现有 provider/fallback 链按运行时间检索；最近交易日的运行时新闻标记为 `runtime_news_not_point_in_time` 并降级披露。最近交易日的基本面也明确标记为运行时聚合快照。更早历史日期的财务记录只有在 `announcement_date/available_at <= trade_date` 时才准入，并清除当前估值、资金、龙虎榜、机构和板块等运行时 blocks；缺公告可得日的数据不回填历史上下文。
 - 问财无日期营收/利润会结合 `*来源说明` 识别报告期、公告日、业绩预告和区间中值口径；若同一响应混有正式报告字段，系统显式补查对应定期报告并把预告作为独立 supplemental report，禁止把 H1 预告与 Q1 现金流、毛利率跨期计算。前十大股东优先使用带报告期的直接人数统计；只有当前排名 1—10 完整时才允许从明细计数，截断明细不再输出部分人数或数量合计。
-- Trader 会收到已核验当前价、近 5 个交易日最低价和 200 日均线及 A 股多头现货约束。Sell 表示减仓/退出，公开报告将其 `Entry Price` 展示为执行价格；若模型把不低于当前价的上方重评位写入 `Stop Loss`，发布边界会改列为重新评估价格、产生 `trader_stop_loss_reclassified` 警告并将运行降级，原始输出仍保留在 Trace。
+- 所有角色会收到已核验当前价、近 5 个交易日/当月最低价及其确定性反弹幅度、连续口径 200 日线、DIF 最近一次由非正转正日期和 A 股多头现货约束。涨跌幅必须标明起止日期、价格字段和端点，区间涨幅不得与区间最低价反弹幅度混写；资金流必须来自本次 canonical evidence 并保留来源/窗口语义。发布边界会纠正低点涨幅、DIF 穿越日期和价位比较关系，移除无证据资金流数值并将运行降级，原始模型输出仍保留在 Trace。Sell 表示减仓/退出，公开报告将其 `Entry Price` 展示为执行价格；若模型把不低于当前价的上方重评位写入 `Stop Loss`，发布边界会改列为重新评估价格并产生 `trader_stop_loss_reclassified` 警告。
 - 新上市标的截至分析日已有至少 3 个有效交易日、但少于建议历史长度时，以 `limited_daily_history` 降级继续分析；报告必须明确短历史限制，不得把不成熟的技术指标解释成高置信度趋势。少于 3 个有效交易日仍阻断分析。
 - 历史分析具备日线与核验价格且无阻断问题时，即使新闻、财务和情绪因 point-in-time 约束不可用，也会以 `degraded` 运行 Graph 并生成各角色报告；缺失能力必须保留在数据质量报告中，不得使用当前数据回填历史上下文。
 - 运行、分角色报告、Debug 事件和脱敏后的 LLM/工具 trace 以 `run_id` 为外键持久化到 `TRADER_ANALYSIS_RESULTS_DIR/trader_analysis.sqlite3`；同时继续双写 `runs/<run_id>/` 下的 JSON 文件用于兼容回滚，升级时会把旧 JSON 任务懒迁移到 SQLite，不写入 `analysis_history`。

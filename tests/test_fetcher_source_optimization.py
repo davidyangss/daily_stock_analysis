@@ -195,6 +195,30 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             DataFetcherManager.reset_daily_source_health()
 
     @patch("src.config.get_config")
+    def test_daily_request_can_prefer_adjusted_source_for_trader_indicators(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(daily_source_priority="tushare,akshare")
+        unadjusted = MagicMock()
+        unadjusted.name = "TushareFetcher"
+        unadjusted.priority = 0
+        unadjusted.get_daily_data.return_value = _make_daily_df()
+        adjusted = MagicMock()
+        adjusted.name = "AkshareFetcher"
+        adjusted.priority = 1
+        adjusted.get_daily_data.return_value = _make_daily_df()
+
+        manager = DataFetcherManager(fetchers=[unadjusted, adjusted])
+        _df, source = manager.get_daily_data(
+            "000001",
+            start_date="2026-05-01",
+            end_date="2026-05-08",
+            preferred_adjustments=("qfq", "auto_adjust"),
+        )
+
+        self.assertEqual(source, "AkshareFetcher")
+        adjusted.get_daily_data.assert_called_once()
+        unadjusted.get_daily_data.assert_not_called()
+
+    @patch("src.config.get_config")
     def test_manager_enables_longbridge_with_oauth_client_id(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             tushare_token="",
@@ -342,7 +366,6 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         self.assertEqual(source, "AkshareFetcher")
         akshare.get_daily_data.assert_called_once()
         longbridge.get_daily_data.assert_not_called()
-
 
     @patch("src.config.get_config")
     def test_daily_source_health_skips_repeatedly_failing_source(self, mock_get_config):

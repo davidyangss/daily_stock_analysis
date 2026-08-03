@@ -28,6 +28,7 @@ from src.trader_analysis.graph_runner import (
     TradingAgentsGraphRunner,
 )
 from src.trader_analysis.proposal_guard import guard_trader_proposal
+from src.trader_analysis.fact_guard import guard_report_facts
 from src.trader_analysis.reporting import reports_from_state
 from src.trader_analysis.toolkit import DsaTradingAgentsToolkit
 
@@ -330,17 +331,25 @@ class TraderAnalysisOrchestrator:
             emit("run.cancelled", {})
             return run
 
+        state, fact_issues = guard_report_facts(state, ledger)
         state, proposal_issues = guard_trader_proposal(state, ledger)
-        if proposal_issues:
-            ledger.warnings.extend(proposal_issues)
+        publication_issues = [*fact_issues, *proposal_issues]
+        if publication_issues:
+            ledger.warnings.extend(publication_issues)
             ledger.overall_status = evaluate_overall_status(ledger)  # type: ignore[assignment]
             run.quality.overall_status = ledger.overall_status
             run.quality.warnings = ledger.warnings
-            run.metadata["proposal_guard_corrections"] = len(proposal_issues)
+            if fact_issues:
+                run.metadata["fact_guard_corrections"] = sum(
+                    int((issue.observed or {}).get("count", 1))
+                    for issue in fact_issues
+                )
+            if proposal_issues:
+                run.metadata["proposal_guard_corrections"] = len(proposal_issues)
             emit("quality.updated", {
-                "capability": "trader_plan",
+                "capability": "report_publication" if fact_issues else "trader_plan",
                 "status": "degraded",
-                "issue_codes": [issue.code for issue in proposal_issues],
+                "issue_codes": [issue.code for issue in publication_issues],
             })
 
         for report in reports_from_state(
