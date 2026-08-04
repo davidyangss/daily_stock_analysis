@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 交易员各角色在可恢复的上游模型错误后按全局 LiteLLM fallback 顺序切换，并为工具、纯文本和结构化输出记录真实模型轨迹
 - [改进] 数据源调用对连接、超时、限流和临时服务错误执行有界抖动重试，并在禁用、缺配置或能力不匹配时直接跳过
 - [修复] Agent 跨模型 fallback 不再叠加 Router 已负责的限流退避，并区分不可通过换模型恢复的请求错误
 - [修复] LiteLLM YAML 的 router_settings 经校验后传入分析与 Agent Router，避免 routing_strategy 和重试次数被运行时硬编码覆盖

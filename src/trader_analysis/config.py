@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src.trader_analysis.model_routes import ModelRoute, ROLE_DEFAULTS, resolve_model_routes
+from src.trader_analysis.model_routes import (
+    ModelRoute,
+    ROLE_DEFAULTS,
+    resolve_model_route_list,
+    resolve_model_routes,
+)
 
 
 def _model_provider(model: str) -> str:
@@ -46,6 +51,7 @@ class TraderAnalysisConfig:
     deep_model: str
     llm_backend_url: str
     model_routes: dict[str, ModelRoute] = field(default_factory=dict)
+    fallback_model_routes: tuple[ModelRoute, ...] = ()
     trace_content_max_chars: int = 65536
     browser_reader_enabled: bool = False
     browser_reader_command: str = "agent-browser"
@@ -89,6 +95,12 @@ class TraderAnalysisConfig:
             legacy_provider=provider,
             legacy_base_url=str(getattr(config, "trader_analysis_llm_backend_url", "") or ""),
         ) if quick_raw and deep_raw else {}
+        fallback_routes = resolve_model_route_list(
+            list(getattr(config, "llm_model_list", []) or []),
+            list(getattr(config, "litellm_fallback_models", []) or []),
+            legacy_provider=provider,
+            legacy_base_url=str(getattr(config, "trader_analysis_llm_backend_url", "") or ""),
+        )
         return cls(
             enabled=bool(getattr(config, "trader_analysis_enabled", False)),
             max_concurrency=int(getattr(config, "trader_analysis_max_concurrency", 1)),
@@ -113,6 +125,7 @@ class TraderAnalysisConfig:
                 or _model_base_url(config, quick_raw)
             ),
             model_routes=routes,
+            fallback_model_routes=fallback_routes,
             trace_content_max_chars=int(getattr(config, "trader_analysis_trace_content_max_chars", 65536)),
             browser_reader_enabled=bool(getattr(config, "trader_analysis_browser_reader_enabled", False)),
             browser_reader_command=str(getattr(

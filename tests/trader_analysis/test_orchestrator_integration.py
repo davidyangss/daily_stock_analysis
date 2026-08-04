@@ -6,12 +6,15 @@ from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from langchain_core.runnables import Runnable
+
 from src.trader_analysis.config import TraderAnalysisConfig
 from src.trader_analysis.evidence.ledger import create_ledger
 from src.trader_analysis.trace import RoleTraceCallback, sanitize_trace
 from src.trader_analysis.orchestrator import TraderAnalysisOrchestrator
 from src.trader_analysis.graph_runner import TradingAgentsGraphRunner, _tradingagents_provider
 from src.trader_analysis.identity.resolver import resolve_instrument
+from src.trader_analysis.llm_fallback import TraderFallbackLLM, is_trader_fallback_error
 from src.trader_analysis.model_routes import ModelRoute
 from src.trader_analysis.proposal_guard import guard_trader_proposal
 from src.trader_analysis.persistence.repository import TraderAnalysisRepository
@@ -839,6 +842,175 @@ def test_config_resolves_independent_role_deployments(tmp_path: Path) -> None:
     assert mapped.model_routes["research_manager"].deployment_name == "deep-route"
     assert mapped.model_routes["trader"].deployment_name == "quick-route"
     assert "api_key" not in mapped.model_routes["trader"].public_dict()
+
+
+def test_config_reuses_global_litellm_fallbacks_for_trader_roles(tmp_path: Path) -> None:
+    app_config = SimpleNamespace(
+        trader_analysis_enabled=True,
+        trader_analysis_results_dir=str(tmp_path),
+        trader_analysis_checkpoint_db=str(tmp_path / "checkpoint.sqlite"),
+        trader_analysis_quick_model="quick-route",
+        trader_analysis_deep_model="deep-route",
+        litellm_fallback_models=["fallback-route", "fallback-route"],
+        llm_model_list=[
+            {"model_name": "quick-route", "litellm_params": {"model": "openai/gpt-fast"}},
+            {"model_name": "deep-route", "litellm_params": {"model": "openai/gpt-deep"}},
+            {
+                "model_name": "fallback-route",
+                "litellm_params": {
+                    "model": "openai/deepseek-v4-pro",
+                    "api_base": "https://fallback.example/v1",
+                },
+            },
+        ],
+    )
+
+    mapped = TraderAnalysisConfig.from_app_config(app_config)
+
+    assert [route.deployment_name for route in mapped.fallback_model_routes] == ["fallback-route"]
+    assert mapped.fallback_model_routes[0].model == "deepseek-v4-pro"
+    assert mapped.fallback_model_routes[0].base_url == "https://fallback.example/v1"
+
+
+class _FakeRunnable(Runnable):
+    def __init__(self, *, result=None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.bind_tools_calls = 0
+        self.structured_calls = 0
+
+    def invoke(self, input, config=None, **kwargs):
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    def bind_tools(self, tools, **kwargs):
+        self.bind_tools_calls += 1
+        return self
+
+    def with_structured_output(self, schema, **kwargs):
+        self.structured_calls += 1
+        return self
+
+
+class _BadRequestError(Exception):
+    status_code = 400
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.body = {"error": {"code": code, "message": message}}
+
+
+def test_trader_llm_falls_back_for_structured_upstream_service_unavailable() -> None:
+    failure = _BadRequestError(
+        "upstream stream ended without a terminal response event",
+        code="service_unavailable",
+    )
+    primary = _FakeRunnable(error=failure)
+    fallback = _FakeRunnable(result="fallback-result")
+    transitions = []
+    llm = TraderFallbackLLM(
+        primary,
+        [fallback],
+        on_fallback=lambda current, target, exc: transitions.append((current, target, exc)),
+    )
+
+    assert llm.invoke("prompt") == "fallback-result"
+    assert transitions == [(0, 1, failure)]
+    assert is_trader_fallback_error(failure) is True
+
+
+def test_trader_llm_does_not_fallback_for_real_bad_request() -> None:
+    failure = _BadRequestError("messages must be an array", code="invalid_request_error")
+    fallback = _FakeRunnable(result="must-not-run")
+    llm = TraderFallbackLLM(_FakeRunnable(error=failure), [fallback])
+
+    try:
+        llm.invoke("prompt")
+    except _BadRequestError as exc:
+        assert exc is failure
+    else:
+        raise AssertionError("real bad request must not use another model")
+
+    assert is_trader_fallback_error(failure) is False
+
+
+def test_trader_llm_preserves_tool_and_structured_output_fallbacks() -> None:
+    failure = TimeoutError("primary timed out")
+    primary = _FakeRunnable(error=failure)
+    fallback = _FakeRunnable(result="fallback-result")
+    llm = TraderFallbackLLM(primary, [fallback])
+
+    assert llm.bind_tools([{"name": "lookup"}]).invoke("prompt") == "fallback-result"
+    assert llm.with_structured_output(dict).invoke("prompt") == "fallback-result"
+    assert (primary.bind_tools_calls, fallback.bind_tools_calls) == (1, 1)
+    assert (primary.structured_calls, fallback.structured_calls) == (1, 1)
+
+
+def test_graph_runner_builds_role_fallback_clients_and_emits_transition(monkeypatch, tmp_path: Path) -> None:
+    primary_route = ModelRoute(
+        deployment_name="primary-route",
+        provider="openai",
+        model="primary-model",
+        base_url="https://primary.example/v1",
+    )
+    fallback_route = ModelRoute(
+        deployment_name="fallback-route",
+        provider="openai",
+        model="fallback-model",
+        base_url="https://fallback.example/v1",
+    )
+    failure = _BadRequestError(
+        "upstream stream ended without a terminal response event",
+        code="service_unavailable",
+    )
+    built = []
+
+    def create_client(**kwargs):
+        built.append(kwargs)
+        runnable = (
+            _FakeRunnable(error=failure)
+            if kwargs["model"] == "primary-model"
+            else _FakeRunnable(result="fallback-result")
+        )
+        return SimpleNamespace(get_llm=lambda: runnable)
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client", create_client)
+    events = []
+    runner = TradingAgentsGraphRunner(replace(
+        config(tmp_path),
+        model_routes={"fundamentals": primary_route},
+        fallback_model_routes=(fallback_route,),
+    ))
+
+    clients = runner._build_role_llms(lambda **values: events.append(values))
+
+    assert clients["fundamentals"].invoke("prompt") == "fallback-result"
+    assert [item["model"] for item in built] == ["primary-model", "fallback-model"]
+    assert events == [{
+        "event_type": "llm.fallback",
+        "stage": "fundamentals",
+        "role": "fundamentals",
+        "deployment_name": "fallback-route",
+        "provider": "openai",
+        "model": "fallback-model",
+        "payload": {
+            "from": {
+                "deployment_name": "primary-route",
+                "provider": "openai",
+                "model": "primary-model",
+            },
+            "to": {
+                "deployment_name": "fallback-route",
+                "provider": "openai",
+                "model": "fallback-model",
+            },
+            "error": {
+                "type": "_BadRequestError",
+                "message": "upstream stream ended without a terminal response event",
+            },
+        },
+    }]
 
 
 def test_trace_sanitizes_secrets_and_truncates_content() -> None:

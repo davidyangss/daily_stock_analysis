@@ -208,31 +208,76 @@ class TradingAgentsGraphRunner:
         if not self.config.model_routes:
             raise TradingAgentsConfigurationError("TradingAgents LiteLLM deployments are not configured")
         from tradingagents.llm_clients import create_llm_client
-        from src.trader_analysis.trace import RoleTraceCallback
+        from src.trader_analysis.llm_fallback import TraderFallbackLLM
+        from src.trader_analysis.trace import RoleTraceCallback, sanitize_trace
 
         clients: dict[str, Any] = {}
         usage_stock_code = getattr(self, "_usage_stock_code", None)
-        for role, route in self.config.model_routes.items():
-            client_provider = _tradingagents_provider(route.provider, route.base_url)
+        emit = trace_emit or (lambda **_values: None)
+
+        def route_key(route: Any) -> tuple[str, str, str, str]:
+            return (route.deployment_name, route.provider, route.model, route.base_url)
+
+        def build_client(role: str, route: Any) -> Any:
             kwargs: dict[str, Any] = {
                 "timeout": self.config.provider_timeout_seconds,
                 "max_retries": 2,
+                "callbacks": [RoleTraceCallback(
+                    role=role,
+                    route=route,
+                    emit=emit,
+                    content_limit=self.config.trace_content_max_chars,
+                    stock_code=usage_stock_code,
+                )],
             }
             if route.api_key:
                 kwargs["api_key"] = route.api_key
-            kwargs["callbacks"] = [RoleTraceCallback(
-                role=role,
-                route=route,
-                emit=trace_emit or (lambda **_values: None),
-                content_limit=self.config.trace_content_max_chars,
-                stock_code=usage_stock_code,
-            )]
-            clients[role] = create_llm_client(
-                provider=client_provider,
+            return create_llm_client(
+                provider=_tradingagents_provider(route.provider, route.base_url),
                 model=route.model,
                 base_url=route.base_url or None,
                 **kwargs,
             ).get_llm()
+
+        for role, primary_route in self.config.model_routes.items():
+            primary_key = route_key(primary_route)
+            routes = (primary_route, *(
+                route for route in self.config.fallback_model_routes
+                if route_key(route) != primary_key
+            ))
+            role_clients = tuple(build_client(role, route) for route in routes)
+            if len(role_clients) == 1:
+                clients[role] = role_clients[0]
+                continue
+
+            def on_fallback(
+                from_index: int,
+                to_index: int,
+                exc: BaseException,
+                *,
+                role: str = role,
+                routes: tuple[Any, ...] = routes,
+            ) -> None:
+                target = routes[to_index]
+                emit(
+                    event_type="llm.fallback",
+                    stage=role,
+                    role=role,
+                    deployment_name=target.deployment_name,
+                    provider=target.provider,
+                    model=target.model,
+                    payload=sanitize_trace({
+                        "from": routes[from_index].public_dict(),
+                        "to": target.public_dict(),
+                        "error": {"type": type(exc).__name__, "message": str(exc)},
+                    }, limit=self.config.trace_content_max_chars),
+                )
+
+            clients[role] = TraderFallbackLLM(
+                role_clients[0],
+                role_clients[1:],
+                on_fallback=on_fallback,
+            )
         return clients
 
 

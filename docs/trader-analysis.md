@@ -35,6 +35,7 @@ TRADER_ANALYSIS_MODEL_RESEARCH_MANAGER=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_MODEL_TRADER=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_MODEL_RISK_DEBATE=<LiteLLM deployment model_name，可选>
 TRADER_ANALYSIS_MODEL_PORTFOLIO_MANAGER=<LiteLLM deployment model_name，可选>
+LITELLM_FALLBACK_MODELS=<交易员角色共用的有序 fallback deployment，可选，逗号分隔>
 TRADER_ANALYSIS_TRACE_CONTENT_MAX_CHARS=65536
 TRADER_ANALYSIS_BROWSER_READER_ENABLED=false
 TRADER_ANALYSIS_BROWSER_READER_COMMAND=agent-browser
@@ -44,7 +45,9 @@ TRADER_ANALYSIS_BROWSER_READER_MAX_CHARS=12000
 TRADER_ANALYSIS_BROWSER_READER_ALLOWED_DOMAINS=xueqiu.com,zhihu.com,weibo.com,sse.com.cn,szse.cn,cninfo.com.cn,cnstock.com,eastmoney.com,sina.com.cn
 ```
 
-角色配置按 `model_name` 精确查找 DSA 已加载的 LiteLLM deployment，再使用其中的实际 `provider/model`、`api_base` 和凭据创建客户端。Market、Sentiment、News、Fundamentals、研究辩论、Research Manager、Trader、风险辩论和 Portfolio Manager 均可独立路由并允许跨 provider。留空角色继承 quick/deep 默认 deployment；deployment 不存在或不完整时任务返回 `configuration_error`，不会静默换模型。凭据只进入内存客户端，不进入请求、报告、trace 或持久化元数据。
+角色配置按 `model_name` 精确查找 DSA 已加载的 LiteLLM deployment，再使用其中的实际 `provider/model`、`api_base` 和凭据创建客户端。Market、Sentiment、News、Fundamentals、研究辩论、Research Manager、Trader、风险辩论和 Portfolio Manager 均可独立路由并允许跨 provider。留空角色继承 quick/deep 默认 deployment；deployment 不存在或不完整时任务返回 `configuration_error`，不会为配置错误静默换模型。凭据只进入内存客户端，不进入请求、报告、trace 或持久化元数据。
+
+每个角色继续以显式角色模型或 quick/deep 继承模型作为 primary，并复用 DSA 已解析的 `LITELLM_FALLBACK_MODELS` 作为有序跨模型 fallback，不新增交易员专用配置。只有连接/超时、限流、临时 5xx、结构化 `service_unavailable`、上游流在终止事件前中断或上下文容量不足等可恢复错误才切换；参数、鉴权、权限和内容策略错误直接失败。工具调用、纯文本和 structured output 使用相同顺序，primary 与 fallback 重复时自动去重。每次实际切换写入 `llm.fallback` Trace，后续 `llm.started/completed/failed` 记录真实 deployment 和模型。fallback 列表的显式值、自动推导和清理规则继续沿用全局 LLM 配置语义；若需完全恢复本功能变更前的单角色单模型行为，应回退本次交易员 fallback 代码，而不是假设空值在所有配置模式下都表示禁用。
 
 回滚方式：将 `TRADER_ANALYSIS_ENABLED=false` 后重启服务。该开关只拒绝新交易员分析运行，不影响现有股票分析、问股、选股、回测或历史记录。
 
@@ -111,7 +114,7 @@ pip install "git+https://github.com/davidyangss/TradingAgents.git@ab0909306075e4
 - 运行、分角色报告、Debug 事件和脱敏后的 LLM/工具 trace 以 `run_id` 为外键持久化到 `TRADER_ANALYSIS_RESULTS_DIR/trader_analysis.sqlite3`；同时继续双写 `runs/<run_id>/` 下的 JSON 文件用于兼容回滚，升级时会把旧 JSON 任务懒迁移到 SQLite，不写入 `analysis_history`。
 - 完成后的 Web 列表显示报告正文摘要，报告区以 Markdown 展示市场、情绪、新闻、基本面、多空研究、交易员、三类风险分析、组合经理、最终决策、投资建议、完整数据证据清单和数据质量。证据清单包含所有标准化日线/快照/基本面/新闻/社区 payload、provider、publisher、业务时点、采集时点和工具实际消费标记；数据质量的 API/Trace 保留英文稳定 code，Web 与 Markdown 报告展示中文名称和说明。正式角色报告采用中文主显示并为固定结构化术语保留英文对照，例如“评级（Rating）：低配（Underweight）”；MACD、RSI、PE、PB、ROE、ATR、VWMA、股票代码、数据源名和 URL 等必要缩写或专名保持原样。报告层会清理模型泄漏在首个中文标题之前的可识别英文分析草稿，并本地化上游固定英文交易建议，原始 LLM 响应仍完整保留在 Trace 中供审计。`GET /api/v1/trader-analysis/runs/{run_id}/download/markdown` 下载同一份合并中文 Markdown 报告。证据不足、Graph 失败或 Graph 内取消的运行也保留已加载证据清单。
 - Web 的“交易员分析任务”列表会读取上述独立任务域；每个列表项可独立刷新，取消运行中的任务前必须由用户确认。数据质量、完整分析报告与运行流依次展示且默认折叠；运行流仅在展开后加载与该任务关联的轨迹并渲染完整流程图，展示证据预检、四类并行分析、研究辩论与裁决、交易计划、风险辩论、组合决策和报告输出状态；页面不再额外展示与运行流重复的角色流程摘要。运行流、完整分析报告、Debug 日志和 LLM 交互消息的展开标题在页面滚动时吸附于全局标题栏下方。Debug 日志仍按需加载。脱敏后的 LLM 与工具步骤按一次调用展示详细输入、输出、耗时或错误；完成后折叠同一次调用的“开始”记录，普通任务生命周期事件只保留在 Debug 日志中。当前任务列表只包含交易员分析，不合并现有策略分析任务。
-- trace 记录阶段、角色 LLM 请求/响应、deployment 路由、工具参数/结果、实际消费的 evidence、耗时和错误；敏感键及常见 token 会脱敏，单项内容按配置截断，且不会混入正式报告。
+- trace 记录阶段、角色 LLM 请求/响应、deployment 路由、跨模型 fallback、工具参数/结果、实际消费的 evidence、耗时和错误；敏感键及常见 token 会脱敏，单项内容按配置截断，且不会混入正式报告。
 - 每次成功完成的角色 LLM 调用会按实际返回的 Prompt、Completion 和总 Token 写入全局模型用量统计，调用类型为“交易员分析”，并在 Web“用量”页面参与时间范围、模型和调用类型聚合；未返回用量信息的供应商调用不会生成虚假的零 Token 记录。
 - checkpoint 与 decision memory 保持原版语义；历史决策收益回看不访问 yfinance。当前尚未加载与个股同日期口径的国内 benchmark 日线，因此返回 `(None, None, None)` 保持 memory entry pending，避免用 `alpha=None` 触发上游格式化错误或把缺失 benchmark 当成零超额收益。
 - A 股全市场/宏观新闻当前没有独立 point-in-time envelope，`get_global_news` 明确返回不可用，不会把个股新闻冒充宏观背景。
