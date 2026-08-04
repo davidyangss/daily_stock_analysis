@@ -17,6 +17,7 @@ import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -193,6 +194,14 @@ class StockAnalysisPipeline:
     2. 协调数据获取、存储、搜索、分析、通知等模块
     3. 实现并发控制和异常处理
     """
+
+    # API reports must remain responsive even when deployment-wide provider
+    # budgets are raised for batch or scheduled analysis.  These caps apply
+    # only to optional fundamental and market-structure enrichment.
+    _API_FUNDAMENTAL_BUDGET_SECONDS = 30.0
+    _API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS = 10.0
+    _API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS = 45.0
+    _API_OPTIONAL_EVIDENCE_SLOTS = threading.BoundedSemaphore(2)
     
     def __init__(
         self,
@@ -447,12 +456,19 @@ class StockAnalysisPipeline:
                     market,
                     current_time=current_time,
                 )
+            self._emit_progress(17, f"{code}：正在准备可选大盘环境上下文")
             daily_market_context = self._load_daily_market_context(
                 market,
                 target_date=daily_market_target_date,
             )
 
-            self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
+            if daily_market_context is None:
+                self._emit_progress(
+                    18,
+                    f"{code}：大盘环境未按时就绪，已降级继续个股分析",
+                )
+            else:
+                self._emit_progress(18, f"{code}：大盘环境已就绪，正在获取行情与筹码数据")
             # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
             stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
@@ -516,36 +532,23 @@ class StockAnalysisPipeline:
             # Step 2.5: 基本面能力聚合（统一入口，异常降级）
             # - 失败时返回 partial/failed，不影响既有技术面/新闻链路
             # - 关闭开关时仍返回 not_supported 结构
-            fundamental_context = None
-            try:
-                fundamental_context = self.fetcher_manager.get_fundamental_context(
-                    code,
-                    budget_seconds=getattr(
-                        self.config,
-                        'fundamental_stage_timeout_seconds',
-                        FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
-                    ),
-                )
-            except Exception as e:
-                logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
-                fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
-
-            fundamental_context = self._attach_belong_boards_to_fundamental_context(
-                code,
+            (
                 fundamental_context,
-            )
-            fundamental_context = self._backfill_fundamental_valuation_from_realtime(
-                fundamental_context,
-                realtime_quote,
-            )
-            market_structure_context = self._build_market_structure_context(
+                market_structure_context,
+                optional_evidence_timed_out,
+            ) = self._load_optional_evidence_context(
                 code=code,
                 stock_name=stock_name,
                 market=market,
-                fundamental_context=fundamental_context,
+                realtime_quote=realtime_quote,
                 trade_date=daily_market_target_date,
                 market_phase_summary=market_phase_summary,
             )
+            if optional_evidence_timed_out:
+                self._emit_progress(
+                    40,
+                    f"{stock_name}：可选基本面数据超时，已保留部分结果并继续",
+                )
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:
@@ -1107,10 +1110,190 @@ class StockAnalysisPipeline:
 
         return enhanced
 
+    def _fundamental_stage_budget_seconds(self) -> float:
+        configured = getattr(
+            self.config,
+            "fundamental_stage_timeout_seconds",
+            FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
+        )
+        try:
+            budget = max(0.0, float(configured))
+        except (TypeError, ValueError):
+            budget = FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT
+        if getattr(self, "query_source", None) == "api":
+            return min(budget, self._API_FUNDAMENTAL_BUDGET_SECONDS)
+        return budget
+
+    def _build_optional_evidence_context(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: str,
+        realtime_quote: Any,
+        trade_date: Any,
+        market_phase_summary: Optional[Dict[str, Any]],
+        result_holder: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Build fail-open fundamental and market-structure enrichment."""
+        holder = result_holder if isinstance(result_holder, dict) else {}
+        deadline = None
+        if getattr(self, "query_source", None) == "api":
+            deadline = time.monotonic() + self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS
+        fundamental_budget = self._fundamental_stage_budget_seconds()
+        if deadline is not None:
+            fundamental_budget = min(
+                fundamental_budget,
+                max(0.0, deadline - time.monotonic()),
+            )
+        try:
+            fundamental_context = self.fetcher_manager.get_fundamental_context(
+                code,
+                budget_seconds=fundamental_budget,
+            )
+        except Exception as exc:
+            logger.warning("%s(%s) 基本面聚合失败: %s", stock_name, code, exc)
+            fundamental_context = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                str(exc),
+            )
+
+        fundamental_context = self._backfill_fundamental_valuation_from_realtime(
+            fundamental_context,
+            realtime_quote,
+        )
+        holder["fundamental_context"] = fundamental_context
+
+        fundamental_context = self._attach_belong_boards_to_fundamental_context(
+            code,
+            fundamental_context,
+            deadline=deadline,
+            provider_timeout_seconds=(
+                self._API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS
+                if deadline is not None else None
+            ),
+        )
+        fundamental_context = self._backfill_fundamental_valuation_from_realtime(
+            fundamental_context,
+            realtime_quote,
+        )
+        holder["fundamental_context"] = fundamental_context
+
+        if deadline is not None and time.monotonic() >= deadline:
+            market_structure_context = None
+        else:
+            market_structure_context = self._build_market_structure_context(
+                code=code,
+                stock_name=stock_name,
+                market=market,
+                fundamental_context=fundamental_context,
+                trade_date=trade_date,
+                market_phase_summary=market_phase_summary,
+            )
+        holder["market_structure_context"] = market_structure_context
+        return fundamental_context, market_structure_context
+
+    def _load_optional_evidence_context(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: str,
+        realtime_quote: Any,
+        trade_date: Any,
+        market_phase_summary: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], bool]:
+        """Bound optional evidence for API reports while preserving batch budgets."""
+        build_kwargs = {
+            "code": code,
+            "stock_name": stock_name,
+            "market": market,
+            "realtime_quote": realtime_quote,
+            "trade_date": trade_date,
+            "market_phase_summary": market_phase_summary,
+        }
+        if getattr(self, "query_source", None) != "api":
+            fundamental, structure = self._build_optional_evidence_context(**build_kwargs)
+            return fundamental, structure, False
+
+        if not self._API_OPTIONAL_EVIDENCE_SLOTS.acquire(blocking=False):
+            logger.warning(
+                "%s API 可选基本面生成槽位已占用，跳过并继续策略分析",
+                code,
+            )
+            failed = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                "api optional evidence worker pool exhausted",
+            )
+            return failed, None, True
+
+        completed = threading.Event()
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, BaseException] = {}
+        caller_context = copy_context()
+
+        def run() -> None:
+            try:
+                caller_context.run(
+                    self._build_optional_evidence_context,
+                    **build_kwargs,
+                    result_holder=result_holder,
+                )
+            except BaseException as exc:
+                error_holder["error"] = exc
+            finally:
+                self._API_OPTIONAL_EVIDENCE_SLOTS.release()
+                completed.set()
+
+        worker = threading.Thread(
+            target=run,
+            daemon=True,
+            name="api-optional-stock-evidence",
+        )
+        try:
+            worker.start()
+        except BaseException:
+            self._API_OPTIONAL_EVIDENCE_SLOTS.release()
+            raise
+        if not completed.wait(timeout=self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS):
+            logger.warning(
+                "%s API 可选基本面与市场结构超过整体截止时间 %.0f 秒，策略分析立即继续",
+                code,
+                self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS,
+            )
+            fundamental = result_holder.get("fundamental_context")
+            if not isinstance(fundamental, dict):
+                fundamental = self.fetcher_manager.build_failed_fundamental_context(
+                    code,
+                    "api optional evidence deadline exceeded",
+                )
+            return fundamental, None, True
+
+        error = error_holder.get("error")
+        if error is not None:
+            logger.warning("%s API 可选基本面生成失败，策略分析继续: %s", code, error)
+            fundamental = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                str(error),
+            )
+            return fundamental, None, False
+
+        fundamental = result_holder.get("fundamental_context")
+        if not isinstance(fundamental, dict):
+            fundamental = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                "invalid optional evidence context",
+            )
+        structure = result_holder.get("market_structure_context")
+        return fundamental, structure if isinstance(structure, dict) else None, False
+
     def _attach_belong_boards_to_fundamental_context(
         self,
         code: str,
         fundamental_context: Optional[Dict[str, Any]],
+        *,
+        deadline: Optional[float] = None,
+        provider_timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Attach A-share board membership as a top-level supplemental field.
@@ -1134,7 +1317,13 @@ class StockAnalysisPipeline:
         existing_board_list = list(existing_boards) if isinstance(existing_boards, list) else None
         if existing_board_list:
             enriched_context["belong_boards"] = existing_board_list
-            self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
+            self._attach_concept_rankings_to_fundamental_context(
+                code,
+                enriched_context,
+                market,
+                deadline=deadline,
+                provider_timeout_seconds=provider_timeout_seconds,
+            )
             return enriched_context
 
         boards_block = enriched_context.get("boards")
@@ -1156,14 +1345,31 @@ class StockAnalysisPipeline:
 
         boards: List[Dict[str, Any]] = []
         try:
-            raw_boards = self.fetcher_manager.get_belong_boards(code)
+            budget_kwargs: Dict[str, float] = {}
+            if deadline is not None:
+                remaining = max(0.0, deadline - time.monotonic())
+                budget_kwargs["total_timeout_seconds"] = remaining
+                budget_kwargs["provider_timeout_seconds"] = min(
+                    remaining,
+                    provider_timeout_seconds
+                    if provider_timeout_seconds is not None else remaining,
+                )
+            elif provider_timeout_seconds is not None:
+                budget_kwargs["provider_timeout_seconds"] = provider_timeout_seconds
+            raw_boards = self.fetcher_manager.get_belong_boards(code, **budget_kwargs)
             if isinstance(raw_boards, list):
                 boards = raw_boards
         except Exception as e:
             logger.debug("%s attach belong_boards failed (fail-open): %s", code, e)
 
         enriched_context["belong_boards"] = boards or existing_board_list or []
-        self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
+        self._attach_concept_rankings_to_fundamental_context(
+            code,
+            enriched_context,
+            market,
+            deadline=deadline,
+            provider_timeout_seconds=provider_timeout_seconds,
+        )
         return enriched_context
 
     @staticmethod
@@ -1233,12 +1439,23 @@ class StockAnalysisPipeline:
         code: str,
         enriched_context: Dict[str, Any],
         market: str,
+        *,
+        deadline: Optional[float] = None,
+        provider_timeout_seconds: Optional[float] = None,
     ) -> None:
         """Attach concept/theme rankings for A-share related-board signals."""
         if market != "cn" or isinstance(enriched_context.get("concept_boards"), dict):
             return
 
-        top_concepts, bottom_concepts = self._get_concept_rankings_for_market(market)
+        total_timeout_seconds = (
+            max(0.0, deadline - time.monotonic())
+            if deadline is not None else None
+        )
+        top_concepts, bottom_concepts = self._get_concept_rankings_for_market(
+            market,
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
+        )
 
         concept_data: Dict[str, Any] = {
             "top": top_concepts,
@@ -1257,6 +1474,9 @@ class StockAnalysisPipeline:
     def _get_concept_rankings_for_market(
         self,
         market: str,
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Fetch market-wide concept rankings once per pipeline run."""
         if market != "cn":
@@ -1293,10 +1513,23 @@ class StockAnalysisPipeline:
             top_concepts: List[Dict[str, Any]] = []
             bottom_concepts: List[Dict[str, Any]] = []
             try:
+                budget_kwargs: Dict[str, float] = {}
+                if provider_timeout_seconds is not None:
+                    budget_kwargs["provider_timeout_seconds"] = min(
+                        max(0.0, provider_timeout_seconds),
+                        max(0.0, total_timeout_seconds)
+                        if total_timeout_seconds is not None
+                        else max(0.0, provider_timeout_seconds),
+                    )
+                if total_timeout_seconds is not None:
+                    budget_kwargs["total_timeout_seconds"] = max(
+                        0.0,
+                        total_timeout_seconds,
+                    )
                 if service is None:
                     fetch_rankings = getattr(self.fetcher_manager, "get_concept_rankings", None)
                     if callable(fetch_rankings):
-                        rankings = fetch_rankings(5)
+                        rankings = fetch_rankings(5, **budget_kwargs)
                         if isinstance(rankings, tuple) and len(rankings) == 2:
                             raw_top, raw_bottom = rankings
                             if isinstance(raw_top, list):
@@ -1304,7 +1537,10 @@ class StockAnalysisPipeline:
                             if isinstance(raw_bottom, list):
                                 bottom_concepts = list(raw_bottom)
                 else:
-                    top_concepts, bottom_concepts = service.get_concept_rankings(5)
+                    top_concepts, bottom_concepts = service.get_concept_rankings(
+                        5,
+                        **budget_kwargs,
+                    )
             except Exception as e:
                 logger.debug("attach concept_rankings failed (fail-open): %s", e)
 
@@ -1399,9 +1635,14 @@ class StockAnalysisPipeline:
             )
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
             executor = build_agent_executor(self.config, requested_skills)
+            skill_manager = get_skill_manager(self.config)
             selected_strategy_descriptors = self._describe_selected_strategies(
                 requested_skills,
-                get_skill_manager(self.config),
+                skill_manager,
+            )
+            selected_strategy_requirements = self._describe_selected_strategy_requirements(
+                requested_skills,
+                skill_manager,
             )
 
             # Build initial context to avoid redundant tool calls
@@ -1558,6 +1799,12 @@ class StockAnalysisPipeline:
                             opinions=[],
                             invalid_records=[],
                             selected_strategies=selected_strategy_descriptors,
+                            selected_strategy_requirements=selected_strategy_requirements,
+                            joint_strategy_assessments=(
+                                dashboard.get("skill_assessment")
+                                if isinstance(dashboard.get("skill_assessment"), dict)
+                                else {}
+                            ),
                             overall_decision={
                                 "signal": getattr(result, "decision_type", None),
                                 "operation_advice": getattr(result, "operation_advice", None),
@@ -2048,6 +2295,26 @@ class StockAnalysisPipeline:
             skill = skill_manager.get(skill_id) if skill_manager is not None else None
             display_name = str(getattr(skill, "display_name", "") or skill_id).strip()
             result.append({"skill_id": skill_id, "skill_name": display_name})
+        return result
+
+    @staticmethod
+    def _describe_selected_strategy_requirements(
+        skill_ids: Optional[List[str]],
+        skill_manager: Any,
+    ) -> Dict[str, List[str]]:
+        """Project each selected strategy's declarative required tools."""
+        result: Dict[str, List[str]] = {}
+        for raw_skill_id in skill_ids or []:
+            skill_id = str(raw_skill_id or "").strip()
+            if not skill_id or skill_id in result:
+                continue
+            skill = skill_manager.get(skill_id) if skill_manager is not None else None
+            tools: List[str] = []
+            for raw_tool in getattr(skill, "required_tools", []) or []:
+                tool_name = str(raw_tool or "").strip()
+                if tool_name and tool_name not in tools:
+                    tools.append(tool_name)
+            result[skill_id] = tools
         return result
 
     @staticmethod

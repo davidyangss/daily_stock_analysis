@@ -250,6 +250,32 @@ def _safe_string_list(value: Any, *, limit: int = 20, item_limit: int = 300) -> 
     return result
 
 
+def _joint_assessment_fields(value: Any) -> tuple[str, List[str], List[str]]:
+    """Normalize model-authored joint assessments without leaking Python reprs."""
+    if not isinstance(value, Mapping):
+        return _safe_text(value, 1000), [], []
+
+    reasoning = _first_text(
+        value,
+        ("joint_assessment", "assessment", "conclusion", "reasoning", "summary"),
+    ) or ""
+    decisive_evidence = _safe_string_list(
+        value.get("decisive_evidence")
+        or value.get("evidence")
+        or value.get("key_points"),
+        item_limit=500,
+    )
+    limitations = _safe_string_list(
+        value.get("limitations") or value.get("data_limitations"),
+        item_limit=500,
+    )
+    if not limitations:
+        limitation = _safe_text(value.get("limitations") or value.get("data_limitations"), 500)
+        if limitation:
+            limitations = [limitation]
+    return reasoning, decisive_evidence, limitations
+
+
 def _safe_confidence(value: Any) -> float:
     if isinstance(value, bool):
         return 0.0
@@ -322,6 +348,7 @@ def _strategy_evaluation_from_opinion(opinion: Any) -> Optional[Dict[str, Any]]:
     evaluation: Dict[str, Any] = {
         "skill_id": skill_id,
         "status": "insufficient" if evidence_insufficient else "completed",
+        "evaluation_mode": "specialist",
         "reasoning": _safe_text(getattr(opinion, "reasoning", ""), 1000),
         "conditions_met": _safe_string_list(raw_data.get("conditions_met")),
         "conditions_missed": _safe_string_list(raw_data.get("conditions_missed")),
@@ -351,6 +378,7 @@ def _strategy_evaluation_from_invalid_record(record: Mapping[str, Any]) -> Optio
     evaluation: Dict[str, Any] = {
         "skill_id": skill_id,
         "status": status,
+        "evaluation_mode": "specialist",
         "reasoning": _safe_text(record.get("reasoning") or record.get("error"), 1000),
         "conditions_met": _safe_string_list(record.get("conditions_met")),
         "conditions_missed": _safe_string_list(record.get("conditions_missed")),
@@ -704,6 +732,16 @@ def merge_prefetched_evidence(
         return None
     items = [dict(item) for item in merged.get("items") or [] if isinstance(item, Mapping)]
     by_tool = {canonical_tool_name(item.get("tool")): item for item in items}
+    status_rank = {
+        "available": 6,
+        "fallback": 5,
+        "estimated": 4,
+        "stale": 3,
+        "partial": 2,
+        "missing": 1,
+        "fetch_failed": 0,
+        "not_supported": 0,
+    }
     for raw_item in prefetched_items:
         item = dict(raw_item)
         tool = canonical_tool_name(item.get("tool"))
@@ -714,6 +752,19 @@ def merge_prefetched_evidence(
             items.append(item)
             by_tool[tool] = item
             continue
+        incoming_status = str(item.get("status") or "missing")
+        existing_status = str(existing.get("status") or "missing")
+        if status_rank.get(incoming_status, -1) > status_rank.get(existing_status, -1):
+            existing["status"] = incoming_status
+            existing["partial"] = bool(item.get("partial"))
+            existing["cached"] = bool(item.get("cached"))
+            for stale_key in (
+                "missing_reason", "failure_attempts", "failure_source",
+                "failure_operation", "failure_reason",
+            ):
+                existing.pop(stale_key, None)
+        if item.get("prefetched"):
+            existing["prefetched"] = True
         existing_values = existing.get("key_values")
         if not isinstance(existing_values, dict):
             existing_values = {}
@@ -748,7 +799,84 @@ def merge_prefetched_evidence(
                 sources.append(source)
         existing["sources"] = sources[:10]
     merged["items"] = items[:60]
-    if not merged.get("strategy_requirements"):
+
+    requirements = [
+        dict(item)
+        for item in merged.get("strategy_requirements") or []
+        if isinstance(item, Mapping)
+    ]
+    limitations = [
+        str(item)
+        for item in merged.get("limitations") or []
+        if str(item).strip()
+    ]
+    requirement_skill_ids = {
+        str(item.get("skill_id") or "") for item in requirements if item.get("skill_id")
+    }
+    limitations = [
+        item
+        for item in limitations
+        if not any(item.startswith(f"{skill_id}: required data ") for skill_id in requirement_skill_ids)
+    ]
+    requirements_by_id: Dict[str, Dict[str, Any]] = {}
+    for requirement in requirements:
+        skill_id = str(requirement.get("skill_id") or "")
+        evidence_items: List[Dict[str, Any]] = []
+        missing_tools: List[str] = []
+        limited_tools: List[str] = []
+        for raw_evidence in requirement.get("evidence") or []:
+            if not isinstance(raw_evidence, Mapping):
+                continue
+            tool = canonical_tool_name(raw_evidence.get("tool"))
+            evidence_item = dict(by_tool.get(tool) or raw_evidence)
+            evidence_items.append(evidence_item)
+            evidence_status = str(evidence_item.get("status") or "missing")
+            if evidence_status in {"missing", "fetch_failed", "not_supported"}:
+                missing_tools.append(tool)
+            elif evidence_status in {"fallback", "partial", "estimated", "stale"}:
+                limited_tools.append(tool)
+        requirement["evidence"] = evidence_items
+        requirement["missing_tools"] = missing_tools
+        requirement["limited_tools"] = limited_tools
+        requirement["status"] = (
+            "insufficient" if missing_tools else ("limited" if limited_tools else "verified")
+        )
+        requirements_by_id[skill_id] = requirement
+        limitations.extend(
+            f"{skill_id}: required data unavailable ({tool})" for tool in missing_tools
+        )
+        limitations.extend(
+            f"{skill_id}: required data degraded ({tool})" for tool in limited_tools
+        )
+    merged["strategy_requirements"] = requirements
+    merged["limitations"] = list(dict.fromkeys(limitations))[:20]
+
+    evaluations = [
+        dict(item)
+        for item in merged.get("strategy_evaluations") or []
+        if isinstance(item, Mapping)
+    ]
+    for evaluation in evaluations:
+        if evaluation.get("evaluation_mode") != "joint":
+            continue
+        requirement_status = str(
+            requirements_by_id.get(str(evaluation.get("skill_id") or ""), {}).get("status")
+            or "unknown"
+        )
+        evaluation["evidence_status"] = requirement_status
+        evaluation["status"] = (
+            "insufficient" if requirement_status == "insufficient" else "completed"
+        )
+    merged["strategy_evaluations"] = evaluations
+
+    if requirements:
+        requirement_statuses = {item.get("status") for item in requirements}
+        merged["status"] = (
+            "insufficient"
+            if "insufficient" in requirement_statuses
+            else ("limited" if "limited" in requirement_statuses else "verified")
+        )
+    else:
         item_statuses = {item.get("status") for item in merged["items"]}
         if item_statuses & {"missing", "fetch_failed", "not_supported"}:
             merged["status"] = "insufficient"
@@ -787,6 +915,8 @@ def build_strategy_evidence_manifest(
     opinions: Iterable[Any],
     invalid_records: Iterable[Mapping[str, Any]],
     selected_strategies: Iterable[Any] = (),
+    selected_strategy_requirements: Optional[Mapping[str, Iterable[str]]] = None,
+    joint_strategy_assessments: Optional[Mapping[str, Any]] = None,
     overall_decision: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build the deterministic dashboard/report projection for data dependencies."""
@@ -795,6 +925,8 @@ def build_strategy_evidence_manifest(
     observed_items = [
         dict(item) for item in tool_evidence or [] if isinstance(item, Mapping)
     ]
+    selected = _normalize_selected_strategies(selected_strategies)
+    selected_by_id = {item["skill_id"]: item for item in selected}
     strategy_requirements: List[Dict[str, Any]] = []
     seen_skills: set[str] = set()
 
@@ -827,6 +959,84 @@ def build_strategy_evidence_manifest(
             "missing_tools": list(record.get("missing_required_tools") or []),
             "limited_tools": list(record.get("limited_required_tools") or []),
             "evidence": list(record.get("required_tool_evidence") or []),
+        })
+
+    # Standard/quick Agent modes evaluate requested strategies together instead
+    # of scheduling one SkillAgent per strategy. Preserve that distinction while
+    # still projecting every strategy's declarative required_tools against the
+    # runtime evidence actually collected by the joint analysis.
+    declared_requirements = (
+        selected_strategy_requirements
+        if isinstance(selected_strategy_requirements, Mapping)
+        else {}
+    )
+    observed_by_tool: Dict[str, Dict[str, Any]] = {}
+    status_rank = {
+        "available": 6,
+        "fallback": 5,
+        "estimated": 4,
+        "stale": 3,
+        "partial": 2,
+        "missing": 1,
+        "fetch_failed": 0,
+        "not_supported": 0,
+    }
+    for item in observed_items:
+        tool_name = canonical_tool_name(item.get("tool"))
+        if not tool_name:
+            continue
+        current = observed_by_tool.get(tool_name)
+        if current is None or status_rank.get(str(item.get("status")), -1) > status_rank.get(
+            str(current.get("status")), -1
+        ):
+            observed_by_tool[tool_name] = item
+
+    for selected_item in selected:
+        skill_id = selected_item["skill_id"]
+        if skill_id in seen_skills:
+            continue
+        required_tools: List[str] = []
+        for raw_tool in declared_requirements.get(skill_id, ()) or ():
+            tool_name = canonical_tool_name(raw_tool)
+            if tool_name and tool_name not in required_tools:
+                required_tools.append(tool_name)
+        if not required_tools:
+            continue
+
+        evidence_items: List[Dict[str, Any]] = []
+        missing_tools: List[str] = []
+        limited_tools: List[str] = []
+        for tool_name in required_tools:
+            observed = observed_by_tool.get(tool_name)
+            if observed is None:
+                observed = summarize_tool_result(
+                    tool_name,
+                    {
+                        "status": "missing",
+                        "missing_reason": "required_tool_not_called",
+                    },
+                    execution_success=True,
+                )
+            evidence_item = dict(observed)
+            evidence_items.append(evidence_item)
+            evidence_status = str(evidence_item.get("status") or "missing")
+            if evidence_status in {"missing", "fetch_failed", "not_supported"}:
+                missing_tools.append(tool_name)
+            elif evidence_status in {"fallback", "partial", "estimated", "stale"}:
+                limited_tools.append(tool_name)
+
+        requirement_status = (
+            "insufficient"
+            if missing_tools
+            else ("limited" if limited_tools else "verified")
+        )
+        seen_skills.add(skill_id)
+        strategy_requirements.append({
+            "skill_id": skill_id,
+            "status": requirement_status,
+            "missing_tools": missing_tools,
+            "limited_tools": limited_tools,
+            "evidence": evidence_items,
         })
 
     required_items: List[Dict[str, Any]] = []
@@ -875,8 +1085,6 @@ def build_strategy_evidence_manifest(
     ]
     items = [*required_items, *auxiliary_items]
 
-    selected = _normalize_selected_strategies(selected_strategies)
-    selected_by_id = {item["skill_id"]: item for item in selected}
     evaluations_by_id: Dict[str, Dict[str, Any]] = {}
     for opinion in opinion_list:
         evaluation = _strategy_evaluation_from_opinion(opinion)
@@ -888,6 +1096,38 @@ def build_strategy_evidence_manifest(
         evaluation = _strategy_evaluation_from_invalid_record(record)
         if evaluation is not None:
             evaluations_by_id[evaluation["skill_id"]] = evaluation
+
+    joint_assessments = (
+        joint_strategy_assessments
+        if isinstance(joint_strategy_assessments, Mapping)
+        else {}
+    )
+    requirements_by_id = {
+        str(item.get("skill_id") or ""): item
+        for item in strategy_requirements
+        if item.get("skill_id")
+    }
+    for selected_item in selected:
+        skill_id = selected_item["skill_id"]
+        if skill_id in evaluations_by_id:
+            continue
+        reasoning, conditions_met, conditions_missed = _joint_assessment_fields(
+            joint_assessments.get(skill_id)
+        )
+        if not reasoning:
+            continue
+        evidence_status = str(
+            requirements_by_id.get(skill_id, {}).get("status") or "unknown"
+        )
+        evaluations_by_id[skill_id] = {
+            "skill_id": skill_id,
+            "status": "insufficient" if evidence_status == "insufficient" else "completed",
+            "evaluation_mode": "joint",
+            "reasoning": reasoning,
+            "conditions_met": conditions_met,
+            "conditions_missed": conditions_missed,
+            "evidence_status": evidence_status,
+        }
 
     if not selected:
         derived_ids = [

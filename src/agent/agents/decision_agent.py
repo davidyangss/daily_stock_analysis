@@ -131,6 +131,13 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 ``market_conditions`` explains the impact of overall market environment on the recommendation.
 ``strongest_bullish_signal`` is the name of the strongest bullish signal (e.g., MACD golden cross, earnings surprise, low valuation).
 ``strongest_bearish_signal`` is the name of the strongest bearish signal (e.g., MA death cross, earnings warning, high valuation).
+
+When one or more trading skills are active, the nested ``dashboard`` object
+must include ``skill_assessment``. It must be an object keyed by every exact
+active skill ID. Each value must separately state that skill's joint assessment,
+the decisive evidence from the inputs required by that skill, and limitations
+caused by missing or degraded inputs. Do not omit an active skill, merge several
+skills into one assessment, or copy the overall conclusion as a substitute.
 """
         if report_language == "en":
             return prompt + """

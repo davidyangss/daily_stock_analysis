@@ -3502,3 +3502,46 @@ Sector text.
         assert violations == [], (
             f"market_analyzer.py still accesses private Analyzer attributes: {violations}"
         )
+
+
+def test_daily_market_context_uses_low_latency_optional_data_budgets() -> None:
+    from src.market_analyzer import MarketAnalyzer, MarketOverview
+
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.region = "cn"
+    analyzer.trigger_source = "daily_market_context"
+    analyzer.data_manager = MagicMock()
+    analyzer.data_manager.get_main_indices.return_value = []
+    analyzer.data_manager.get_market_stats.return_value = {}
+    analyzer.data_manager.get_sector_rankings.return_value = ([], [])
+    analyzer.data_manager.get_concept_rankings.return_value = ([], [])
+    overview = MarketOverview(date="2026-08-04")
+
+    analyzer._get_main_indices()
+    analyzer._get_market_statistics(overview)
+    analyzer._get_sector_rankings(overview)
+    analyzer._get_concept_rankings(overview)
+
+    budget = {
+        "provider_timeout_seconds": 10.0,
+        "total_timeout_seconds": 12.0,
+    }
+    analyzer.data_manager.get_main_indices.assert_called_once_with(
+        region="cn",
+        **budget,
+    )
+    analyzer.data_manager.get_market_stats.assert_called_once_with(
+        purpose="market_review:cn",
+        **budget,
+    )
+    analyzer.data_manager.get_sector_rankings.assert_called_once_with(5, **budget)
+    analyzer.data_manager.get_concept_rankings.assert_called_once_with(5, **budget)
+
+
+def test_standalone_market_review_keeps_default_provider_budgets() -> None:
+    from src.market_analyzer import MarketAnalyzer
+
+    analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+    analyzer.trigger_source = "api"
+
+    assert analyzer._context_provider_budget() == {}

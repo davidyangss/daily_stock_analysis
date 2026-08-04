@@ -126,6 +126,10 @@ class MarketAnalyzer:
     4. 搜索市场新闻
     5. 生成大盘复盘报告
     """
+
+    _CONTEXT_PROVIDER_TIMEOUT_SECONDS = 10.0
+    _CONTEXT_STAGE_TIMEOUT_SECONDS = 12.0
+    _CONTEXT_OVERVIEW_TIMEOUT_SECONDS = 48.0
     
     def __init__(
         self,
@@ -133,6 +137,7 @@ class MarketAnalyzer:
         analyzer=None,
         region: str = "cn",
         config: Optional[Any] = None,
+        trigger_source: str = "cli",
     ):
         """
         初始化大盘分析器
@@ -142,6 +147,7 @@ class MarketAnalyzer:
             analyzer: AI分析器实例（用于调用LLM）
             region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国
             config: 本次复盘使用的配置；未传时读取全局配置
+            trigger_source: 触发来源；daily_market_context 使用低延迟辅助预算
         """
         self.config = config or get_config()
         self.search_service = search_service
@@ -150,6 +156,22 @@ class MarketAnalyzer:
         self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
+        self.trigger_source = trigger_source
+
+    def _context_provider_budget(self) -> Dict[str, float]:
+        if getattr(self, "trigger_source", "cli") != "daily_market_context":
+            return {}
+        total_timeout = self._CONTEXT_STAGE_TIMEOUT_SECONDS
+        deadline = getattr(self, "_context_overview_deadline", None)
+        if isinstance(deadline, (int, float)):
+            total_timeout = min(total_timeout, max(0.0, deadline - time.monotonic()))
+        return {
+            "provider_timeout_seconds": min(
+                self._CONTEXT_PROVIDER_TIMEOUT_SECONDS,
+                total_timeout,
+            ),
+            "total_timeout_seconds": total_timeout,
+        }
 
     def _log_context(self) -> str:
         return f"component=market_review region={self.region}"
@@ -430,23 +452,33 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """
         today = datetime.now().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
-        
-        # 1. 获取主要指数行情（按 region 切换 A 股/美股）
-        overview.indices = self._get_main_indices()
+        previous_deadline = getattr(self, "_context_overview_deadline", None)
+        if self.trigger_source == "daily_market_context":
+            self._context_overview_deadline = (
+                time.monotonic() + self._CONTEXT_OVERVIEW_TIMEOUT_SECONDS
+            )
 
-        # 2. 获取涨跌统计（A 股有，美股无等效数据）
-        if self.profile.has_market_stats:
-            self._get_market_statistics(overview)
+        try:
+            # 1. 获取主要指数行情（按 region 切换 A 股/美股）
+            overview.indices = self._get_main_indices()
 
-        # 3. 获取板块涨跌榜（A 股有，美股暂无）
-        if self.profile.has_sector_rankings:
-            self._get_sector_rankings(overview)
-            self._get_concept_rankings(overview)
-        
-        # 4. 获取北向资金（可选）
-        # self._get_north_flow(overview)
-        
-        return overview
+            # 2. 获取涨跌统计（A 股有，美股无等效数据）
+            if self.profile.has_market_stats:
+                self._get_market_statistics(overview)
+
+            # 3. 获取板块涨跌榜（A 股有，美股暂无）
+            if self.profile.has_sector_rankings:
+                self._get_sector_rankings(overview)
+                self._get_concept_rankings(overview)
+
+            # 4. 获取北向资金（可选）
+            # self._get_north_flow(overview)
+            return overview
+        finally:
+            if previous_deadline is None:
+                self.__dict__.pop("_context_overview_deadline", None)
+            else:
+                self._context_overview_deadline = previous_deadline
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
@@ -457,7 +489,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             logger.info("[大盘] %s action=get_main_indices status=start", self._log_context())
 
             # 使用 DataFetcherManager 获取指数行情（按 region 切换）
-            data_list = self.data_manager.get_main_indices(region=self.region)
+            data_list = self.data_manager.get_main_indices(
+                region=self.region,
+                **self._context_provider_budget(),
+            )
 
             if data_list:
                 for item in data_list:
@@ -496,7 +531,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
-            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
+            stats = self.data_manager.get_market_stats(
+                purpose=f"market_review:{self.region}",
+                **self._context_provider_budget(),
+            )
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
@@ -528,7 +566,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
-            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(
+                5,
+                **self._context_provider_budget(),
+            )
 
             if top_sectors or bottom_sectors:
                 overview.top_sectors = top_sectors
@@ -551,7 +592,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
 
-            top_concepts, bottom_concepts = self.data_manager.get_concept_rankings(5)
+            top_concepts, bottom_concepts = self.data_manager.get_concept_rankings(
+                5,
+                **self._context_provider_budget(),
+            )
 
             if top_concepts or bottom_concepts:
                 overview.top_concepts = top_concepts

@@ -19,7 +19,9 @@ from src.utils.data_processing import (
 
 
 class _SlowConceptRankingFetcher:
-    name = "SlowConceptRankingFetcher"
+    # Match the configured ``akshare`` adapter token so manager-level provider
+    # resolution exercises the shared cache instead of skipping this stub.
+    name = "AkshareFetcher"
 
     def __init__(self) -> None:
         self.calls = 0
@@ -369,6 +371,40 @@ class PipelineRelatedBoardsTestCase(unittest.TestCase):
 
         self.assertEqual(enriched["belong_boards"], [{"name": "白酒", "type": "行业"}])
         pipeline.fetcher_manager.get_belong_boards.assert_called_once_with("600519")
+
+    def test_attach_belong_boards_forwards_shared_remaining_budget(self) -> None:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetcher_manager = MagicMock()
+        pipeline.fetcher_manager.get_belong_boards.return_value = []
+        pipeline.market_hotspot_service = MagicMock()
+        pipeline.market_hotspot_service.get_concept_rankings.return_value = ([], [])
+        context = {
+            "market": "cn",
+            "status": "ok",
+            "coverage": {"boards": "ok"},
+            "boards": {"status": "ok", "data": {"top": [], "bottom": []}},
+        }
+        deadline = time.monotonic() + 2.0
+
+        pipeline._attach_belong_boards_to_fundamental_context(
+            "600519",
+            context,
+            deadline=deadline,
+            provider_timeout_seconds=0.5,
+        )
+
+        belong_kwargs = pipeline.fetcher_manager.get_belong_boards.call_args.kwargs
+        concept_kwargs = (
+            pipeline.market_hotspot_service.get_concept_rankings.call_args.kwargs
+        )
+        self.assertLessEqual(belong_kwargs["provider_timeout_seconds"], 0.5)
+        self.assertGreater(belong_kwargs["total_timeout_seconds"], 0.0)
+        self.assertLessEqual(concept_kwargs["provider_timeout_seconds"], 0.5)
+        self.assertGreater(concept_kwargs["total_timeout_seconds"], 0.0)
+        self.assertLessEqual(
+            concept_kwargs["total_timeout_seconds"],
+            belong_kwargs["total_timeout_seconds"],
+        )
 
     def test_attach_belong_boards_skips_provider_for_non_cn(self) -> None:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

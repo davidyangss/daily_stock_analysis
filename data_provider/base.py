@@ -1079,7 +1079,10 @@ class DataFetcherManager:
             is_complete=self._has_complete_financial_strategy_fields,
             total_timeout_seconds=total_timeout,
             provider_timeout_seconds=provider_timeout,
-            provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+            provider_timeout_overrides=self._bounded_provider_timeout_overrides(
+                config,
+                provider_timeout_seconds,
+            ),
             error_summary=lambda exc: str(exc) or type(exc).__name__,
             on_start=record_started,
             on_attempt=record_attempt,
@@ -1131,6 +1134,12 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_fundamental_timeout_worker_limit"):
+            self._fundamental_timeout_worker_limit = 8
+        if not hasattr(self, "_fundamental_timeout_slots") or self._fundamental_timeout_slots is None:
+            self._fundamental_timeout_slots = BoundedSemaphore(
+                self._fundamental_timeout_worker_limit
+            )
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -2979,7 +2988,13 @@ class DataFetcherManager:
         logger.info("[股票名称] 从问财获取: %s -> %s", normalized, name)
         return self._cache_stock_name(normalized, name) or name
 
-    def get_belong_boards(self, stock_code: str) -> List[Dict[str, Any]]:
+    def get_belong_boards(
+        self,
+        stock_code: str,
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Get stock membership boards through capability probing.
 
@@ -2990,61 +3005,134 @@ class DataFetcherManager:
             return []
         candidate_fetchers = [
             fetcher
-            for fetcher in self._fetchers
+            for fetcher in self._get_fetchers_snapshot()
             if hasattr(fetcher, "get_belong_board")
         ]
-        for index, fetcher in enumerate(candidate_fetchers):
-            fallback_to = (
+        if not candidate_fetchers:
+            return []
+
+        from src.config import get_config
+
+        config = get_config()
+        provider_timeout = float(
+            provider_timeout_seconds
+            if provider_timeout_seconds is not None
+            else getattr(config, "provider_loop_timeout_seconds", 60.0)
+        )
+        total_timeout = float(
+            total_timeout_seconds
+            if total_timeout_seconds is not None
+            else getattr(config, "provider_loop_total_timeout_seconds", 60.0)
+        )
+        fallback_by_provider = {
+            fetcher.name: (
                 candidate_fetchers[index + 1].name
                 if index + 1 < len(candidate_fetchers)
                 else None
             )
-            start = time.time()
-            try:
-                record_provider_run_started(
-                    data_type="belong_boards",
-                    provider=fetcher.name,
-                    operation="get_belong_board",
+            for index, fetcher in enumerate(candidate_fetchers)
+        }
+        record_counts: Dict[str, int] = {}
+
+        class BelongBoardProviderError(RuntimeError):
+            def __init__(self, error_type: str, message: str) -> None:
+                super().__init__(message)
+                self.error_type = error_type
+
+        def call_fetcher(fetcher: BaseFetcher, timeout: float) -> List[Dict[str, Any]]:
+            failure: Dict[str, str] = {}
+
+            def fetch() -> Any:
+                try:
+                    return fetcher.get_belong_board(stock_code)
+                except Exception as exc:
+                    failure["type"], failure["message"] = summarize_exception(exc)
+                    raise
+
+            value, error, _duration_ms = self._run_with_timeout(
+                fetch,
+                timeout,
+                f"belong_boards_{fetcher.name}",
+            )
+            if error:
+                if "timeout" in error.lower():
+                    raise TimeoutError(error)
+                raise BelongBoardProviderError(
+                    failure.get("type", "RuntimeError"),
+                    failure.get("message", error),
                 )
-                raw_data = fetcher.get_belong_board(stock_code)
-                boards = self._normalize_belong_boards(raw_data)
-                if boards:
-                    record_provider_run(
-                        data_type="belong_boards",
-                        provider=fetcher.name,
-                        operation="get_belong_board",
-                        success=True,
-                        latency_ms=int((time.time() - start) * 1000),
-                        record_count=len(boards),
-                    )
-                    logger.info(f"[{fetcher.name}] 获取所属板块成功: {stock_code}, count={len(boards)}")
-                    return boards
-                record_provider_run(
-                    data_type="belong_boards",
-                    provider=fetcher.name,
-                    operation="get_belong_board",
-                    success=False,
-                    latency_ms=int((time.time() - start) * 1000),
-                    error_type="empty",
-                    error_message="empty belong boards",
-                    fallback_to=fallback_to,
-                    record_count=0,
+            boards = self._normalize_belong_boards(value)
+            record_counts[fetcher.name] = len(boards)
+            return boards
+
+        def record_started(provider: str, _timeout: float) -> None:
+            record_provider_run_started(
+                data_type="belong_boards",
+                provider=provider,
+                operation="get_belong_board",
+            )
+
+        def record_attempt(attempt: ProviderAttempt) -> None:
+            success = attempt.status == "ok"
+            error_type = None if success else attempt.status
+            if attempt.status == "failed" and attempt.error:
+                error_type = attempt.error.split(":", 1)[0] or "failed"
+            record_provider_run(
+                data_type="belong_boards",
+                provider=attempt.provider,
+                operation="get_belong_board",
+                success=success,
+                latency_ms=attempt.duration_ms,
+                error_type=error_type,
+                error_message=attempt.error,
+                fallback_to=(
+                    fallback_by_provider.get(attempt.provider)
+                    if not success else None
+                ),
+                record_count=record_counts.get(attempt.provider, 0),
+            )
+
+        loop_result = run_provider_loop(
+            [
+                ProviderCall(
+                    fetcher.name,
+                    lambda timeout, current=fetcher: call_fetcher(current, timeout),
                 )
-            except Exception as e:
-                error_type, error_reason = summarize_exception(e)
-                record_provider_run(
-                    data_type="belong_boards",
-                    provider=fetcher.name,
-                    operation="get_belong_board",
-                    success=False,
-                    latency_ms=int((time.time() - start) * 1000),
-                    error_type=error_type,
-                    error_message=error_reason,
-                    fallback_to=fallback_to,
-                )
-                logger.debug(f"[{fetcher.name}] 获取所属板块失败: {e}")
-                continue
-        return []
+                for fetcher in candidate_fetchers
+            ],
+            initial=[],
+            merge=lambda _current, candidate, _provider: candidate,
+            is_usable=lambda value: isinstance(value, list) and bool(value),
+            is_complete=lambda value: isinstance(value, list) and bool(value),
+            total_timeout_seconds=total_timeout,
+            provider_timeout_seconds=provider_timeout,
+            provider_timeout_overrides=self._bounded_provider_timeout_overrides(
+                config,
+                provider_timeout_seconds,
+            ),
+            error_summary=lambda exc: (
+                f"{getattr(exc, 'error_type', summarize_exception(exc)[0])}: "
+                f"{summarize_exception(exc)[1]}"
+            ),
+            classify_unusable=lambda _value: ("empty", "empty belong boards"),
+            on_start=record_started,
+            on_attempt=record_attempt,
+            max_attempts=getattr(config, "data_provider_max_attempts", 3),
+            retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
+            retry_max_delay_seconds=getattr(config, "data_provider_retry_max_delay_seconds", 2.0),
+        )
+        if loop_result.value:
+            successful_provider = next(
+                (attempt.provider for attempt in loop_result.attempts if attempt.status == "ok"),
+                "unknown",
+            )
+            logger.info(
+                "[%s] 获取所属板块成功: %s, count=%d",
+                successful_provider,
+                stock_code,
+                len(loop_result.value),
+            )
+        return loop_result.value or []
 
     def prefetch_stock_names(self, stock_codes: List[str], use_bulk: bool = False) -> None:
         """
@@ -3137,18 +3225,30 @@ class DataFetcherManager:
         logger.info(f"[股票名称] 批量获取完成，成功 {len(result)}/{len(stock_codes)}")
         return result
 
-    def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
+    def get_main_indices(
+        self,
+        region: str = "cn",
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
         from src.config import get_config
 
         config = get_config()
+        token_map = {
+            "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
+            "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
+            "yfinance": "YfinanceFetcher",
+        }
+        if region != "cn":
+            # TickFlow's index endpoint is A-share only.  Do not initialize it
+            # for foreign-market reviews before falling through to providers
+            # that understand the requested region.
+            token_map.pop("tickflow")
         entries = self._resolve_configured_fetchers(
             getattr(config, "index_source_priority", "tickflow,tushare,efinance,akshare,yfinance"),
-            token_map={
-                "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
-                "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
-                "yfinance": "YfinanceFetcher",
-            },
+            token_map=token_map,
             capability="main_indices",
         )
         providers = [
@@ -3165,10 +3265,18 @@ class DataFetcherManager:
             capability="main_indices",
             providers=providers,
             is_usable=lambda value: isinstance(value, list) and bool(value),
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
         )
         return result or []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+    def get_market_stats(
+        self,
+        *,
+        purpose: str = "unspecified",
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
         from src.config import get_config
@@ -3194,6 +3302,8 @@ class DataFetcherManager:
             capability="market_stats",
             providers=providers,
             is_usable=lambda value: isinstance(value, dict) and bool(value),
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
         )
         return result or {}
 
@@ -3210,6 +3320,7 @@ class DataFetcherManager:
             (result, error, duration_ms)
         """
         start = time.time()
+        self._ensure_concurrency_guards()
         timeout_value = max(0.0, timeout_seconds)
         if timeout_value <= 0:
             return None, f"{task_name} timeout", 0
@@ -3278,6 +3389,29 @@ class DataFetcherManager:
 
         return None, last_error, total_cost_ms
 
+    @staticmethod
+    def _bounded_provider_timeout_overrides(
+        config: Any,
+        explicit_timeout_seconds: Optional[float],
+    ) -> Dict[str, float]:
+        """Keep deployment overrides inside an explicit caller-owned cap."""
+        raw_overrides = getattr(config, "provider_timeout_overrides", {}) or {}
+        if explicit_timeout_seconds is None:
+            return dict(raw_overrides)
+
+        cap = max(0.0, float(explicit_timeout_seconds))
+        bounded: Dict[str, float] = {}
+        for name, value in raw_overrides.items():
+            try:
+                bounded[str(name)] = min(cap, max(0.0, float(value)))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "忽略无效 provider timeout override: provider=%s value=%r",
+                    name,
+                    value,
+                )
+        return bounded
+
     def _run_atomic_provider_loop(
         self,
         *,
@@ -3342,7 +3476,10 @@ class DataFetcherManager:
             is_complete=lambda value: value is not None and is_usable(value),
             total_timeout_seconds=total_timeout,
             provider_timeout_seconds=provider_timeout,
-            provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+            provider_timeout_overrides=self._bounded_provider_timeout_overrides(
+                config,
+                provider_timeout_seconds,
+            ),
             error_summary=lambda exc: str(exc) or type(exc).__name__,
             max_attempts=getattr(config, "data_provider_max_attempts", 3),
             retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
@@ -4481,6 +4618,8 @@ class DataFetcherManager:
     def _get_sector_rankings_with_meta(
             self,
             n: int = 5,
+            provider_timeout_seconds: Optional[float] = None,
+            total_timeout_seconds: Optional[float] = None,
         ) -> Tuple[List[Dict], List[Dict], List[Dict[str, Any]], str]:
             """Get sector rankings with ordered fallback chain metadata."""
             from src.config import get_config
@@ -4550,12 +4689,19 @@ class DataFetcherManager:
                 ),
                 is_complete=lambda value: value is not None,
                 total_timeout_seconds=float(
-                    getattr(config, "provider_loop_total_timeout_seconds", 60.0)
+                    total_timeout_seconds
+                    if total_timeout_seconds is not None
+                    else getattr(config, "provider_loop_total_timeout_seconds", 60.0)
                 ),
                 provider_timeout_seconds=float(
-                    getattr(config, "provider_loop_timeout_seconds", 60.0)
+                    provider_timeout_seconds
+                    if provider_timeout_seconds is not None
+                    else getattr(config, "provider_loop_timeout_seconds", 60.0)
                 ),
-                provider_timeout_overrides=getattr(config, "provider_timeout_overrides", {}),
+                provider_timeout_overrides=self._bounded_provider_timeout_overrides(
+                    config,
+                    provider_timeout_seconds,
+                ),
                 error_summary=lambda exc: summarize_exception(exc)[1],
                 max_attempts=getattr(config, "data_provider_max_attempts", 3),
                 retry_base_delay_seconds=getattr(config, "data_provider_retry_base_delay_seconds", 0.5),
@@ -4582,10 +4728,20 @@ class DataFetcherManager:
             )
             return [], [], source_chain, last_error
 
-    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+    def get_sector_rankings(
+        self,
+        n: int = 5,
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
         # 按需求固定回退顺序：Akshare(EM) -> Akshare(Sina) -> Tushare -> Efinance
-        top, bottom, _, last_error = self._get_sector_rankings_with_meta(n)
+        top, bottom, _, last_error = self._get_sector_rankings_with_meta(
+            n,
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
+        )
         if top or bottom:
             return top, bottom
         logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
@@ -4600,7 +4756,13 @@ class DataFetcherManager:
         with cls._concept_rankings_cache_lock:
             cls._concept_rankings_cache.clear()
 
-    def get_concept_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+    def get_concept_rankings(
+        self,
+        n: int = 5,
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
+    ) -> Tuple[List[Dict], List[Dict]]:
         """获取概念/题材涨跌榜（自动切换数据源）。"""
         try:
             normalized_n = int(n)
@@ -4648,6 +4810,8 @@ class DataFetcherManager:
                 is_usable=lambda value: (
                     isinstance(value, tuple) and len(value) >= 2 and bool(value[0] or value[1])
                 ),
+                provider_timeout_seconds=provider_timeout_seconds,
+                total_timeout_seconds=total_timeout_seconds,
             )
             top = data[0] if isinstance(data, tuple) and len(data) >= 2 else []
             bottom = data[1] if isinstance(data, tuple) and len(data) >= 2 else []

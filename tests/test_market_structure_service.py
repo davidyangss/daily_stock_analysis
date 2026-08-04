@@ -39,6 +39,15 @@ class _FakeFetcherManager:
         )
 
 
+class _BudgetAwareConceptFetcherManager:
+    def __init__(self) -> None:
+        self.call = None
+
+    def get_concept_rankings(self, n: int = 5, **kwargs):
+        self.call = (n, kwargs)
+        return ([{"name": "机器人概念"}], [])
+
+
 class _DownTrendFetcherManager:
     def __init__(self) -> None:
         self.sector_calls = 0
@@ -366,6 +375,26 @@ def test_market_hotspot_service_fails_open_when_rankings_unavailable() -> None:
     assert context["data_quality"]["errors"]
     assert "industry_rankings" in context["data_quality"]["missing_fields"]
     assert "concept_rankings" in context["data_quality"]["missing_fields"]
+
+
+def test_market_hotspot_service_forwards_caller_budget_to_provider_loop() -> None:
+    fetcher = _BudgetAwareConceptFetcherManager()
+    service = MarketHotspotService(fetcher_manager=fetcher)
+
+    rankings = service.get_concept_rankings(
+        3,
+        provider_timeout_seconds=0.5,
+        total_timeout_seconds=1.25,
+    )
+
+    assert rankings == ([{"name": "机器人概念"}], [])
+    assert fetcher.call == (
+        3,
+        {
+            "provider_timeout_seconds": 0.5,
+            "total_timeout_seconds": 1.25,
+        },
+    )
 
 
 def test_market_hotspot_service_bounds_ranking_fetches() -> None:

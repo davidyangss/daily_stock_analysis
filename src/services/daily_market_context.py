@@ -89,6 +89,12 @@ class DailyMarketContext:
 class DailyMarketContextService:
     """Load or generate one low-sensitivity market context per date/region."""
 
+    # Market context enriches a stock report but is not required to generate
+    # it.  Bound the whole live-generation path (providers, search, LLM and
+    # lock acquisition) so any one dependency cannot pin the stock pipeline.
+    _GENERATION_DEADLINE_SECONDS = 60.0
+    _GENERATION_SLOTS = threading.BoundedSemaphore(1)
+
     def __init__(
         self,
         db_manager: Optional[DatabaseManager] = None,
@@ -221,7 +227,7 @@ class DailyMarketContextService:
                     self._cache[cache_key] = history_context
                     return history_context
 
-            generated = self._run_market_review_context(
+            generated = self._run_market_review_context_with_deadline(
                 region=normalized_region,
                 target_date=context_date,
                 config=config,
@@ -235,6 +241,48 @@ class DailyMarketContextService:
             if generated is not None:
                 self._cache[cache_key] = generated
             return generated
+
+    def _run_market_review_context_with_deadline(
+        self,
+        **kwargs: Any,
+    ) -> Optional[DailyMarketContext]:
+        """Generate optional context within one process-wide bounded slot."""
+        if not self._GENERATION_SLOTS.acquire(blocking=False):
+            logger.warning(
+                "大盘复盘上下文生成槽位已占用，跳过实时生成并继续个股分析"
+            )
+            return None
+
+        completed = threading.Event()
+        result_holder: Dict[str, Optional[DailyMarketContext]] = {}
+        error_holder: Dict[str, BaseException] = {}
+
+        def run() -> None:
+            try:
+                result_holder["context"] = self._run_market_review_context(**kwargs)
+            except BaseException as exc:
+                error_holder["error"] = exc
+            finally:
+                self._GENERATION_SLOTS.release()
+                completed.set()
+
+        worker = threading.Thread(
+            target=run,
+            daemon=True,
+            name="daily-market-context-generation",
+        )
+        worker.start()
+        if not completed.wait(timeout=self._GENERATION_DEADLINE_SECONDS):
+            logger.warning(
+                "大盘复盘上下文生成超过整体截止时间 %.0f 秒，个股分析立即降级继续",
+                self._GENERATION_DEADLINE_SECONDS,
+            )
+            return None
+
+        error = error_holder.get("error")
+        if error is not None:
+            raise error
+        return result_holder.get("context")
 
     def _load_same_day_history(
         self,

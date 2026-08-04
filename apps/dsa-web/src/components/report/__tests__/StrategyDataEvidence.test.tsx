@@ -14,6 +14,7 @@ describe('StrategyDataEvidence', () => {
             skillId: 'volume_breakout',
             skillName: '放量突破',
             status: 'completed',
+            evaluationMode: 'joint',
             signal: 'buy',
             confidence: 0.62,
             reasoning: '突破条件成立，但新闻数据缺失，结果不参与最终投票。',
@@ -31,7 +32,16 @@ describe('StrategyDataEvidence', () => {
             status: 'insufficient',
             missingTools: ['search_stock_news'],
             limitedTools: [],
-            evidence: [],
+            evidence: [{
+              tool: 'get_realtime_quote',
+              toolDisplayName: '实时行情获取',
+              dataDescription: '实时行情',
+              status: 'available',
+              sources: ['tushare'],
+              cached: false,
+              partial: false,
+              keyValues: { price: 1880 },
+            }],
           }],
           items: [
             {
@@ -82,6 +92,9 @@ describe('StrategyDataEvidence', () => {
     expect(screen.getByText(/所选策略: 放量突破/)).toBeInTheDocument();
     expect(screen.getByText('策略判定结果')).toBeInTheDocument();
     expect(screen.getByText(/判定信号: 买入/)).toBeInTheDocument();
+    expect(screen.getByText('联合评估')).toBeInTheDocument();
+    expect(screen.getByText('该策略依赖输入:')).toBeInTheDocument();
+    expect(screen.getByText(/实时行情获取（实时行情）：成功/)).toBeInTheDocument();
     expect(screen.getByText(/置信度: 62%/)).toBeInTheDocument();
     expect(screen.getByText(/满足条件: 价格突破近20日高点/)).toBeInTheDocument();
     expect(screen.getByText(/未满足条件: 新闻催化未验证/)).toBeInTheDocument();

@@ -203,11 +203,21 @@ class MarketHotspotService:
         sources: List[MarketStructureSource],
         *,
         preloaded_rankings: Any = None,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         preloaded = self._rankings_from_payload(preloaded_rankings, dataset, sources)
         if preloaded is not None:
             return preloaded
-        return self._fetch_rankings(fetch_name, dataset, limit, errors, sources)
+        return self._fetch_rankings(
+            fetch_name,
+            dataset,
+            limit,
+            errors,
+            sources,
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
+        )
 
     @staticmethod
     def _rankings_from_payload(
@@ -263,8 +273,11 @@ class MarketHotspotService:
     def get_concept_rankings(
         self,
         limit: int = 5,
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Get concept ranking top/bottom with timeout + concurrency protection."""
+        """Get concept rankings, optionally forwarding a caller-owned budget."""
         errors: List[str] = []
         sources: List[MarketStructureSource] = []
         return self._resolve_rankings(
@@ -273,6 +286,8 @@ class MarketHotspotService:
             limit,
             errors,
             sources,
+            provider_timeout_seconds=provider_timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
         )
 
     def _get_cached_hotspots(
@@ -338,6 +353,9 @@ class MarketHotspotService:
         limit: int,
         errors: List[str],
         sources: List[MarketStructureSource],
+        *,
+        provider_timeout_seconds: Optional[float] = None,
+        total_timeout_seconds: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         fetch_rankings = getattr(self.fetcher_manager, fetch_name, None)
         if not callable(fetch_rankings):
@@ -352,17 +370,37 @@ class MarketHotspotService:
             return [], []
 
         try:
-            rankings = self._call_with_timeout(
-                lambda: fetch_rankings(limit),
-                timeout_seconds=self._resolve_ranking_fetch_timeout_seconds(),
-                task_name=dataset,
-                inflight_key=(
-                    type(self.fetcher_manager),
-                    id(self.fetcher_manager),
-                    fetch_name,
-                    limit,
-                ),
-            )
+            if (
+                provider_timeout_seconds is not None
+                or total_timeout_seconds is not None
+            ):
+                budget_kwargs: Dict[str, float] = {}
+                if provider_timeout_seconds is not None:
+                    budget_kwargs["provider_timeout_seconds"] = max(
+                        0.0,
+                        float(provider_timeout_seconds),
+                    )
+                if total_timeout_seconds is not None:
+                    budget_kwargs["total_timeout_seconds"] = max(
+                        0.0,
+                        float(total_timeout_seconds),
+                    )
+                # Provider ordering and fallback belong to DataFetcherManager.
+                # A caller-owned orchestration deadline is forwarded to that
+                # loop instead of being wrapped in another service timeout.
+                rankings = fetch_rankings(limit, **budget_kwargs)
+            else:
+                rankings = self._call_with_timeout(
+                    lambda: fetch_rankings(limit),
+                    timeout_seconds=self._resolve_ranking_fetch_timeout_seconds(),
+                    task_name=dataset,
+                    inflight_key=(
+                        type(self.fetcher_manager),
+                        id(self.fetcher_manager),
+                        fetch_name,
+                        limit,
+                    ),
+                )
             if isinstance(rankings, tuple) and len(rankings) == 2:
                 top, bottom = rankings
                 top_items = list(top) if isinstance(top, list) else []

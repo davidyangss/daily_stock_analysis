@@ -100,9 +100,9 @@ Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema
 
 - `status`：本次策略依赖总体状态（`verified` / `limited` / `insufficient`）。
 - `selected_strategies`：本次实际选择的策略 ID 与持久化展示名。
-- `strategy_evaluations`：逐策略执行状态，以及有效 Specialist 观点的信号、置信度、判定依据和满足/未满足条件；未运行独立 Specialist 时使用 `not_evaluated`，不得复制综合结论冒充逐策略结论。
+- `strategy_evaluations`：逐策略执行状态，以及有效 Specialist 观点的信号、置信度、判定依据和满足/未满足条件。独立 Specialist 使用 `evaluation_mode=specialist`；标准/快速 Agent 只有在 dashboard 明确返回对应策略的 `skill_assessment` 时，才可使用 `evaluation_mode=joint` 记录该策略的联合评估结论。没有策略专属结论时仍使用 `not_evaluated`，不得复制综合结论冒充逐策略结论。
 - `overall_decision`：Pipeline 的综合信号、置信度/置信度标签、操作建议和判定依据。
-- `strategy_requirements`：各策略的必需工具、缺失/降级工具及对应证据。
+- `strategy_requirements`：各策略从 Skill 定义读取的必需工具、缺失/降级工具及对应真实运行证据。联合评估也必须逐策略投影自身依赖，不能只展示一份未标注归属的公共输入列表。
 - `items`：工具状态、来源、cache/partial/prefetched 标记、as-of、请求/实际记录数和允许公开的关键标量；常用行情、估值、资金流和筹码字段同时提供中文指标名、格式化值、单位、含义、可用/缺失状态与缺失字段清单。
 - `limitations`：必需数据不可用或降级的确定性说明。
 

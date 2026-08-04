@@ -52,6 +52,28 @@ class _DummyTickFlowFetcher:
 
 
 class TestTickFlowMarketReviewFallback(unittest.TestCase):
+    def setUp(self):
+        # Provider order is part of this unit's contract.  Keep host .env
+        # priorities from silently changing which dummy providers are tested.
+        self._config_patch = patch(
+            "src.config.get_config",
+            return_value=SimpleNamespace(
+                index_source_priority="tickflow,akshare,yfinance",
+                market_stats_source_priority="tickflow,akshare",
+                tickflow_api_key="tf-test",
+                provider_loop_timeout_seconds=1.0,
+                provider_loop_total_timeout_seconds=2.0,
+                provider_timeout_overrides={},
+                data_provider_max_attempts=1,
+                data_provider_retry_base_delay_seconds=0.0,
+                data_provider_retry_max_delay_seconds=0.0,
+            ),
+        )
+        self._config_patch.start()
+
+    def tearDown(self):
+        self._config_patch.stop()
+
     def test_manager_prefers_tickflow_indices_when_available(self):
         manager = DataFetcherManager.__new__(DataFetcherManager)
         fallback = _DummyFetcher("AkshareFetcher", indices=[{"code": "fallback"}])
@@ -122,7 +144,17 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
     @patch("src.config.get_config")
     def test_manager_skips_tickflow_without_api_key(self, mock_get_config):
-        mock_get_config.return_value = SimpleNamespace(tickflow_api_key=None)
+        mock_get_config.return_value = SimpleNamespace(
+            index_source_priority="tickflow,akshare",
+            market_stats_source_priority="tickflow,akshare",
+            tickflow_api_key=None,
+            provider_loop_timeout_seconds=1.0,
+            provider_loop_total_timeout_seconds=2.0,
+            provider_timeout_overrides={},
+            data_provider_max_attempts=1,
+            data_provider_retry_base_delay_seconds=0.0,
+            data_provider_retry_max_delay_seconds=0.0,
+        )
 
         manager = DataFetcherManager.__new__(DataFetcherManager)
         fallback = _DummyFetcher(

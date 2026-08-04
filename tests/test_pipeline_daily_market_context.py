@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from src.analyzer import GeminiAnalyzer
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
-from src.services.daily_market_context import DailyMarketContext
+from src.services.daily_market_context import DailyMarketContext, DailyMarketContextService
 
 
 def _pipeline_config(*, daily_market_context_enabled: bool) -> SimpleNamespace:
@@ -241,6 +241,120 @@ def test_pipeline_initializes_daily_market_context_service_once_across_threads()
     assert service.get_context.call_count == worker_count
 
 
+def test_daily_market_context_generation_deadline_fails_open() -> None:
+    service = DailyMarketContextService(db_manager=MagicMock())
+    release_generation = threading.Event()
+
+    with patch.object(
+        service,
+        "_GENERATION_DEADLINE_SECONDS",
+        0.02,
+    ), patch.object(
+        service,
+        "_run_market_review_context",
+        side_effect=lambda **_kwargs: release_generation.wait(timeout=1) or None,
+    ):
+        started_at = time.monotonic()
+        context = service._run_market_review_context_with_deadline(region="cn")
+        elapsed = time.monotonic() - started_at
+        release_generation.set()
+
+    assert context is None
+    assert elapsed < 0.5
+
+
+def test_daily_market_context_generation_slot_exhaustion_fails_fast() -> None:
+    service = DailyMarketContextService(db_manager=MagicMock())
+    release_generation = threading.Event()
+
+    with patch.object(
+        service,
+        "_GENERATION_DEADLINE_SECONDS",
+        0.02,
+    ), patch.object(
+        service,
+        "_run_market_review_context",
+        side_effect=lambda **_kwargs: release_generation.wait(timeout=1) or None,
+    ):
+        assert service._run_market_review_context_with_deadline(region="cn") is None
+        started_at = time.monotonic()
+        assert service._run_market_review_context_with_deadline(region="cn") is None
+        elapsed = time.monotonic() - started_at
+        release_generation.set()
+
+    assert elapsed < 0.1
+
+
+def test_api_optional_evidence_shares_deadline_with_provider_work() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = SimpleNamespace(fundamental_stage_timeout_seconds=240.0)
+    pipeline.query_source = "api"
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.build_failed_fundamental_context.return_value = {
+        "status": "failed",
+        "source_chain": [],
+        "coverage": {},
+    }
+    release_fundamental = threading.Event()
+
+    def blocked_fundamental(*_args, **_kwargs):
+        release_fundamental.wait(timeout=1)
+        return {"status": "ok", "source_chain": [], "coverage": {}}
+
+    pipeline.fetcher_manager.get_fundamental_context.side_effect = blocked_fundamental
+    with patch.object(
+        pipeline,
+        "_API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS",
+        0.02,
+    ), patch.object(
+        pipeline,
+        "_API_OPTIONAL_EVIDENCE_SLOTS",
+        threading.BoundedSemaphore(1),
+    ), patch.object(
+        pipeline,
+        "_backfill_fundamental_valuation_from_realtime",
+        side_effect=lambda context, _quote: context,
+    ), patch.object(
+        pipeline,
+        "_attach_belong_boards_to_fundamental_context",
+        side_effect=lambda _code, context, **_kwargs: context,
+    ), patch.object(
+        pipeline,
+        "_build_market_structure_context",
+        return_value={},
+    ) as build_market_structure:
+        started_at = time.monotonic()
+        fundamental, structure, timed_out = pipeline._load_optional_evidence_context(
+            code="601127",
+            stock_name="赛力斯",
+            market="cn",
+            realtime_quote=None,
+            trade_date=date(2026, 8, 4),
+            market_phase_summary=None,
+        )
+        elapsed = time.monotonic() - started_at
+        release_fundamental.set()
+        time.sleep(0.05)
+
+    assert timed_out is True
+    assert structure is None
+    assert fundamental["status"] == "failed"
+    assert elapsed < 0.5
+    provider_budget = (
+        pipeline.fetcher_manager.get_fundamental_context.call_args.kwargs["budget_seconds"]
+    )
+    assert 0 < provider_budget <= 0.02
+    build_market_structure.assert_not_called()
+
+
+def test_non_api_optional_evidence_keeps_configured_budget() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = SimpleNamespace(fundamental_stage_timeout_seconds=240.0)
+    pipeline.query_source = "schedule"
+
+    assert pipeline._fundamental_stage_budget_seconds() == 240.0
+
+
 def test_pipeline_uses_market_phase_effective_date_for_daily_market_context() -> None:
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     phase_context = SimpleNamespace(
@@ -307,6 +421,14 @@ def test_pipeline_uses_market_phase_effective_date_for_daily_market_context() ->
     pipeline._load_daily_market_context.assert_called_once_with(
         "cn",
         target_date=date(2026, 3, 26),
+    )
+    pipeline._emit_progress.assert_any_call(
+        17,
+        "600519：正在准备可选大盘环境上下文",
+    )
+    pipeline._emit_progress.assert_any_call(
+        18,
+        "600519：大盘环境已就绪，正在获取行情与筹码数据",
     )
 
 

@@ -421,6 +421,7 @@ export interface StrategyEvaluationEvidence {
   skillId: string;
   skillName: string;
   status: 'completed' | 'insufficient' | 'failed' | 'invalid' | 'not_evaluated';
+  evaluationMode?: 'specialist' | 'joint';
   signal?: string;
   rawSignal?: string;
   confidence?: number;

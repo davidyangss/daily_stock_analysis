@@ -31,7 +31,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from math import ceil
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
 
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
@@ -870,6 +870,24 @@ class AgentOrchestrator:
             result.append({"skill_id": skill_id, "skill_name": display_name})
         return result
 
+    def _selected_strategy_requirements(self, selected: Any) -> Dict[str, List[str]]:
+        """Return declarative required tools for selected strategies."""
+        requirements: Dict[str, List[str]] = {}
+        for item in selected or []:
+            skill_id = str(
+                item.get("skill_id") if isinstance(item, Mapping) else item
+            ).strip()
+            if not skill_id or skill_id in requirements:
+                continue
+            skill = self.skill_manager.get(skill_id) if self.skill_manager is not None else None
+            tools: List[str] = []
+            for raw_tool in getattr(skill, "required_tools", []) or []:
+                tool_name = str(raw_tool or "").strip()
+                if tool_name and tool_name not in tools:
+                    tools.append(tool_name)
+            requirements[skill_id] = tools
+        return requirements
+
     def _build_skill_agents(self, ctx: AgentContext) -> list:
         """Compatibility wrapper for legacy imports."""
         return self._build_specialist_agents(ctx)
@@ -1595,6 +1613,14 @@ class AgentOrchestrator:
                 ctx.meta.get("selected_strategy_skills")
                 if isinstance(ctx.meta.get("selected_strategy_skills"), list)
                 else []
+            ),
+            selected_strategy_requirements=self._selected_strategy_requirements(
+                ctx.meta.get("selected_strategy_skills")
+            ),
+            joint_strategy_assessments=(
+                dashboard_block.get("skill_assessment")
+                if isinstance(dashboard_block.get("skill_assessment"), dict)
+                else {}
             ),
             overall_decision={
                 "signal": decision_type,

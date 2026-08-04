@@ -454,6 +454,15 @@ class SerpAPISearchProvider(BaseSearchProvider):
     # more than 16 hours.  Keep the primary search request within the same
     # bounded latency expected from the other search providers.
     _DEFAULT_SEARCH_REQUEST_TIMEOUT = 20
+    # This is deliberately independent from ``SERPAPI_TIMEOUT_SECONDS``.
+    # Operators may increase the SDK/socket timeout for standalone searches,
+    # but a stuck SDK call must never hold an analysis worker for that long.
+    _HARD_DEADLINE_SECONDS = 20.0
+    # ``requests`` timeouts do not bound every phase outside socket I/O (for
+    # example a resolver or proxy hook can still block).  Keep a small,
+    # process-wide budget for calls that outlive the SDK timeout so analysis
+    # workers can fail open without creating an unbounded number of threads.
+    _HARD_TIMEOUT_SLOTS = threading.BoundedSemaphore(2)
     _ORGANIC_CONTENT_FETCH_LIMIT = 1
     _ORGANIC_CONTENT_FETCH_RANK_LIMIT = 2
     _ORGANIC_CONTENT_FETCH_TIMEOUT = 2
@@ -502,6 +511,48 @@ class SerpAPISearchProvider(BaseSearchProvider):
             else request_timeout_seconds
         )
         self.request_timeout_seconds = max(1, min(300, int(timeout)))
+
+    def _get_search_response_with_deadline(self, search: Any) -> Dict[str, Any]:
+        """Run the SerpAPI SDK request behind a hard, bounded deadline."""
+        if not self._HARD_TIMEOUT_SLOTS.acquire(blocking=False):
+            raise requests.Timeout("SerpAPI hard-timeout worker pool exhausted")
+
+        completed = threading.Event()
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, BaseException] = {}
+
+        def run() -> None:
+            try:
+                result_holder["response"] = search.get_dict()
+            except BaseException as exc:
+                error_holder["error"] = exc
+            finally:
+                self._HARD_TIMEOUT_SLOTS.release()
+                completed.set()
+
+        worker = threading.Thread(
+            target=run,
+            daemon=True,
+            name="serpapi-search-request",
+        )
+        worker.start()
+        hard_deadline_seconds = min(
+            float(self.request_timeout_seconds),
+            self._HARD_DEADLINE_SECONDS,
+        )
+        if not completed.wait(timeout=hard_deadline_seconds):
+            raise requests.Timeout(
+                f"SerpAPI search exceeded hard timeout of "
+                f"{hard_deadline_seconds:g}s"
+            )
+
+        error = error_holder.get("error")
+        if error is not None:
+            raise error
+        response = result_holder.get("response")
+        if not isinstance(response, dict):
+            raise ValueError("SerpAPI returned a non-object response")
+        return response
     
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 SerpAPI 搜索"""
@@ -542,7 +593,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
             
             search = GoogleSearch(params)
             search.timeout = self.request_timeout_seconds
-            response = search.get_dict()
+            response = self._get_search_response_with_deadline(search)
             
             # 记录原始响应到日志
             logger.debug(f"[SerpAPI] 原始响应 keys: {response.keys()}")

@@ -2155,6 +2155,8 @@ class TestDecisionAgentChatMode(unittest.TestCase):
         self.assertIn("watch_conditions", prompt)
         self.assertIn("data_limitations", prompt)
         self.assertIn("confidence_level", prompt)
+        self.assertIn("skill_assessment", prompt)
+        self.assertIn("every exact\nactive skill ID", prompt)
 
 
 class TestTechnicalAgentSkillPolicy(unittest.TestCase):

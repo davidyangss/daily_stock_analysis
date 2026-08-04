@@ -135,6 +135,63 @@ class TestToolEvidence(unittest.TestCase):
         self.assertNotIn("pe_ratio", stock_info["missing_fields"])
         self.assertIn("roe", stock_info["missing_fields"])
 
+    def test_prefetched_fundamentals_upgrade_required_missing_evidence(self) -> None:
+        missing = summarize_tool_result(
+            "get_stock_info",
+            {"status": "missing", "missing_reason": "required_tool_not_called"},
+            execution_success=True,
+        )
+        missing["required"] = True
+        missing["required_by"] = ["expectation_repricing"]
+        manifest = {
+            "schema_version": "strategy-evidence-v1",
+            "status": "insufficient",
+            "items": [missing],
+            "strategy_requirements": [{
+                "skill_id": "expectation_repricing",
+                "status": "insufficient",
+                "missing_tools": ["get_stock_info"],
+                "limited_tools": [],
+                "evidence": [missing],
+            }],
+            "strategy_evaluations": [{
+                "skill_id": "expectation_repricing",
+                "status": "insufficient",
+                "evaluation_mode": "joint",
+                "evidence_status": "insufficient",
+            }],
+            "limitations": [
+                "expectation_repricing: required data unavailable (get_stock_info)"
+            ],
+        }
+        prefetched = build_prefetched_context_evidence({
+            "fundamental_context": {
+                "status": "partial",
+                "source_chain": [{"provider": "realtime_quote", "result": "fallback"}],
+                "valuation": {"status": "ok", "data": {"pe_ratio": 17.12, "pb_ratio": 2.56}},
+                "growth": {"status": "partial", "data": {"roe": 1.84}},
+            },
+        })
+
+        merged = merge_prefetched_evidence(manifest, prefetched)
+
+        stock_info = merged["items"][0]
+        self.assertEqual(stock_info["status"], "partial")
+        self.assertTrue(stock_info["prefetched"])
+        self.assertNotIn("missing_reason", stock_info)
+        requirement = merged["strategy_requirements"][0]
+        self.assertEqual(requirement["status"], "limited")
+        self.assertEqual(requirement["missing_tools"], [])
+        self.assertEqual(requirement["limited_tools"], ["get_stock_info"])
+        self.assertEqual(requirement["evidence"][0]["status"], "partial")
+        self.assertEqual(merged["strategy_evaluations"][0]["status"], "completed")
+        self.assertEqual(merged["strategy_evaluations"][0]["evidence_status"], "limited")
+        self.assertEqual(merged["status"], "limited")
+        self.assertEqual(
+            merged["limitations"],
+            ["expectation_repricing: required data degraded (get_stock_info)"],
+        )
+
     def test_available_quote_keeps_source_and_key_values(self) -> None:
         evidence = summarize_tool_result(
             "get_realtime_quote",
@@ -367,6 +424,97 @@ class TestSkillEvidenceContract(unittest.TestCase):
 
 
 class TestStrategyEvidenceManifest(unittest.TestCase):
+    def test_joint_strategy_assessments_expose_each_declared_input(self) -> None:
+        tool_evidence = [
+            {
+                "tool": tool,
+                "status": status,
+                "sources": ["runtime"],
+                "cached": False,
+                "partial": status == "partial",
+                "key_values": {},
+            }
+            for tool, status in (
+                ("get_daily_history", "available"),
+                ("analyze_trend", "available"),
+                ("get_realtime_quote", "available"),
+                ("search_stock_news", "available"),
+                ("get_stock_info", "partial"),
+            )
+        ]
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=tool_evidence,
+            opinions=[],
+            invalid_records=[],
+            selected_strategies=[
+                {"skill_id": "box_oscillation", "skill_name": "箱体震荡"},
+                {"skill_id": "emotion_cycle", "skill_name": "情绪周期"},
+                {"skill_id": "expectation_repricing", "skill_name": "预期重估"},
+            ],
+            selected_strategy_requirements={
+                "box_oscillation": [
+                    "get_daily_history", "analyze_trend", "get_realtime_quote",
+                ],
+                "emotion_cycle": [
+                    "get_daily_history", "get_realtime_quote", "analyze_trend",
+                    "search_stock_news",
+                ],
+                "expectation_repricing": [
+                    "search_stock_news", "get_stock_info", "get_realtime_quote",
+                    "analyze_trend",
+                ],
+            },
+            joint_strategy_assessments={
+                "box_oscillation": {
+                    "joint_assessment": "箱体边界触碰次数不足。",
+                    "decisive_evidence": ["现价接近支撑。"],
+                    "limitations": "缺少完整触碰次数。",
+                },
+                "emotion_cycle": "换手率处于正常区间。",
+                "expectation_repricing": "盈利预期仍在下修。",
+            },
+        )
+
+        evaluations = {
+            item["skill_id"]: item for item in manifest["strategy_evaluations"]
+        }
+        self.assertEqual(evaluations["box_oscillation"]["status"], "completed")
+        self.assertEqual(evaluations["box_oscillation"]["evaluation_mode"], "joint")
+        self.assertEqual(evaluations["box_oscillation"]["reasoning"], "箱体边界触碰次数不足。")
+        self.assertEqual(evaluations["box_oscillation"]["conditions_met"], ["现价接近支撑。"])
+        self.assertEqual(evaluations["box_oscillation"]["conditions_missed"], ["缺少完整触碰次数。"])
+        self.assertEqual(evaluations["emotion_cycle"]["reasoning"], "换手率处于正常区间。")
+        self.assertEqual(evaluations["expectation_repricing"]["evidence_status"], "limited")
+
+        requirements = {
+            item["skill_id"]: item for item in manifest["strategy_requirements"]
+        }
+        self.assertEqual(requirements["box_oscillation"]["status"], "verified")
+        self.assertEqual(requirements["emotion_cycle"]["status"], "verified")
+        self.assertEqual(requirements["expectation_repricing"]["status"], "limited")
+        quote_item = next(
+            item for item in manifest["items"] if item["tool"] == "get_realtime_quote"
+        )
+        self.assertEqual(
+            quote_item["required_by"],
+            ["box_oscillation", "emotion_cycle", "expectation_repricing"],
+        )
+
+    def test_joint_assessment_with_missing_dependency_is_insufficient(self) -> None:
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=[],
+            opinions=[],
+            invalid_records=[],
+            selected_strategies=[{"skill_id": "emotion_cycle", "skill_name": "情绪周期"}],
+            selected_strategy_requirements={"emotion_cycle": ["search_stock_news"]},
+            joint_strategy_assessments={"emotion_cycle": "新闻情绪偏弱。"},
+        )
+
+        self.assertEqual(manifest["status"], "insufficient")
+        self.assertEqual(manifest["strategy_evaluations"][0]["status"], "insufficient")
+        self.assertEqual(manifest["strategy_requirements"][0]["missing_tools"], ["search_stock_news"])
+        self.assertEqual(manifest["items"][0]["missing_reason"], "required_tool_not_called")
+
     def test_manifest_exposes_selected_strategy_inputs_and_decisions(self) -> None:
         opinion = AgentOpinion(
             agent_name="skill_growth_quality",

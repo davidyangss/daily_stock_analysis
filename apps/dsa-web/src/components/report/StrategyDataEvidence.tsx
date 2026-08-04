@@ -23,6 +23,7 @@ const TEXT = {
     decisionTitle: '策略判定结果', overallDecision: '综合判定', signal: '判定信号', confidence: '置信度', advice: '操作建议',
     reasoning: '判定依据', conditionsMet: '满足条件', conditionsMissed: '未满足条件', inputTitle: '策略分析输入数据',
     completed: '已完成', failed: '执行失败', invalid: '结果无效', notEvaluated: '未单独评估', noInput: '本次未记录可展示的策略输入数据',
+    jointEvaluation: '联合评估', specialistEvaluation: '独立评估', dependencies: '该策略依赖输入',
   },
   en: {
     eyebrow: 'Strategy evidence', title: 'Strategy analysis details', verified: 'Verified', limited: 'Limited',
@@ -33,6 +34,7 @@ const TEXT = {
     decisionTitle: 'Strategy decisions', overallDecision: 'Overall decision', signal: 'Signal', confidence: 'Confidence', advice: 'Action',
     reasoning: 'Decision basis', conditionsMet: 'Conditions met', conditionsMissed: 'Conditions missed', inputTitle: 'Strategy input data',
     completed: 'Completed', failed: 'Failed', invalid: 'Invalid', notEvaluated: 'Not separately evaluated', noInput: 'No displayable strategy input data was recorded',
+    jointEvaluation: 'Joint evaluation', specialistEvaluation: 'Specialist evaluation', dependencies: 'Inputs required by this strategy',
   },
   ko: {
     eyebrow: '전략 근거', title: '전략 분석 상세', verified: '검증됨', limited: '데이터 제한',
@@ -43,6 +45,7 @@ const TEXT = {
     decisionTitle: '전략 판정', overallDecision: '종합 판정', signal: '판정 신호', confidence: '신뢰도', advice: '조치',
     reasoning: '판정 근거', conditionsMet: '충족 조건', conditionsMissed: '미충족 조건', inputTitle: '전략 분석 입력 데이터',
     completed: '완료', failed: '실행 실패', invalid: '결과 무효', notEvaluated: '개별 평가 없음', noInput: '표시 가능한 전략 입력 데이터가 기록되지 않음',
+    jointEvaluation: '공동 평가', specialistEvaluation: '개별 평가', dependencies: '이 전략의 필수 입력',
   },
 } as const;
 
@@ -164,6 +167,7 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
   if (!evidence || evidence.schemaVersion !== 'strategy-evidence-v1') return null;
   const selectedStrategies = evidence.selectedStrategies || [];
   const strategyEvaluations = evidence.strategyEvaluations || [];
+  const strategyRequirements = evidence.strategyRequirements || [];
   const overallDecision = evidence.overallDecision;
   const items = evidence.items || [];
 
@@ -181,7 +185,7 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
             {strategy.skillName && strategy.skillName !== strategy.skillId ? ` (${strategy.skillId})` : ''}
           </span>
         ))}
-        {(evidence.strategyRequirements || []).map((requirement) => (
+        {strategyRequirements.map((requirement) => (
           <span key={requirement.skillId} className="home-accent-chip px-2 py-1 text-xs">
             {text.strategy}: {requirement.skillId} · {text.requirement}: {requirementStatusLabel(requirement.status, text)}
           </span>
@@ -194,6 +198,9 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
           <div className="space-y-2">
             {strategyEvaluations.map((evaluation) => {
               const signal = evaluation.signal || '';
+              const requirement = strategyRequirements.find(
+                (item) => item.skillId === evaluation.skillId,
+              );
               return (
                 <div key={evaluation.skillId} className="rounded-lg border border-border/60 bg-muted/10 p-3 text-xs">
                   <div className="flex flex-wrap items-center gap-2">
@@ -202,6 +209,11 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
                     <Badge variant={statusVariant(evaluation.status)}>
                       {evaluationStatusLabel(evaluation.status, text)}
                     </Badge>
+                    {evaluation.evaluationMode ? (
+                      <Badge variant="default">
+                        {evaluation.evaluationMode === 'joint' ? text.jointEvaluation : text.specialistEvaluation}
+                      </Badge>
+                    ) : null}
                     {signal ? <Badge variant="info">{text.signal}: {signalLabel(signal, reportLanguage)}</Badge> : null}
                     {typeof evaluation.confidence === 'number' ? (
                       <span className="text-muted-text">{text.confidence}: {formatConfidence(evaluation.confidence)}</span>
@@ -215,6 +227,23 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
                   ) : null}
                   {evaluation.conditionsMissed?.length ? (
                     <div className="mt-1 text-danger">{text.conditionsMissed}: {evaluation.conditionsMissed.join('；')}</div>
+                  ) : null}
+                  {requirement?.evidence?.length ? (
+                    <div className="mt-2 border-t border-border/50 pt-2 text-muted-text">
+                      <div className="font-medium text-foreground">{text.dependencies}:</div>
+                      <div className="mt-1 space-y-1">
+                        {requirement.evidence.map((item) => {
+                          const presentation = LEGACY_TOOL_PRESENTATION[item.tool];
+                          const name = item.toolDisplayName || presentation?.name || item.tool;
+                          const dataDescription = item.dataDescription || presentation?.data;
+                          return (
+                            <div key={`${evaluation.skillId}-${item.tool}`}>
+                              {name}{dataDescription ? `（${dataDescription}）` : ''}：{statusLabel(item.status, reportLanguage)}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               );

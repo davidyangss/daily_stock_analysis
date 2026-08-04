@@ -235,6 +235,7 @@ def run_market_review(
                     analyzer=analyzer,
                     region=mkt,
                     config=runtime_config,
+                    trigger_source=trigger_source,
                 )
                 review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
@@ -273,6 +274,7 @@ def run_market_review(
                 analyzer=analyzer,
                 region=run_region,
                 config=runtime_config,
+                trigger_source=trigger_source,
             )
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report

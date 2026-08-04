@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Regression tests for belong-board run-flow diagnostics."""
 
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -29,6 +33,17 @@ class _FailingBoardFetcher(_BoardFetcher):
     def get_belong_board(self, _stock_code: str):
         self.calls += 1
         raise self._error
+
+
+class _SlowBoardFetcher(_BoardFetcher):
+    def __init__(self, name: str, delay_seconds: float, result):
+        super().__init__(name, result)
+        self._delay_seconds = delay_seconds
+
+    def get_belong_board(self, _stock_code: str):
+        self.calls += 1
+        time.sleep(self._delay_seconds)
+        return self._result
 
 
 def _capture_belong_board_run(manager: DataFetcherManager):
@@ -114,3 +129,47 @@ def test_get_belong_boards_records_exception_attempt_and_fallback():
     assert provider_runs[0]["fallback_to"] == "FallbackBoardFetcher"
     assert provider_runs[1]["success"] is True
     assert len(flow_events) == 4
+
+
+def test_get_belong_boards_times_out_one_provider_then_falls_back():
+    slow = _SlowBoardFetcher("SlowBoardFetcher", 0.1, [{"name": "迟到板块"}])
+    fallback = _BoardFetcher(
+        "FallbackBoardFetcher",
+        [{"name": "电力设备", "type": "行业"}],
+    )
+    manager = DataFetcherManager(fetchers=[slow, fallback])
+
+    config = SimpleNamespace(
+        provider_loop_timeout_seconds=60.0,
+        provider_loop_total_timeout_seconds=60.0,
+        provider_timeout_overrides={"slowboardfetcher": 1.0},
+        data_provider_max_attempts=1,
+        data_provider_retry_base_delay_seconds=0.0,
+        data_provider_retry_max_delay_seconds=0.0,
+    )
+    with patch("src.config.get_config", return_value=config):
+        boards = manager.get_belong_boards(
+            "600519",
+            provider_timeout_seconds=0.01,
+            total_timeout_seconds=0.1,
+        )
+
+    assert boards == [{"name": "电力设备", "type": "行业"}]
+    assert slow.calls == 1
+    assert fallback.calls == 1
+
+
+def test_get_belong_boards_stops_when_total_budget_is_exhausted():
+    slow = _SlowBoardFetcher("SlowBoardFetcher", 0.1, [{"name": "迟到板块"}])
+    fallback = _BoardFetcher("FallbackBoardFetcher", [{"name": "不应调用"}])
+    manager = DataFetcherManager(fetchers=[slow, fallback])
+
+    boards = manager.get_belong_boards(
+        "600519",
+        provider_timeout_seconds=0.05,
+        total_timeout_seconds=0.01,
+    )
+
+    assert boards == []
+    assert slow.calls == 1
+    assert fallback.calls == 0

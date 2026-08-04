@@ -180,6 +180,8 @@ def test_agent_system_prompts_require_phase_decision_contract() -> None:
         assert '"data_limitations"' in prompt
         assert "quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated" in prompt
         assert "`confidence_level` 不得为高" in prompt
+        assert '"skill_assessment"' in prompt
+        assert "每个激活技能的精确 ID" in prompt
 
 
 # ============================================================

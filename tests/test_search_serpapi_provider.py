@@ -4,6 +4,8 @@ Regression tests for SerpAPI organic content fetch throttling (Issue #882).
 """
 
 import sys
+import threading
+import time
 import unittest
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -88,6 +90,54 @@ class TestSerpAPISearchProvider(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "SerpAPI")
         self.assertIn("search timed out", response.error_message)
+
+    def test_provider_hard_timeout_bounds_blocked_sdk_call(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"], request_timeout_seconds=300)
+        release_sdk = threading.Event()
+
+        with self._patch_serpapi({}), patch.object(
+            provider,
+            "_HARD_DEADLINE_SECONDS",
+            0.02,
+        ), patch.object(
+            _FakeGoogleSearch,
+            "get_dict",
+            side_effect=lambda: release_sdk.wait(timeout=1) or {},
+        ):
+            started_at = time.monotonic()
+            response = provider.search("A股 市场 热点 板块", max_results=3)
+            elapsed = time.monotonic() - started_at
+            release_sdk.set()
+
+        self.assertFalse(response.success)
+        self.assertLess(elapsed, 0.5)
+        self.assertIn("hard timeout", response.error_message)
+
+    def test_provider_rejects_new_blocked_calls_after_timeout_slots_are_full(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"], request_timeout_seconds=300)
+        release_sdk = threading.Event()
+
+        with self._patch_serpapi({}), patch.object(
+            provider,
+            "_HARD_DEADLINE_SECONDS",
+            0.02,
+        ), patch.object(
+            _FakeGoogleSearch,
+            "get_dict",
+            side_effect=lambda: release_sdk.wait(timeout=1) or {},
+        ):
+            first = provider.search("query-1", max_results=1)
+            second = provider.search("query-2", max_results=1)
+            started_at = time.monotonic()
+            third = provider.search("query-3", max_results=1)
+            elapsed = time.monotonic() - started_at
+            release_sdk.set()
+
+        self.assertFalse(first.success)
+        self.assertFalse(second.success)
+        self.assertFalse(third.success)
+        self.assertLess(elapsed, 0.1)
+        self.assertIn("worker pool exhausted", third.error_message)
 
     def test_provider_skips_body_fetch_when_snippet_is_sufficient(self) -> None:
         provider = SerpAPISearchProvider(["dummy_key"])
