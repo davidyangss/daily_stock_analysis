@@ -214,6 +214,7 @@ journalctl -u stock-analyzer -f
 | `ANSPIRE_API_KEYS` | - | Anspire LLM and news search (recommended) |
 | `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `SERPAPI_TIMEOUT_SECONDS` | `20` | Primary SerpAPI search request timeout in seconds (range `1-300`) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 

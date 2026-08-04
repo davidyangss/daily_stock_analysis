@@ -449,6 +449,11 @@ class SerpAPISearchProvider(BaseSearchProvider):
     文档：https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis
     """
 
+    # google-search-results defaults to ``timeout=60000`` and forwards that
+    # value to requests as seconds, which can block an analysis worker for
+    # more than 16 hours.  Keep the primary search request within the same
+    # bounded latency expected from the other search providers.
+    _DEFAULT_SEARCH_REQUEST_TIMEOUT = 20
     _ORGANIC_CONTENT_FETCH_LIMIT = 1
     _ORGANIC_CONTENT_FETCH_RANK_LIMIT = 2
     _ORGANIC_CONTENT_FETCH_TIMEOUT = 2
@@ -489,8 +494,14 @@ class SerpAPISearchProvider(BaseSearchProvider):
         "resource_file",
     }
     
-    def __init__(self, api_keys: List[str]):
+    def __init__(self, api_keys: List[str], request_timeout_seconds: Optional[int] = None):
         super().__init__(api_keys, "SerpAPI")
+        timeout = (
+            self._DEFAULT_SEARCH_REQUEST_TIMEOUT
+            if request_timeout_seconds is None
+            else request_timeout_seconds
+        )
+        self.request_timeout_seconds = max(1, min(300, int(timeout)))
     
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 SerpAPI 搜索"""
@@ -530,6 +541,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
             }
             
             search = GoogleSearch(params)
+            search.timeout = self.request_timeout_seconds
             response = search.get_dict()
             
             # 记录原始响应到日志
@@ -2266,6 +2278,7 @@ class SearchService:
         anspire_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
+        serpapi_timeout_seconds: int = 20,
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = True,
@@ -2281,6 +2294,7 @@ class SearchService:
             anspire_keys: Anspire Search API Key 列表
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
+            serpapi_timeout_seconds: SerpAPI 主搜索请求超时秒数
             minimax_keys: MiniMax API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
@@ -2323,7 +2337,10 @@ class SearchService:
 
         # 4. SerpAPI 作为备选（每月 100 次）
         if serpapi_keys:
-            self._providers.append(SerpAPISearchProvider(serpapi_keys))
+            self._providers.append(SerpAPISearchProvider(
+                serpapi_keys,
+                request_timeout_seconds=serpapi_timeout_seconds,
+            ))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
 
         # 5. MiniMax（Coding Plan Web Search，结构化结果）
@@ -4640,6 +4657,7 @@ def get_search_service() -> SearchService:
                     anspire_keys=config.anspire_api_keys,
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
+                    serpapi_timeout_seconds=getattr(config, "serpapi_timeout_seconds", 20),
                     minimax_keys=config.minimax_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,

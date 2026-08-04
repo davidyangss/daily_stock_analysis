@@ -1022,6 +1022,21 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_serpapi_timeout_defaults_and_accepts_override(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            default_config = Config._load_from_env()
+        with patch.dict(os.environ, {"SERPAPI_TIMEOUT_SECONDS": "37"}, clear=True):
+            overridden_config = Config._load_from_env()
+
+        self.assertEqual(default_config.serpapi_timeout_seconds, 20)
+        self.assertEqual(overridden_config.serpapi_timeout_seconds, 37)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_stock_email_groups_support_case_insensitive_env_names(
         self,
         _mock_parse_yaml,

@@ -8,6 +8,8 @@ import unittest
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import requests
+
 # Mock newspaper before search_service import (optional dependency)
 if "newspaper" not in sys.modules:
     mock_np = MagicMock()
@@ -20,18 +22,26 @@ from src.search_service import SerpAPISearchProvider
 
 class _FakeGoogleSearch:
     response_payload = {}
+    response_error = None
     init_params = []
+    instances = []
 
     def __init__(self, params):
+        self.timeout = 60000
         type(self).init_params.append(params)
+        type(self).instances.append(self)
 
     def get_dict(self):
+        if type(self).response_error is not None:
+            raise type(self).response_error
         return type(self).response_payload
 
     @classmethod
     def reset(cls) -> None:
         cls.response_payload = {}
+        cls.response_error = None
         cls.init_params = []
+        cls.instances = []
 
 
 def _fake_serpapi_module() -> ModuleType:
@@ -47,6 +57,37 @@ class TestSerpAPISearchProvider(unittest.TestCase):
         _FakeGoogleSearch.reset()
         _FakeGoogleSearch.response_payload = payload
         return patch.dict(sys.modules, {"serpapi": _fake_serpapi_module()})
+
+    def test_provider_overrides_serpapi_unbounded_default_timeout(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"], request_timeout_seconds=37)
+
+        with self._patch_serpapi({"organic_results": []}):
+            provider.search("A股 市场 热点 板块", max_results=3)
+
+        self.assertEqual(len(_FakeGoogleSearch.instances), 1)
+        self.assertEqual(
+            _FakeGoogleSearch.instances[0].timeout,
+            37,
+        )
+
+    def test_provider_defaults_to_twenty_second_timeout(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"])
+
+        with self._patch_serpapi({"organic_results": []}):
+            provider.search("A股 市场 热点 板块", max_results=3)
+
+        self.assertEqual(_FakeGoogleSearch.instances[0].timeout, 20)
+
+    def test_provider_timeout_fails_open_for_search_fallback(self) -> None:
+        provider = SerpAPISearchProvider(["dummy_key"])
+
+        with self._patch_serpapi({}):
+            _FakeGoogleSearch.response_error = requests.Timeout("search timed out")
+            response = provider.search("A股 市场 热点 板块", max_results=3)
+
+        self.assertFalse(response.success)
+        self.assertEqual(response.provider, "SerpAPI")
+        self.assertIn("search timed out", response.error_message)
 
     def test_provider_skips_body_fetch_when_snippet_is_sufficient(self) -> None:
         provider = SerpAPISearchProvider(["dummy_key"])

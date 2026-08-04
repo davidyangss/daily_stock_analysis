@@ -339,6 +339,7 @@ def _build_hotspot_event_routes_from_search(topic: str, config: Config) -> List[
             anspire_keys=getattr(config, "anspire_api_keys", None),
             brave_keys=getattr(config, "brave_api_keys", None),
             serpapi_keys=getattr(config, "serpapi_api_keys", None),
+            serpapi_timeout_seconds=getattr(config, "serpapi_timeout_seconds", 20),
             minimax_keys=getattr(config, "minimax_api_keys", None),
             searxng_base_urls=getattr(config, "searxng_base_urls", None),
             searxng_public_instances_enabled=False,

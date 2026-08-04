@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] SerpAPI 新闻搜索支持 `SERPAPI_TIMEOUT_SECONDS` 配置（默认 20 秒），覆盖 SDK 约 16 小时的默认请求超时，避免市场上下文搜索长期占用普通分析任务线程
 - [文档] 新增面向 Codex 多 SubAgent 的产品功能图及数据、策略、交易员和报告挑战工作流契约
 - [改进] 首页显式选择策略后，个股报告展示所选策略、综合/逐策略判定、满足与未满足条件，以及策略实际使用的输入数据和来源
 - [改进] 交易员市场技术报告显式标明 RSI(14) 使用 Wilder EMA/SMMA 递推平滑而非 14 日算术滚动均值

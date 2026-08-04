@@ -226,6 +226,7 @@ journalctl -u stock-analyzer -f
 | `ANSPIRE_API_KEYS` | - | Anspire 大模型与新闻搜索（推荐） |
 | `AIHUBMIX_KEY` | - | AIHubMix 一 Key 多模型（推荐） |
 | `SERPAPI_API_KEYS` | - | SerpAPI 实时金融新闻搜索（推荐） |
+| `SERPAPI_TIMEOUT_SECONDS` | `20` | SerpAPI 主搜索请求超时秒数（范围 `1-300`） |
 | `TAVILY_API_KEYS` | - | Tavily 新闻搜索（可选） |
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 
