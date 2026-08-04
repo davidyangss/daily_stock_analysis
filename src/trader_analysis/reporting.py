@@ -112,6 +112,11 @@ _MARKET_ADJUSTMENT_NOTES = {
     "unknown": "技术指标所用日线的复权口径未确认；历史指标值不宜与其他行情软件直接比较。",
 }
 
+_MARKET_INDICATOR_METHOD_NOTE = (
+    "指标算法：RSI(14) 采用 Wilder EMA/SMMA 递推平滑（alpha=1/14），"
+    "不是最近 14 个交易日涨跌的算术滚动均值。"
+)
+
 
 def _strip_market_workpad_prefix(content: str) -> str:
     """Drop a recognizable English workpad before the formal Chinese report."""
@@ -199,7 +204,10 @@ def _market_adjustment_disclosure(ledger: EvidenceLedger) -> str:
             f" 已检测到除权断点，跨断点指标不可用；技术指标仅使用 "
             f"{payload.get('indicator_start_date') or '最后断点'} 及之后的连续价格区间。"
         )
-    return f"> 数据口径（adjustment=`{adjustment}`）：{note}"
+    return (
+        f"> 数据口径（adjustment=`{adjustment}`）：{note}\n"
+        f"> {_MARKET_INDICATOR_METHOD_NOTE}"
+    )
 
 
 def _evidence_appendix(envelope: EvidenceEnvelope | None, *, item_key: str) -> str:

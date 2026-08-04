@@ -393,7 +393,7 @@ DSA 兼容构建支持可选 `sections[]`：只有注入 toolkit 提供该字段
 | 工具 | 输入 | 输出 | 不可用行为 |
 | --- | --- | --- | --- |
 | `get_stock_data` | `ticker,start_date,end_date` | 指定窗口标准日线 CSV；`volume` 为股、`amount` 为元，`adjustment` 为复权口径 | `NO_DATA_AVAILABLE` |
-| `get_indicators` | `ticker,indicator,curr_date,look_back_days` | `trade_date + adjustment + 指标值` CSV | 指标不支持或历史不足时 `NO_DATA_AVAILABLE` |
+| `get_indicators` | `ticker,indicator,curr_date,look_back_days` | `trade_date + adjustment + 指标值` CSV；RSI 口径由工具描述和市场报告显式声明 | 指标不支持或历史不足时 `NO_DATA_AVAILABLE` |
 | `get_verified_market_snapshot` | `ticker,curr_date` | JSON：status/provider/as_of + snapshot payload | 缺 envelope 为契约错误 |
 | `get_news` | `ticker,start_date,end_date` | 过滤后的新闻 JSON array | 空数组或明确缺失 |
 | `get_global_news` | `curr_date,look_back_days,limit` | 独立宏观新闻；当前为明确不可用字符串 | 不得返回个股新闻 |
@@ -423,6 +423,10 @@ DSA 兼容构建支持可选 `sections[]`：只有注入 toolkit 提供该字段
 | `boll_ub/lb` | BOLL 上轨/下轨 | 中轨 ± 2 × 20 日总体标准差 `ddof=0` |
 | `atr` | ATR(14) | True Range 的 14 日滚动均值 |
 | `vwma` | 成交量加权移动均线 | 20 日 `sum(close*volume)/sum(volume)` |
+
+公开市场技术报告必须在数据口径区显式标明：`RSI(14)` 使用 Wilder EMA/SMMA
+递推平滑（`alpha=1/14`），不是最近 14 个交易日涨跌的算术滚动均值；该声明由发布层
+确定性插入，不依赖模型自行复述。
 
 涨跌停不能对所有 A 股硬套同一比例。主板、创业板、科创板、北交所、ST、上市初期和规则变更的限制不同；只有 instrument/reference metadata 明确时才能使用。停牌、复牌、除权除息同理。
 

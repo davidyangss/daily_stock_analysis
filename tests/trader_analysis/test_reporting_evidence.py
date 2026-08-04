@@ -116,6 +116,8 @@ def test_market_report_discloses_unadjusted_historical_indicator_basis() -> None
     assert market.startswith("> 数据口径（adjustment=`none`）")
     assert "技术指标基于不复权日线数据计算" in market
     assert "历史指标值可能与前复权行情软件显示存在差异" in market
+    assert "RSI(14) 采用 Wilder EMA/SMMA 递推平滑（alpha=1/14）" in market
+    assert "不是最近 14 个交易日涨跌的算术滚动均值" in market
     assert "趋势方向保持不变" in market
 
 

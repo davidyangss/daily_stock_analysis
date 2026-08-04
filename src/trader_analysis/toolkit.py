@@ -465,6 +465,7 @@ class DsaTradingAgentsToolkit:
             self._tool(
                 "get_indicators",
                 "基于同一 A 股日线确定性计算指标：macd=DIF，macds=DEA，macdh=2*(DIF-DEA)，"
+                "RSI(14) 使用 Wilder EMA/SMMA 递推平滑（alpha=1/14，非 14 日算术滚动均值），"
                 "BOLL 为 20 日中轨/上轨/下轨；adjustment 标识复权口径；"
                 "只能解释工具实际返回的日期和值。",
             ),

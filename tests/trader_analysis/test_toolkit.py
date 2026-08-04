@@ -54,6 +54,9 @@ def test_toolkit_uses_dif_double_macd_histogram_and_wilder_rsi() -> None:
         2 * (dif["macd"].iloc[-1] - dea["macds"].iloc[-1])
     )
     assert rsi["rsi"].iloc[-1] == pytest.approx(68.11129488016466)
+    indicator_tool = next(tool for tool in toolkit.market_tools if tool.name == "get_indicators")
+    assert "RSI(14) 使用 Wilder EMA/SMMA 递推平滑" in indicator_tool.description
+    assert "非 14 日算术滚动均值" in indicator_tool.description
     frame = pd.DataFrame(rows)
     true_range = pd.concat([
         frame["high"] - frame["low"],
