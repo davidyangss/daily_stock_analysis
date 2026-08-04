@@ -14,6 +14,7 @@
 | 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/) |
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
+| 构建 Codex 多 SubAgent 股票分析工作流 | [Codex 工作流总览](codex-workflow/) | [数据契约](codex-workflow/data-contracts.md)、[策略与角色契约](codex-workflow/strategy-and-role-contracts.md)、[报告挑战协议](codex-workflow/multi-agent-challenge-workflow.md) |
 | 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [API 规格](architecture/api_spec.json) |
 
 ## 快速开始
@@ -63,6 +64,11 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [Codex 多 SubAgent 股票分析工作流](codex-workflow/) | 面向 Codex 的现有能力映射、数据与策略 I/O、交易员决策衔接，以及报告段落对抗和增补协议 |
+| [Codex 股票分析产品功能图](codex-workflow/product-capability-map.md) | 用一张端到端能力图串联产品入口、数据适配、策略工具、交易员团队、报告生成和段落挑战，并标注现有/目标能力 |
+| [Codex 数据源与标准数据契约](codex-workflow/data-contracts.md) | DataProvider / NewsProvider 能力矩阵、标准字段、时点、fallback、质量状态和 AgentContextPack 目标结构 |
+| [Codex 策略工具与角色决策契约](codex-workflow/strategy-and-role-contracts.md) | 15 个内置策略的输入—逻辑—输出，以及筛选、问股、Trader 和 Portfolio 的角色边界 |
+| [Codex 报告挑战与协作协议](codex-workflow/multi-agent-challenge-workflow.md) | 报告 section/claim ID、ChallengeRequest/Response、证据核验、裁决、amendment 和 SubAgent 任务模板 |
 | [API 规格](architecture/api_spec.json) | FastAPI OpenAPI 规格产物 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、测试、文档同步和协作要求 |
 
