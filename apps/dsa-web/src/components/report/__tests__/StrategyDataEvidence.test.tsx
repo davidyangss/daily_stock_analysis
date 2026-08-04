@@ -9,6 +9,23 @@ describe('StrategyDataEvidence', () => {
         evidence={{
           schemaVersion: 'strategy-evidence-v1',
           status: 'insufficient',
+          selectedStrategies: [{ skillId: 'volume_breakout', skillName: '放量突破' }],
+          strategyEvaluations: [{
+            skillId: 'volume_breakout',
+            skillName: '放量突破',
+            status: 'completed',
+            signal: 'buy',
+            confidence: 0.62,
+            reasoning: '突破条件成立，但新闻数据缺失，结果不参与最终投票。',
+            conditionsMet: ['价格突破近20日高点'],
+            conditionsMissed: ['新闻催化未验证'],
+          }],
+          overallDecision: {
+            signal: 'hold',
+            confidence: 0.55,
+            operationAdvice: '等待数据补齐后再判断',
+            reasoning: '当前证据不足，综合判定为观望。',
+          },
           strategyRequirements: [{
             skillId: 'volume_breakout',
             status: 'insufficient',
@@ -61,7 +78,17 @@ describe('StrategyDataEvidence', () => {
       />,
     );
 
-    expect(screen.getByText('关键数据与来源')).toBeInTheDocument();
+    expect(screen.getByText('策略分析详情')).toBeInTheDocument();
+    expect(screen.getByText(/所选策略: 放量突破/)).toBeInTheDocument();
+    expect(screen.getByText('策略判定结果')).toBeInTheDocument();
+    expect(screen.getByText(/判定信号: 买入/)).toBeInTheDocument();
+    expect(screen.getByText(/置信度: 62%/)).toBeInTheDocument();
+    expect(screen.getByText(/满足条件: 价格突破近20日高点/)).toBeInTheDocument();
+    expect(screen.getByText(/未满足条件: 新闻催化未验证/)).toBeInTheDocument();
+    expect(screen.getByText('综合判定')).toBeInTheDocument();
+    expect(screen.getByText(/判定信号: 持有\/观望/)).toBeInTheDocument();
+    expect(screen.getByText(/操作建议: 等待数据补齐后再判断/)).toBeInTheDocument();
+    expect(screen.getByText('策略分析输入数据')).toBeInTheDocument();
     expect(screen.getByText('K线形态识别')).toBeInTheDocument();
     expect(screen.getByText(/基于近期日线K线识别/)).toBeInTheDocument();
     expect(screen.getByText('抓取失败')).toBeInTheDocument();
@@ -80,6 +107,34 @@ describe('StrategyDataEvidence', () => {
     );
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('keeps an explicitly selected strategy visible when no input was recorded', () => {
+    render(
+      <StrategyDataEvidence
+        evidence={{
+          schemaVersion: 'strategy-evidence-v1',
+          status: 'insufficient',
+          selectedStrategies: [{ skillId: 'bull_trend', skillName: '多头趋势策略' }],
+          strategyEvaluations: [{
+            skillId: 'bull_trend',
+            skillName: '多头趋势策略',
+            status: 'not_evaluated',
+            conditionsMet: [],
+            conditionsMissed: [],
+          }],
+          overallDecision: { signal: 'hold', reasoning: '未取得可用输入。' },
+          strategyRequirements: [],
+          limitations: [],
+          items: [],
+        }}
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByText(/所选策略: 多头趋势策略/)).toBeInTheDocument();
+    expect(screen.getByText('未单独评估')).toBeInTheDocument();
+    expect(screen.getByText('本次未记录可展示的策略输入数据')).toBeInTheDocument();
   });
 
   it('shows prefetched chip metrics and missing fields in readable form', () => {

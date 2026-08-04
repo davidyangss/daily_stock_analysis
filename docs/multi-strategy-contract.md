@@ -99,11 +99,14 @@ Skill YAML 的 `required_tools` 是硬数据依赖。SkillAgent 必须调用全�
 Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema_version="strategy-evidence-v1"`。该低敏清单包含：
 
 - `status`：本次策略依赖总体状态（`verified` / `limited` / `insufficient`）。
+- `selected_strategies`：本次实际选择的策略 ID 与持久化展示名。
+- `strategy_evaluations`：逐策略执行状态，以及有效 Specialist 观点的信号、置信度、判定依据和满足/未满足条件；未运行独立 Specialist 时使用 `not_evaluated`，不得复制综合结论冒充逐策略结论。
+- `overall_decision`：Pipeline 的综合信号、置信度/置信度标签、操作建议和判定依据。
 - `strategy_requirements`：各策略的必需工具、缺失/降级工具及对应证据。
 - `items`：工具状态、来源、cache/partial/prefetched 标记、as-of、请求/实际记录数和允许公开的关键标量；常用行情、估值、资金流和筹码字段同时提供中文指标名、格式化值、单位、含义、可用/缺失状态与缺失字段清单。
 - `limitations`：必需数据不可用或降级的确定性说明。
 
-该清单由真实工具结果和 pipeline 已预取、且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；旧报告没有该字段时保持兼容隐藏。
+该清单由请求中的策略选择、真实工具结果、有效/无效策略观点、Pipeline 综合结论和已预取且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；新增字段保持可选，旧报告没有该字段时继续兼容。
 
 ### 动态二分阵营（Supporting / Opposing）
 

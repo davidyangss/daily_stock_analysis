@@ -62,8 +62,10 @@ from src.agent.final_explanation import (
 )
 from src.agent.evidence import (
     build_prefetched_context_evidence,
+    build_strategy_evidence_manifest,
     collect_tool_evidence,
     merge_prefetched_evidence,
+    update_strategy_overall_decision,
 )
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
@@ -1386,7 +1388,7 @@ class StockAnalysisPipeline:
         使用 Agent 模式分析单只股票。
         """
         try:
-            from src.agent.factory import build_agent_executor
+            from src.agent.factory import build_agent_executor, get_skill_manager
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
 
             requested_skills = (
@@ -1396,6 +1398,10 @@ class StockAnalysisPipeline:
             )
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
             executor = build_agent_executor(self.config, requested_skills)
+            selected_strategy_descriptors = self._describe_selected_strategies(
+                requested_skills,
+                get_skill_manager(self.config),
+            )
 
             # Build initial context to avoid redundant tool calls
             initial_context = {
@@ -1536,8 +1542,30 @@ class StockAnalysisPipeline:
                 dashboard = getattr(result, "dashboard", None)
                 strategy_evidence = None
                 if isinstance(dashboard, dict):
+                    existing_strategy_evidence = dashboard.get("strategy_data_evidence")
+                    if (
+                        selected_strategy_descriptors
+                        and not (
+                            isinstance(existing_strategy_evidence, dict)
+                            and existing_strategy_evidence.get("schema_version") == "strategy-evidence-v1"
+                        )
+                    ):
+                        existing_strategy_evidence = build_strategy_evidence_manifest(
+                            tool_evidence=collect_tool_evidence(
+                                getattr(agent_result, "tool_calls_log", []) or []
+                            ),
+                            opinions=[],
+                            invalid_records=[],
+                            selected_strategies=selected_strategy_descriptors,
+                            overall_decision={
+                                "signal": getattr(result, "decision_type", None),
+                                "operation_advice": getattr(result, "operation_advice", None),
+                                "confidence_label": getattr(result, "confidence_level", None),
+                                "reasoning": getattr(result, "analysis_summary", None),
+                            },
+                        )
                     strategy_evidence = merge_prefetched_evidence(
-                        dashboard.get("strategy_data_evidence"),
+                        existing_strategy_evidence,
                         build_prefetched_context_evidence(initial_context),
                     )
                     if strategy_evidence is not None:
@@ -1701,6 +1729,22 @@ class StockAnalysisPipeline:
                             ),
                         )
                     )
+                if isinstance(result.dashboard, dict):
+                    strategy_manifest = update_strategy_overall_decision(
+                        result.dashboard.get("strategy_data_evidence"),
+                        {
+                            "signal": getattr(
+                                getattr(result, "action", None),
+                                "value",
+                                getattr(result, "action", None),
+                            ) or getattr(result, "decision_type", None),
+                            "operation_advice": getattr(result, "operation_advice", None),
+                            "confidence_label": getattr(result, "confidence_level", None),
+                            "reasoning": getattr(result, "analysis_summary", None),
+                        },
+                    )
+                    if strategy_manifest is not None:
+                        result.dashboard["strategy_data_evidence"] = strategy_manifest
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -1986,6 +2030,24 @@ class StockAnalysisPipeline:
             return
         target_context["daily_market_context"] = safe_context
         target_context["daily_market_context_summary"] = prompt_section
+
+    @staticmethod
+    def _describe_selected_strategies(
+        skill_ids: Optional[List[str]],
+        skill_manager: Any,
+    ) -> List[Dict[str, str]]:
+        """Project active strategy ids into report-safe persisted display metadata."""
+        result: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_skill_id in skill_ids or []:
+            skill_id = str(raw_skill_id or "").strip()
+            if not skill_id or skill_id in seen:
+                continue
+            seen.add(skill_id)
+            skill = skill_manager.get(skill_id) if skill_manager is not None else None
+            display_name = str(getattr(skill, "display_name", "") or skill_id).strip()
+            result.append({"skill_id": skill_id, "skill_name": display_name})
+        return result
 
     @staticmethod
     def _agent_data_sources(agent_result: Any) -> str:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -236,6 +237,129 @@ def _safe_scalar(value: Any) -> Any:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return _safe_text(value)
+
+
+def _safe_string_list(value: Any, *, limit: int = 20, item_limit: int = 300) -> List[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: List[str] = []
+    for item in value[:limit]:
+        text = _safe_text(item, item_limit)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _safe_confidence(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        confidence = float(value or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(confidence):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _skill_id_from_agent(value: Any) -> str:
+    agent_name = str(value or "").strip()
+    for prefix in ("skill_", "skill:", "strategy_"):
+        if agent_name.startswith(prefix):
+            return agent_name[len(prefix):]
+    return agent_name
+
+
+def _normalize_selected_strategies(values: Iterable[Any]) -> List[Dict[str, str]]:
+    selected: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if isinstance(value, Mapping):
+            skill_id = _safe_text(
+                value.get("skill_id") or value.get("id") or value.get("name"),
+                120,
+            )
+            skill_name = _safe_text(
+                value.get("skill_name")
+                or value.get("display_name")
+                or value.get("displayName")
+                or skill_id,
+                160,
+            )
+        else:
+            skill_id = _safe_text(value, 120)
+            skill_name = skill_id
+        if not skill_id or skill_id in seen:
+            continue
+        seen.add(skill_id)
+        selected.append({"skill_id": skill_id, "skill_name": skill_name or skill_id})
+    return selected[:20]
+
+
+def _sanitize_overall_decision(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return None
+    decision: Dict[str, Any] = {}
+    for field in ("signal", "operation_advice", "confidence_label", "reasoning"):
+        raw_value = value.get(field)
+        if raw_value not in (None, ""):
+            decision[field] = _safe_text(raw_value, 1000 if field == "reasoning" else 200)
+    confidence = value.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        decision["confidence"] = _safe_confidence(confidence)
+    return decision or None
+
+
+def _strategy_evaluation_from_opinion(opinion: Any) -> Optional[Dict[str, Any]]:
+    agent_name = str(getattr(opinion, "agent_name", "") or "")
+    skill_id = _skill_id_from_agent(agent_name)
+    if not skill_id or not agent_name.startswith(("skill_", "skill:", "strategy_")):
+        return None
+    raw_data = getattr(opinion, "raw_data", None)
+    raw_data = raw_data if isinstance(raw_data, Mapping) else {}
+    evidence_status = str(raw_data.get("evidence_status") or "unknown")
+    evidence_insufficient = evidence_status == "insufficient"
+    evaluation: Dict[str, Any] = {
+        "skill_id": skill_id,
+        "status": "insufficient" if evidence_insufficient else "completed",
+        "reasoning": _safe_text(getattr(opinion, "reasoning", ""), 1000),
+        "conditions_met": _safe_string_list(raw_data.get("conditions_met")),
+        "conditions_missed": _safe_string_list(raw_data.get("conditions_missed")),
+        "evidence_status": evidence_status,
+    }
+    if not evidence_insufficient:
+        evaluation["signal"] = _safe_text(getattr(opinion, "signal", ""), 80)
+        evaluation["confidence"] = _safe_confidence(getattr(opinion, "confidence", 0.0))
+    score_adjustment = raw_data.get("score_adjustment")
+    if isinstance(score_adjustment, (int, float)) and not isinstance(score_adjustment, bool):
+        evaluation["score_adjustment"] = score_adjustment
+    return evaluation
+
+
+def _strategy_evaluation_from_invalid_record(record: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    skill_id = _skill_id_from_agent(record.get("agent_name"))
+    if not skill_id:
+        return None
+    reason = str(record.get("reason") or "unknown")
+    status = {
+        "insufficient_required_data": "insufficient",
+        "skill_timeout": "failed",
+        "skill_error": "failed",
+        "missing_signal": "invalid",
+        "unrecognized_signal": "invalid",
+    }.get(reason, "failed")
+    evaluation: Dict[str, Any] = {
+        "skill_id": skill_id,
+        "status": status,
+        "reasoning": _safe_text(record.get("reasoning") or record.get("error"), 1000),
+        "conditions_met": _safe_string_list(record.get("conditions_met")),
+        "conditions_missed": _safe_string_list(record.get("conditions_missed")),
+        "failure_reason": reason,
+    }
+    raw_signal = record.get("raw_signal")
+    if raw_signal not in (None, ""):
+        evaluation["raw_signal"] = _safe_text(raw_signal, 80)
+    return evaluation
 
 
 def _metric_details(tool_name: str, mapping: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -534,6 +658,7 @@ def build_prefetched_context_evidence(context: Any) -> List[Dict[str, Any]]:
     candidates = (
         ("get_realtime_quote", context.get("realtime_quote")),
         ("get_chip_distribution", context.get("chip_distribution")),
+        ("analyze_trend", context.get("trend_result")),
     )
     evidence: List[Dict[str, Any]] = []
     for tool_name, payload in candidates:
@@ -623,6 +748,16 @@ def merge_prefetched_evidence(
                 sources.append(source)
         existing["sources"] = sources[:10]
     merged["items"] = items[:60]
+    if not merged.get("strategy_requirements"):
+        item_statuses = {item.get("status") for item in merged["items"]}
+        if item_statuses & {"missing", "fetch_failed", "not_supported"}:
+            merged["status"] = "insufficient"
+        elif item_statuses & {"fallback", "partial", "estimated", "stale"}:
+            merged["status"] = "limited"
+        elif item_statuses:
+            merged["status"] = "verified"
+        elif merged.get("selected_strategies"):
+            merged["status"] = "insufficient"
     return merged
 
 
@@ -651,26 +786,23 @@ def build_strategy_evidence_manifest(
     tool_evidence: Iterable[Mapping[str, Any]],
     opinions: Iterable[Any],
     invalid_records: Iterable[Mapping[str, Any]],
+    selected_strategies: Iterable[Any] = (),
+    overall_decision: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build the deterministic dashboard/report projection for data dependencies."""
+    opinion_list = list(opinions or [])
+    invalid_record_list = list(invalid_records or [])
     observed_items = [
         dict(item) for item in tool_evidence or [] if isinstance(item, Mapping)
     ]
     strategy_requirements: List[Dict[str, Any]] = []
     seen_skills: set[str] = set()
 
-    def skill_id_from_agent(value: Any) -> str:
-        agent_name = str(value or "")
-        for prefix in ("skill_", "skill:", "strategy_"):
-            if agent_name.startswith(prefix):
-                return agent_name[len(prefix):]
-        return agent_name
-
-    for opinion in opinions or []:
+    for opinion in opinion_list:
         raw_data = getattr(opinion, "raw_data", None)
         if not isinstance(raw_data, Mapping) or "evidence_status" not in raw_data:
             continue
-        skill_id = skill_id_from_agent(getattr(opinion, "agent_name", ""))
+        skill_id = _skill_id_from_agent(getattr(opinion, "agent_name", ""))
         if not skill_id or skill_id in seen_skills:
             continue
         seen_skills.add(skill_id)
@@ -682,10 +814,10 @@ def build_strategy_evidence_manifest(
             "evidence": list(raw_data.get("required_tool_evidence") or []),
         })
 
-    for record in invalid_records or []:
+    for record in invalid_record_list:
         if not isinstance(record, Mapping) or record.get("reason") != "insufficient_required_data":
             continue
-        skill_id = skill_id_from_agent(record.get("agent_name"))
+        skill_id = _skill_id_from_agent(record.get("agent_name"))
         if not skill_id or skill_id in seen_skills:
             continue
         seen_skills.add(skill_id)
@@ -743,7 +875,50 @@ def build_strategy_evidence_manifest(
     ]
     items = [*required_items, *auxiliary_items]
 
-    if not items and not strategy_requirements:
+    selected = _normalize_selected_strategies(selected_strategies)
+    selected_by_id = {item["skill_id"]: item for item in selected}
+    evaluations_by_id: Dict[str, Dict[str, Any]] = {}
+    for opinion in opinion_list:
+        evaluation = _strategy_evaluation_from_opinion(opinion)
+        if evaluation is not None:
+            evaluations_by_id[evaluation["skill_id"]] = evaluation
+    for record in invalid_record_list:
+        if not isinstance(record, Mapping):
+            continue
+        evaluation = _strategy_evaluation_from_invalid_record(record)
+        if evaluation is not None:
+            evaluations_by_id[evaluation["skill_id"]] = evaluation
+
+    if not selected:
+        derived_ids = [
+            *[str(item.get("skill_id") or "") for item in strategy_requirements],
+            *evaluations_by_id.keys(),
+        ]
+        selected = _normalize_selected_strategies(derived_ids)
+        selected_by_id = {item["skill_id"]: item for item in selected}
+
+    strategy_evaluations: List[Dict[str, Any]] = []
+    for selected_item in selected:
+        skill_id = selected_item["skill_id"]
+        evaluation = dict(evaluations_by_id.pop(skill_id, {}))
+        if not evaluation:
+            evaluation = {
+                "skill_id": skill_id,
+                "status": "not_evaluated",
+                "conditions_met": [],
+                "conditions_missed": [],
+            }
+        evaluation["skill_name"] = selected_item["skill_name"]
+        strategy_evaluations.append(evaluation)
+    for skill_id, evaluation in evaluations_by_id.items():
+        extra = dict(evaluation)
+        extra["skill_name"] = selected_by_id.get(skill_id, {}).get("skill_name", skill_id)
+        strategy_evaluations.append(extra)
+        if skill_id not in selected_by_id:
+            selected.append({"skill_id": skill_id, "skill_name": extra["skill_name"]})
+
+    sanitized_overall_decision = _sanitize_overall_decision(overall_decision)
+    if not items and not strategy_requirements and not selected and sanitized_overall_decision is None:
         return None
 
     limitations: List[str] = []
@@ -763,6 +938,8 @@ def build_strategy_evidence_manifest(
             statuses.add("limited")
         elif item_statuses:
             statuses.add("verified")
+        elif selected:
+            statuses.add("insufficient")
     status = (
         "insufficient"
         if "insufficient" in statuses
@@ -771,6 +948,9 @@ def build_strategy_evidence_manifest(
     return {
         "schema_version": "strategy-evidence-v1",
         "status": status,
+        "selected_strategies": selected,
+        "strategy_evaluations": strategy_evaluations[:20],
+        "overall_decision": sanitized_overall_decision,
         "items": items[:60],
         "strategy_requirements": strategy_requirements,
         "limitations": list(dict.fromkeys(limitations))[:20],
@@ -799,6 +979,18 @@ def extract_strategy_evidence_manifest(*values: Any) -> Optional[Dict[str, Any]]
     return None
 
 
+def update_strategy_overall_decision(
+    manifest: Any,
+    overall_decision: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Replace the public overall decision after downstream guardrails finish."""
+    if not isinstance(manifest, Mapping) or manifest.get("schema_version") != "strategy-evidence-v1":
+        return None
+    updated = dict(manifest)
+    updated["overall_decision"] = _sanitize_overall_decision(overall_decision)
+    return updated
+
+
 def format_strategy_evidence_markdown(
     manifest: Any,
     report_language: str = "zh",
@@ -810,43 +1002,162 @@ def format_strategy_evidence_markdown(
         return ""
     language = str(report_language or "zh").strip().lower()
     if language.startswith("en"):
-        heading = "Critical strategy data and sources"
+        heading = "Strategy analysis details"
         overall_label = "Overall evidence"
+        selected_label = "Selected strategies"
+        evaluation_heading = "Strategy decisions"
+        overall_decision_heading = "Overall decision"
         source_heading = "Data source overview"
         metrics_heading = "Key metrics"
         limitations_heading = "Data limitations"
         headers = ("Status", "Data requested", "Source / coverage")
         metric_headers = ("Metric", "Status", "Value", "Meaning")
+        evaluation_headers = ("Strategy", "Status", "Signal / confidence", "Decision basis")
         available_text, missing_text = "Available", "Missing"
+        selected_separator = ", "
+        condition_labels = ("Conditions met", "Conditions missed")
+        decision_labels = ("Signal", "Confidence", "Action", "Decision basis")
+        public_status_labels = {
+            "verified": "Verified", "limited": "Limited", "insufficient": "Insufficient",
+            "completed": "Completed", "failed": "Failed", "invalid": "Invalid",
+            "not_evaluated": "Not separately evaluated",
+        }
+        public_signal_labels = {
+            "strong_buy": "Strong buy", "buy": "Buy", "add": "Add", "hold": "Hold",
+            "reduce": "Reduce", "sell": "Sell", "strong_sell": "Strong sell",
+            "watch": "Watch", "avoid": "Avoid", "alert": "Alert",
+        }
     elif language.startswith("ko"):
-        heading = "전략 핵심 데이터 및 출처"
+        heading = "전략 분석 상세"
         overall_label = "전체 근거"
+        selected_label = "선택 전략"
+        evaluation_heading = "전략 판정"
+        overall_decision_heading = "종합 판정"
         source_heading = "데이터 출처 개요"
         metrics_heading = "핵심 지표"
         limitations_heading = "데이터 한계"
         headers = ("상태", "수집 데이터", "출처 / 범위")
         metric_headers = ("지표", "상태", "값", "의미")
+        evaluation_headers = ("전략", "상태", "신호 / 신뢰도", "판정 근거")
         available_text, missing_text = "사용 가능", "누락"
+        selected_separator = ", "
+        condition_labels = ("충족 조건", "미충족 조건")
+        decision_labels = ("판정 신호", "신뢰도", "조치", "판정 근거")
+        public_status_labels = {
+            "verified": "검증됨", "limited": "데이터 제한", "insufficient": "근거 부족",
+            "completed": "완료", "failed": "실행 실패", "invalid": "결과 무효",
+            "not_evaluated": "개별 평가 없음",
+        }
+        public_signal_labels = {
+            "strong_buy": "강력 매수", "buy": "매수", "add": "추가 매수", "hold": "보유/관망",
+            "reduce": "축소", "sell": "매도", "strong_sell": "강력 매도",
+            "watch": "관찰", "avoid": "회피", "alert": "경고",
+        }
     else:
-        heading = "策略关键数据与来源"
+        heading = "策略分析详情：策略关键数据与来源"
         overall_label = "总体证据"
+        selected_label = "所选策略"
+        evaluation_heading = "策略判定结果"
+        overall_decision_heading = "综合判定"
         source_heading = "数据获取概览"
         metrics_heading = "关键指标"
         limitations_heading = "数据限制"
         headers = ("状态", "获取内容", "来源 / 覆盖")
         metric_headers = ("指标", "状态", "数值", "含义")
+        evaluation_headers = ("策略", "状态", "信号 / 置信度", "判定依据")
         available_text, missing_text = "可用", "缺失"
+        selected_separator = "、"
+        condition_labels = ("满足条件", "未满足条件")
+        decision_labels = ("判定信号", "置信度", "操作建议", "判定依据")
+        public_status_labels = {
+            "verified": "已验证", "limited": "数据受限", "insufficient": "证据不足",
+            "completed": "已完成", "failed": "执行失败", "invalid": "结果无效",
+            "not_evaluated": "未单独评估",
+        }
+        public_signal_labels = {
+            "strong_buy": "强烈买入", "buy": "买入", "add": "加仓", "hold": "持有/观望",
+            "reduce": "减仓", "sell": "卖出", "strong_sell": "强烈卖出",
+            "watch": "观察", "avoid": "回避", "alert": "警示",
+        }
 
     def cell(value: Any) -> str:
         return str(value if value not in (None, "") else "N/A").replace("|", "\\|").replace("\n", "<br>")
 
-    lines = [f"### 🔎 {heading}", "", f"> **{overall_label}**：{manifest.get('status') or 'unknown'}"]
+    def public_status(value: Any) -> str:
+        status = str(value or "unknown")
+        return public_status_labels.get(status, status)
+
+    def public_signal(value: Any) -> str:
+        signal = str(value or "")
+        return public_signal_labels.get(signal, signal or "N/A")
+
+    lines = [f"### 🔎 {heading}", "", f"> **{overall_label}**：{public_status(manifest.get('status'))}"]
+    selected = [
+        item for item in (manifest.get("selected_strategies") or [])
+        if isinstance(item, Mapping) and item.get("skill_id")
+    ]
+    if selected:
+        selected_text = selected_separator.join(
+            f"{item.get('skill_name') or item['skill_id']} (`{item['skill_id']}`)"
+            for item in selected[:20]
+        )
+        lines.append(f"> **{selected_label}**：{selected_text}")
     for requirement in (manifest.get("strategy_requirements") or [])[:10]:
         if not isinstance(requirement, Mapping):
             continue
         skill_id = str(requirement.get("skill_id") or "").strip()
         if skill_id:
-            lines.append(f"> {skill_id}：{requirement.get('status') or 'unknown'}")
+            lines.append(f"> {skill_id}：{public_status(requirement.get('status'))}")
+
+    evaluations = [
+        item for item in (manifest.get("strategy_evaluations") or [])
+        if isinstance(item, Mapping) and item.get("skill_id")
+    ]
+    if evaluations:
+        lines.extend([
+            "",
+            f"#### {evaluation_heading}",
+            "",
+            f"| {evaluation_headers[0]} | {evaluation_headers[1]} | {evaluation_headers[2]} | {evaluation_headers[3]} |",
+            "|------|:------:|:------:|------|",
+        ])
+        for evaluation in evaluations[:10]:
+            confidence = evaluation.get("confidence")
+            confidence_text = f"{float(confidence):.0%}" if isinstance(confidence, (int, float)) else "N/A"
+            signal = public_signal(evaluation.get("signal"))
+            reasoning_parts = [str(evaluation.get("reasoning") or "").strip()]
+            conditions_met = _safe_string_list(evaluation.get("conditions_met"), limit=5)
+            conditions_missed = _safe_string_list(evaluation.get("conditions_missed"), limit=5)
+            if conditions_met:
+                reasoning_parts.append(f"{condition_labels[0]}: " + "; ".join(conditions_met))
+            if conditions_missed:
+                reasoning_parts.append(f"{condition_labels[1]}: " + "; ".join(conditions_missed))
+            lines.append(
+                f"| {cell(evaluation.get('skill_name') or evaluation['skill_id'])} "
+                f"(`{cell(evaluation['skill_id'])}`) | {cell(public_status(evaluation.get('status')))} | "
+                f"{cell(signal)} / {cell(confidence_text)} | "
+                f"{cell('<br>'.join(part for part in reasoning_parts if part))} |"
+            )
+
+    overall_decision = manifest.get("overall_decision")
+    if isinstance(overall_decision, Mapping):
+        confidence = overall_decision.get("confidence")
+        confidence_text = (
+            f"{float(confidence):.0%}"
+            if isinstance(confidence, (int, float))
+            else str(overall_decision.get("confidence_label") or "N/A")
+        )
+        lines.extend([
+            "",
+            f"#### {overall_decision_heading}",
+            "",
+            f"- {decision_labels[0]}: {cell(public_signal(overall_decision.get('signal')))}",
+            f"- {decision_labels[1]}: {cell(confidence_text)}",
+        ])
+        if overall_decision.get("operation_advice"):
+            lines.append(f"- {decision_labels[2]}: {cell(overall_decision.get('operation_advice'))}")
+        if overall_decision.get("reasoning"):
+            lines.append(f"- {decision_labels[3]}: {cell(overall_decision.get('reasoning'))}")
 
     lines.extend([
         "",
@@ -873,6 +1184,8 @@ def format_strategy_evidence_markdown(
             f"{key}={value}" for key, value in list(values.items())[:6]
         ) or "N/A"
         coverage: List[str] = []
+        if sources != "N/A":
+            coverage.append(f"source={sources}")
         if item.get("as_of"):
             coverage.append(f"as-of={item['as_of']}")
         if isinstance(item.get("record_count"), int):
@@ -965,4 +1278,5 @@ __all__ = [
     "format_strategy_evidence_markdown",
     "merge_prefetched_evidence",
     "summarize_tool_result",
+    "update_strategy_overall_decision",
 ]

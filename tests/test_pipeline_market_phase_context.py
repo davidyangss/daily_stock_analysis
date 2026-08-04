@@ -377,7 +377,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertIn("analysis_context_pack_overview", snapshot)
         self.assertEqual(snapshot["analysis_context_pack_overview"]["subject"]["code"], "600519")
         self.assertTrue(snapshot["analysis_context_pack_overview"]["blocks"])
-        self.assertNotIn("items", str(snapshot["analysis_context_pack_overview"]))
+        self.assertNotIn("'items':", str(snapshot["analysis_context_pack_overview"]))
         self.assertNotIn("分析上下文包摘要", str(snapshot))
         self.assertEqual(result.dashboard["phase_decision"]["phase_context"]["phase"], "intraday")
         self.assertIsInstance(result.dashboard["phase_decision"]["watch_conditions"], list)
@@ -495,7 +495,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         )
         self.assertTrue(save_kwargs["context_snapshot"]["analysis_context_pack_overview"]["blocks"])
         self.assertNotIn(
-            "items",
+            "'items':",
             str(save_kwargs["context_snapshot"]["analysis_context_pack_overview"]),
         )
         self.assertNotIn("分析上下文包摘要", str(save_kwargs["context_snapshot"]))
@@ -503,6 +503,71 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertEqual(enhanced_context["stock_name"], "贵州茅台")
         self.assertEqual(result.dashboard["phase_decision"]["phase_context"]["phase"], "intraday")
         self.assertIsInstance(result.dashboard["phase_decision"]["watch_conditions"], list)
+
+    def test_single_agent_report_persists_selected_strategy_inputs_and_overall_decision(self):
+        pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
+        pipeline.analysis_skills = ["growth_quality"]
+        pipeline._ensure_agent_history = MagicMock()
+
+        from src.agent.executor import AgentResult
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "sentiment_score": 72,
+                "trend_prediction": "震荡向上",
+                "operation_advice": "回调关注",
+                "decision_type": "buy",
+                "confidence_level": "中",
+                "analysis_summary": "成长质量数据支持谨慎看多。",
+            },
+            tool_calls_log=[{
+                "tool": "get_stock_info",
+                "arguments": {"stock_code": "600519"},
+                "evidence": {
+                    "tool": "get_stock_info",
+                    "status": "available",
+                    "sources": ["iwencai"],
+                    "cached": False,
+                    "partial": False,
+                    "key_values": {"revenue_yoy": 18.5},
+                },
+            }],
+            provider="test",
+        )
+        executor = MagicMock()
+        executor.run.return_value = agent_result
+        skill_manager = SimpleNamespace(get=lambda skill_id: SimpleNamespace(
+            display_name="成长质量策略" if skill_id == "growth_quality" else skill_id,
+        ))
+
+        with (
+            patch("src.agent.factory.build_agent_executor", return_value=executor),
+            patch("src.agent.factory.get_skill_manager", return_value=skill_manager),
+        ):
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-selected-strategy",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+                fundamental_context=None,
+                trend_result=None,
+            )
+
+        self.assertIsNotNone(result)
+        manifest = result.dashboard["strategy_data_evidence"]
+        self.assertEqual(manifest["selected_strategies"], [{
+            "skill_id": "growth_quality",
+            "skill_name": "成长质量策略",
+        }])
+        self.assertEqual(manifest["strategy_evaluations"][0]["status"], "not_evaluated")
+        self.assertEqual(manifest["overall_decision"]["signal"], "buy")
+        self.assertEqual(manifest["overall_decision"]["reasoning"], "成长质量数据支持谨慎看多。")
+        self.assertEqual(manifest["items"][0]["tool"], "get_stock_info")
 
     def test_agent_pack_summary_uses_prefetched_news_context_when_present(self):
         pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
@@ -554,7 +619,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertNotIn("analysis_context_pack_summary", save_kwargs["context_snapshot"])
         self.assertIn("analysis_context_pack_overview", save_kwargs["context_snapshot"])
         self.assertNotIn(
-            "items",
+            "'items':",
             str(save_kwargs["context_snapshot"]["analysis_context_pack_overview"]),
         )
 

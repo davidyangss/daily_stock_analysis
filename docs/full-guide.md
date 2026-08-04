@@ -948,7 +948,7 @@ Specialist 策略会把 YAML 中的 `required_tools` 作为硬数据依赖。运
 
 问股页面可同时选择任意数量的当前可用策略，不再限制最多 3 个；所选策略会按界面顺序随请求发送。策略越多通常意味着更长的执行时间和更高的模型调用成本，实际可执行性仍受 Agent 编排与运行时资源配置约束。
 
-同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；Web 报告与通知详细报告会展示策略依赖、工具的中文用途说明、获取内容、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。指标的展示值保留既有精度并使用千分位分隔，例如 `35,483,794,588.00元`、`97,123,885.00股`；原始数值字段不变。已知数据源成功时，Web 会提供该源的公开网站链接；本地缓存不伪造外部链接。日线数据源失败时，清单会列出各实际尝试过的源、请求操作和已脱敏的失败原因，例如“AkshareFetcher：日线K线（get_daily_data）失败：empty result”。清单来自工具执行日志的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告或非 Specialist 路径没有该字段时继续隐藏，不影响既有客户端。
+同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；显式选择策略后，清单会保存策略 ID 与展示名、综合判定，并在 Specialist 模式下额外保存每个策略的信号、置信度、满足/未满足条件和判定依据。single Agent 或非 Specialist 编排只公开真实的综合判定，并明确标记策略未经过独立 Specialist 评估，不会把综合结论伪造成逐策略结论。Web 报告与通知详细报告会在“策略分析详情”中展示上述判定，以及策略依赖、工具的中文用途说明、获取内容、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。指标的展示值保留既有精度并使用千分位分隔，例如 `35,483,794,588.00元`、`97,123,885.00股`；原始数值字段不变。已知数据源成功时，Web 会提供该源的公开网站链接；本地缓存不伪造外部链接。日线数据源失败时，清单会列出各实际尝试过的源、请求操作和已脱敏的失败原因，例如“AkshareFetcher：日线K线（get_daily_data）失败：empty result”。清单来自实际请求、工具执行日志与 Pipeline 已使用输入的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告没有新增字段时继续按已有证据展示或兼容隐藏，不影响既有客户端。
 
 `AnalysisContextPack.data_quality.limitations` 现在也会保留辅助块的 missing/not_supported/partial/estimated 状态，避免报告只显示分数而隐藏新闻、基本面或筹码缺失；这不改变既有固定权重评分公式。
 
@@ -1575,7 +1575,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🗂️ **首页三视图** - 首页新增「历史 / 自选 / 今日」工作区，默认进入历史视图；自选页支持批量提交全部或仅提交“今日未分析”股票
 - 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
 - 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮和单次市场选择器，可在 Docker/server 模式下按服务器默认或临时选择的单个/多个市场后台触发复盘
-- 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
+- 🎯 **策略选择** - 首页支持显式选择分析策略 skill；报告会展示所选策略、综合/逐策略判定和实际分析输入；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
 - 🧪 **今日状态/任务刷新防抖** - 首页「今日」与「自选」通过带有时区感知的历史区间判断并发起分页历史查询；任务完成后由最新一次 stock bar 刷新成功才清除失败态，避免旧请求乱序覆盖新状态导致重复提交
 - 🧭 **首次配置提示** - 首页会读取只读配置状态，缺少 LLM 主渠道、自选股等基础项时提示缺口并引导进入系统设置
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行；普通分析链路在进入 LLM 阶段后会优先尝试 LiteLLM 流式生成，并通过任务 SSE 回灌更细粒度的 `message/progress`
@@ -1638,7 +1638,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`POST /api/v1/analysis/analyze` 支持使用 `skills` 传入策略 skill ID 列表；若未传则按服务端默认策略执行。为兼容历史调用，`strategies` 字段仍作为兼容别名保留。
 > 说明：`POST /api/v1/analysis/analyze` 支持 `analysis_phase=auto|premarket|intraday|postmarket`，默认 `auto`。非 `auto` 只覆盖本次分析阶段与派生阶段标记，不改写真实交易日历时间；accepted response、内存 task status、任务列表和 SSE 会回显请求阶段，最终报告阶段以 `report.meta.market_phase_summary.phase` 为准。
 > 说明：`POST /api/v1/analysis/analyze` 支持 `report_language=zh|en|ko`，并兼容 `reportLanguage` 作为别名；未传时回退到全局 `REPORT_LANGUAGE`（或环境中的 `Config.report_language`）。该字段仅影响本次分析的报告文本、`report.meta.report_language` 与持久化展示，不会持久化为运行时配置。
-> 说明：Web 侧首页策略下拉为显式可选策略入口。用户未手动选择时不会携带 `skills`，与历史客户端行为一致；选择策略后将透传到该接口并在任务状态与历史快照中保留。
+> 说明：Web 侧首页策略下拉为显式可选策略入口。用户未手动选择时不会携带 `skills`，与历史客户端行为一致；选择策略后将透传到该接口，并在任务状态、历史快照及 `report.details.strategy_data_evidence` 中保留。报告的“策略分析详情”会展示所选策略、综合判定、可用的逐策略判定，以及实际工具/预取输入和数据状态。
 > 说明：`POST /api/v1/analysis/market-review` 采用后端与 CLI/Bot 共用的配置路径（`GeminiAnalyzer(config=...)` 与同样的搜索/提示词构造入口）。Provider 兼容路由会优先识别并使用 `litellm_model`、`llm_model_list`，若未配置则回退 legacy `GEMINI_*`、`OPENAI_*`、`ANTHROPIC_*`、`DEEPSEEK_*` 键；不会新增/调整 provider、Base URL 或 LiteLLM 路由语义。
 > 说明：`POST /api/v1/analysis/market-review` 额外支持 `report_language=zh|en|ko`（支持别名 `reportLanguage`）。未传时同样回退到全局 `REPORT_LANGUAGE`。该参数仅影响本次复盘报告文本与结构化返回字段中的语言相关内容；Bot、schedule、CLI 或按钮触发的 `main.py --market-review` 仍沿用全局配置，未新增请求级覆盖能力。
 > 说明：`POST /api/v1/analysis/market-review` 可选传入长度为 1–64 的字符串字段 `region`，支持 `cn`、`hk`、`us`、`jp`、`kr`、`both` 或逗号分隔的合法非空子集（如 `cn,us`）。请求层会规范大小写、空格、重复项和市场顺序；空字符串、空 token、未知 token、`both` 与其他市场混用会整体返回 4xx，不会部分执行或回退。省略字段时继续读取全局 `MARKET_REVIEW_REGION`。

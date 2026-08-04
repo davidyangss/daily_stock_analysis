@@ -75,16 +75,25 @@ class StrategyEngine:
             raw_signal = opinion.signal if opinion.signal else raw_data.get("signal")
             canonical, invalid_signal, original_signal = normalize_strategy_signal(raw_signal)
 
-            if raw_data.get("evidence_status") == "insufficient":
-                invalid_records.append({
+            def invalid_record(reason: str, signal: Any) -> Dict[str, Any]:
+                return {
                     "agent_name": opinion.agent_name,
-                    "raw_signal": original_signal or raw_signal,
+                    "raw_signal": signal,
                     "confidence": opinion.confidence,
-                    "reason": "insufficient_required_data",
+                    "reason": reason,
+                    "reasoning": opinion.reasoning,
+                    "conditions_met": list(raw_data.get("conditions_met") or []),
+                    "conditions_missed": list(raw_data.get("conditions_missed") or []),
+                }
+
+            if raw_data.get("evidence_status") == "insufficient":
+                record = invalid_record("insufficient_required_data", original_signal or raw_signal)
+                record.update({
                     "missing_required_tools": list(raw_data.get("missing_required_tools") or []),
                     "limited_required_tools": list(raw_data.get("limited_required_tools") or []),
                     "required_tool_evidence": list(raw_data.get("required_tool_evidence") or []),
                 })
+                invalid_records.append(record)
                 logger.info(
                     "[StrategyEngine] skill opinion excluded for missing required data: agent=%s tools=%s",
                     opinion.agent_name,
@@ -93,12 +102,10 @@ class StrategyEngine:
                 continue
 
             if raw_signal is None or (isinstance(raw_signal, str) and not raw_signal.strip()):
-                invalid_records.append({
-                    "agent_name": opinion.agent_name,
-                    "raw_signal": None if raw_signal is None else raw_signal,
-                    "confidence": opinion.confidence,
-                    "reason": "missing_signal",
-                })
+                invalid_records.append(invalid_record(
+                    "missing_signal",
+                    None if raw_signal is None else raw_signal,
+                ))
                 logger.info(
                     "[StrategyEngine] invalid skill opinion moved to diagnostics: agent=%s raw_signal=%r reason=%s",
                     opinion.agent_name,
@@ -108,12 +115,7 @@ class StrategyEngine:
                 continue
 
             if invalid_signal:
-                invalid_records.append({
-                    "agent_name": opinion.agent_name,
-                    "raw_signal": original_signal,
-                    "confidence": opinion.confidence,
-                    "reason": "unrecognized_signal",
-                })
+                invalid_records.append(invalid_record("unrecognized_signal", original_signal))
                 logger.info(
                     "[StrategyEngine] invalid skill opinion moved to diagnostics: agent=%s raw_signal=%r reason=%s",
                     opinion.agent_name,

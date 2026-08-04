@@ -80,6 +80,27 @@ class TestToolEvidence(unittest.TestCase):
         self.assertEqual(manifest["items"][0]["stage"], "prefetch")
         json.dumps(manifest, ensure_ascii=False)
 
+    def test_prefetched_trend_result_is_persisted_as_strategy_input(self) -> None:
+        items = build_prefetched_context_evidence({
+            "trend_result": {
+                "current_price": 1880.0,
+                "ma5": 1865.2,
+                "ma20": 1812.6,
+                "macd_dif": 12.3,
+                "rsi_6": 67.8,
+                "signal_score": 72,
+            },
+        })
+
+        self.assertEqual(len(items), 1)
+        trend = items[0]
+        self.assertEqual(trend["tool"], "analyze_trend")
+        self.assertTrue(trend["prefetched"])
+        self.assertEqual(trend["key_values"]["ma20"], 1812.6)
+        metrics = {item["key"]: item for item in trend["metric_details"]}
+        self.assertEqual(metrics["rsi_6"]["display_value"], "67.80")
+        self.assertEqual(metrics["signal_score"]["display_value"], "72分")
+
     def test_prefetched_fundamentals_replace_missing_metric_evidence(self) -> None:
         existing = summarize_tool_result(
             "get_stock_info",
@@ -346,6 +367,117 @@ class TestSkillEvidenceContract(unittest.TestCase):
 
 
 class TestStrategyEvidenceManifest(unittest.TestCase):
+    def test_manifest_exposes_selected_strategy_inputs_and_decisions(self) -> None:
+        opinion = AgentOpinion(
+            agent_name="skill_growth_quality",
+            signal="buy",
+            confidence=0.82,
+            reasoning="营收和利润增速匹配成长质量条件。",
+            raw_data={
+                "evidence_status": "verified",
+                "missing_required_tools": [],
+                "limited_required_tools": [],
+                "required_tool_evidence": [{
+                    "tool": "get_stock_info",
+                    "status": "available",
+                    "sources": ["iwencai"],
+                    "cached": False,
+                    "partial": False,
+                    "key_values": {"revenue_yoy": 25.1, "net_profit_yoy": 31.6},
+                }],
+                "conditions_met": ["营收同比增长超过 20%", "净利润增速高于营收增速"],
+                "conditions_missed": ["ROE 数据缺失"],
+                "score_adjustment": 12,
+            },
+        )
+
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=opinion.raw_data["required_tool_evidence"],
+            opinions=[opinion],
+            invalid_records=[],
+            selected_strategies=[{
+                "skill_id": "growth_quality",
+                "skill_name": "成长质量策略",
+            }],
+            overall_decision={
+                "signal": "buy",
+                "confidence": 0.78,
+                "operation_advice": "回调分批关注",
+                "reasoning": "策略条件大部分满足。",
+            },
+        )
+
+        self.assertEqual(manifest["selected_strategies"], [{
+            "skill_id": "growth_quality",
+            "skill_name": "成长质量策略",
+        }])
+        evaluation = manifest["strategy_evaluations"][0]
+        self.assertEqual(evaluation["status"], "completed")
+        self.assertEqual(evaluation["signal"], "buy")
+        self.assertEqual(evaluation["confidence"], 0.82)
+        self.assertEqual(evaluation["conditions_met"][0], "营收同比增长超过 20%")
+        self.assertEqual(manifest["overall_decision"]["signal"], "buy")
+        self.assertEqual(manifest["items"][0]["required_by"], ["growth_quality"])
+
+        rendered = format_strategy_evidence_markdown(manifest, "zh")
+        self.assertIn("所选策略", rendered)
+        self.assertIn("成长质量策略", rendered)
+        self.assertIn("策略判定结果", rendered)
+        self.assertIn("买入 / 82%", rendered)
+        self.assertIn("满足条件: 营收同比增长超过 20%", rendered)
+        self.assertIn("营收和利润增速匹配成长质量条件", rendered)
+        self.assertIn("综合判定", rendered)
+        self.assertIn("get_stock_info", rendered)
+
+    def test_selected_strategy_without_specialist_opinion_uses_overall_decision_only(self) -> None:
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=[{
+                "tool": "analyze_trend",
+                "status": "available",
+                "sources": ["db_cache"],
+                "cached": True,
+                "partial": False,
+                "key_values": {"ma5": 10.2, "ma20": 9.8},
+            }],
+            opinions=[],
+            invalid_records=[],
+            selected_strategies=[{
+                "skill_id": "bull_trend",
+                "skill_name": "多头趋势策略",
+            }],
+            overall_decision={
+                "signal": "hold",
+                "confidence_label": "中",
+                "reasoning": "单 Agent 综合分析结论。",
+            },
+        )
+
+        self.assertEqual(manifest["strategy_evaluations"][0]["status"], "not_evaluated")
+        self.assertNotIn("signal", manifest["strategy_evaluations"][0])
+        self.assertEqual(manifest["overall_decision"]["signal"], "hold")
+
+    def test_selected_strategy_without_input_still_has_visible_insufficient_block(self) -> None:
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=[],
+            opinions=[],
+            invalid_records=[],
+            selected_strategies=[{
+                "skill_id": "bull_trend",
+                "skill_name": "多头趋势策略",
+            }],
+            overall_decision={"signal": "hold", "reasoning": "未取得可用输入。"},
+        )
+
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["status"], "insufficient")
+        self.assertEqual(manifest["items"], [])
+        self.assertEqual(manifest["strategy_evaluations"][0]["status"], "not_evaluated")
+
+        rendered = format_strategy_evidence_markdown(manifest, "zh")
+        self.assertIn("多头趋势策略", rendered)
+        self.assertIn("未单独评估", rendered)
+        self.assertIn("持有/观望", rendered)
+
     def test_manifest_and_notification_keep_missing_reason_visible(self) -> None:
         opinion = AgentOpinion(
             agent_name="skill_breakout",
@@ -373,6 +505,9 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         )
 
         self.assertEqual(manifest["status"], "insufficient")
+        self.assertEqual(manifest["strategy_evaluations"][0]["status"], "insufficient")
+        self.assertNotIn("signal", manifest["strategy_evaluations"][0])
+        self.assertNotIn("confidence", manifest["strategy_evaluations"][0])
         self.assertIn("breakout: required data unavailable (search_stock_news)", manifest["limitations"])
         self.assertTrue(manifest["items"][0]["required"])
         self.assertEqual(manifest["items"][0]["required_by"], ["breakout"])

@@ -839,6 +839,7 @@ class AgentOrchestrator:
             )
             router = SkillRouter()
             selected = router.select_skills(ctx, max_count=4)
+            ctx.meta["selected_strategy_skills"] = self._describe_strategy_skills(selected)
             if not selected:
                 return []
 
@@ -854,6 +855,20 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] failed to build skill agents: %s", exc)
             return []
+
+    def _describe_strategy_skills(self, skill_ids: Any) -> List[Dict[str, str]]:
+        """Return stable, report-safe ids and display names for selected skills."""
+        result: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_skill_id in skill_ids or []:
+            skill_id = str(raw_skill_id or "").strip()
+            if not skill_id or skill_id in seen:
+                continue
+            seen.add(skill_id)
+            skill = self.skill_manager.get(skill_id) if self.skill_manager is not None else None
+            display_name = str(getattr(skill, "display_name", "") or skill_id).strip()
+            result.append({"skill_id": skill_id, "skill_name": display_name})
+        return result
 
     def _build_skill_agents(self, ctx: AgentContext) -> list:
         """Compatibility wrapper for legacy imports."""
@@ -1176,6 +1191,9 @@ class AgentOrchestrator:
                 requested_skills = context.get("strategies", [])
             ctx.meta["skills_requested"] = requested_skills or []
             ctx.meta["strategies_requested"] = requested_skills or []
+            ctx.meta["selected_strategy_skills"] = self._describe_strategy_skills(
+                requested_skills or []
+            )
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
             if context.get("market_phase_context"):
                 ctx.meta["market_phase_context"] = context["market_phase_context"]
@@ -1573,6 +1591,18 @@ class AgentOrchestrator:
                 if isinstance(ctx.meta.get("invalid_opinions"), list)
                 else []
             ),
+            selected_strategies=(
+                ctx.meta.get("selected_strategy_skills")
+                if isinstance(ctx.meta.get("selected_strategy_skills"), list)
+                else []
+            ),
+            overall_decision={
+                "signal": decision_type,
+                "operation_advice": operation_advice,
+                "confidence": confidence,
+                "confidence_label": _confidence_label(confidence),
+                "reasoning": analysis_summary,
+            },
         )
         if strategy_data_evidence:
             dashboard_block["strategy_data_evidence"] = strategy_data_evidence

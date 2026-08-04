@@ -412,9 +412,40 @@ export interface StrategyRequirementEvidence {
   evidence: StrategyEvidenceItem[];
 }
 
+export interface SelectedStrategyEvidence {
+  skillId: string;
+  skillName: string;
+}
+
+export interface StrategyEvaluationEvidence {
+  skillId: string;
+  skillName: string;
+  status: 'completed' | 'insufficient' | 'failed' | 'invalid' | 'not_evaluated';
+  signal?: string;
+  rawSignal?: string;
+  confidence?: number;
+  reasoning?: string;
+  conditionsMet: string[];
+  conditionsMissed: string[];
+  evidenceStatus?: string;
+  scoreAdjustment?: number;
+  failureReason?: string;
+}
+
+export interface StrategyOverallDecisionEvidence {
+  signal?: string;
+  operationAdvice?: string;
+  confidence?: number;
+  confidenceLabel?: string;
+  reasoning?: string;
+}
+
 export interface StrategyDataEvidence {
   schemaVersion: 'strategy-evidence-v1';
   status: 'verified' | 'limited' | 'insufficient';
+  selectedStrategies?: SelectedStrategyEvidence[];
+  strategyEvaluations?: StrategyEvaluationEvidence[];
+  overallDecision?: StrategyOverallDecisionEvidence | null;
   items: StrategyEvidenceItem[];
   strategyRequirements: StrategyRequirementEvidence[];
   limitations: string[];
