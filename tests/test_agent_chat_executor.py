@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from src.agent.agent_backend import AgentRunResult
 from src.agent.chat_executor import AgentChatExecutor
-from src.agent.executor import PreparedAgentChat
+from src.agent.executor import (
+    CHAT_SYSTEM_PROMPT,
+    CODEX_CHAT_SYSTEM_PROMPT,
+    LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT,
+    PreparedAgentChat,
+)
 
 
 class _Backend:
@@ -55,6 +60,33 @@ def _executor(backend: _Backend) -> AgentChatExecutor:
         max_steps=7,
         timeout_seconds=45,
     )
+
+
+def test_all_chat_prompts_require_complete_per_strategy_outputs() -> None:
+    for prompt in (LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT, CODEX_CHAT_SYSTEM_PROMPT):
+        assert "策略分析详情" in prompt
+        assert "精确 ID 逐项展示" in prompt
+        assert "未满足条件" in prompt
+        assert "依赖数据及其实际值/来源" in prompt
+        assert "依赖数据 → 条件核对 → 策略结论" in prompt
+        assert "规则/阈值或价格边界" in prompt
+        assert "满足/未满足/无法判断" in prompt
+        assert "不得只写概括性分析" in prompt
+        assert "禁止省略、补造或借用其他策略的数据" in prompt
+        assert "证据不足/无法完整评估" in prompt
+        assert "首页分析报告" in prompt
+
+
+def test_codex_chat_prompt_receives_selected_skill_instructions() -> None:
+    rendered = CODEX_CHAT_SYSTEM_PROMPT.format(
+        market_role="A股分析师",
+        market_guidelines="",
+        default_skill_policy_section="",
+        skills_section="## 激活的交易技能\n\nvolume_breakout",
+        language_section="",
+    )
+
+    assert "volume_breakout" in rendered
 
 
 def test_runtime_owned_backend_uses_visible_history_and_forwards_cancellation() -> None:

@@ -115,6 +115,8 @@ Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema
 
 该清单由请求中的策略选择、真实工具结果、有效/无效策略观点、Pipeline 综合结论和已预取且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；逐策略输出中的 `conditions_met` / `conditions_missed` 按一条条件一行的状态表展示，不再压成两段长文本。新增字段保持可选，旧报告没有该字段时继续兼容。
 
+问股入口遵循相同的展示语义：选择一个或多个策略后，回答必须为每个策略建立独立小节，按“依赖数据 → 条件核对 → 策略结论”逐项展示。依赖数据需列出指标名、实际值、单位、数据时间、来源和可用状态；条件核对需列出策略原始规则、阈值或价格边界、参与比较的实际值，以及“满足/未满足/无法判断”。声明的全部依赖数据都必须保留，不能用概括性分析替代；缺失、失败、降级、过期或未获取的数据项也要明显展示。缺少必需输入时必须明确标记证据不足，不能省略该策略、借用其他策略证据或把缺失当作条件成立；逐策略披露完成后才可输出综合结论。Codex 问股只读取已保存上下文，历史上下文未保存相关字段或规则边界时应明确展示缺口，不得发起未开放的实时数据调用。
+
 ### 动态二分阵营（Supporting / Opposing）
 
 给定最终信号 `final_signal` 与 canonical score `final_score = strategy_signal_score(final_signal)`，对每个 Valid Opinion `op` 计算 `op_score = strategy_signal_score(op.signal)`：
