@@ -2025,7 +2025,9 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '策略' }));
+    const strategyButton = await screen.findByRole('button', { name: '策略' });
+    fireEvent.click(strategyButton);
+    expect(strategyButton.closest('header')).toHaveClass('z-[130]');
     fireEvent.click(screen.getByRole('menuitemradio', { name: /成长质量/ }));
 
     const input = screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');

@@ -1292,7 +1292,7 @@ const HomePage: React.FC = () => {
       className="flex h-[calc(100dvh-3.5rem)] w-full flex-col overflow-hidden md:flex-row"
     >
       <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
-        <header className="relative z-30 flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
+        <header className={`relative flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4 ${strategyMenuOpen ? 'z-[130]' : 'z-30'}`}>
           <div className="flex min-w-0 flex-1 flex-col gap-2.5 md:flex-row md:items-center">
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <button
