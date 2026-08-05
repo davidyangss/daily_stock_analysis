@@ -12,19 +12,20 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import { Badge, Button, Input, ScrollArea, StatusDot } from '../common';
+import { Badge, Button, Input, Pagination, ScrollArea, StatusDot } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
-import { StockBar } from '../history';
-import type { StockBarItem, TaskInfo } from '../../types/analysis';
+import { HistoryList } from '../history';
+import type { HistoryItem, StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
-import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
 import { truncateStockName } from '../../utils/stockName';
+import { formatStrategyNames } from '../../utils/strategyNames';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
 
 export type HomeWorkspaceTab = 'watchlist' | 'today' | 'history';
 export type WatchlistAnalyzeMode = 'all' | 'pending';
+const COMPACT_LIST_PAGE_SIZE = 5;
 
 export interface HomeWatchlistRow {
   code: string;
@@ -57,13 +58,18 @@ interface HomeStockWorkspaceProps {
   isLoadingTodayItems: boolean;
   todayLoadError: boolean;
   watchlistAnalyzedTodayCount: number;
-  historyItems: StockBarItem[];
+  historyItems: HistoryItem[];
   isLoadingHistory: boolean;
-  selectedStockCode?: string;
+  isLoadingMoreHistory: boolean;
+  historyHasMore: boolean;
+  selectedHistoryIds: Set<number>;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
-  onDeleteStock?: (stockCode: string) => Promise<void> | void;
-  isDeleting?: boolean;
+  onLoadMoreHistory: () => Promise<void> | void;
+  onToggleHistorySelection: (recordId: number) => void;
+  onToggleSelectAllHistory: () => void;
+  onDeleteSelectedHistory: () => void;
+  isDeletingHistory?: boolean;
   className?: string;
 }
 
@@ -83,15 +89,6 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
     return <span className="text-[11px] text-muted-text">{t('common.noData')}</span>;
   }
 
-  const actionLabels = buildDecisionActionLabelMap(t);
-  const operationLabel = getDecisionActionLabel(
-    item?.action,
-    item?.actionLabel,
-    item?.operationAdvice,
-    t('history.sentiment'),
-    actionLabels,
-  );
-
   return (
     <Badge
       variant="default"
@@ -103,7 +100,7 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
         backgroundColor: `${color}10`,
       }}
     >
-      {operationLabel} {score}
+      {t('history.sentiment')} {score}
     </Badge>
   );
 };
@@ -113,10 +110,11 @@ const WatchlistRowItem: React.FC<{
   onRemove: (code: string) => Promise<void>;
   disabled: boolean;
 }> = ({ row, onRemove, disabled }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const item = row.latestItem;
   const stockName = item?.stockName || row.code;
+  const strategyLabel = formatStrategyNames(item?.strategyNames, t('common.noData'), language);
 
   return (
     <div className="home-subpanel grid min-w-0 gap-2 px-3 py-2.5">
@@ -141,7 +139,9 @@ const WatchlistRowItem: React.FC<{
             {item?.lastAnalysisTime ? (
               <>
                 <span className="h-1 w-1 rounded-full bg-subtle-hover" />
-                <span className="text-[11px] text-muted-text">{formatDateTime(item.lastAnalysisTime)}</span>
+                <span className="text-[11px] text-muted-text">
+                  {t('history.analysisTime', { time: formatDateTime(item.lastAnalysisTime) })}
+                </span>
               </>
             ) : null}
           </div>
@@ -171,12 +171,17 @@ const WatchlistRowItem: React.FC<{
           <span className="truncate">{t('watchlist.taskRunning', { status: taskLabel })}</span>
         </div>
       ) : null}
+      <p className="whitespace-normal break-words text-[11px] leading-4 text-secondary-text" title={strategyLabel}>
+        {strategyLabel}
+      </p>
     </div>
   );
 };
 
 const TodayItem: React.FC<{ item: StockBarItem; onClick: (recordId: number) => void }> = ({ item, onClick }) => {
+  const { language, t } = useUiLanguage();
   const stockName = item.stockName || item.stockCode;
+  const strategyLabel = formatStrategyNames(item.strategyNames, t('common.noData'), language);
 
   return (
     <button
@@ -184,12 +189,18 @@ const TodayItem: React.FC<{ item: StockBarItem; onClick: (recordId: number) => v
       className="home-subpanel grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 py-2.5 text-left"
       onClick={() => onClick(item.id)}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 space-y-1">
         <span className="block truncate text-sm font-semibold text-foreground">
           {truncateStockName(stockName)}
         </span>
-        <span className="mt-1 block truncate font-mono text-[11px] text-secondary-text">
+        <span className="block truncate font-mono text-[11px] text-secondary-text">
           {item.stockCode}
+        </span>
+        <span className="block truncate text-[11px] text-muted-text">
+          {t('history.analysisTime', { time: formatDateTime(item.lastAnalysisTime) })}
+        </span>
+        <span className="block whitespace-normal break-words text-[11px] leading-4 text-secondary-text" title={strategyLabel}>
+          {strategyLabel}
         </span>
       </div>
       <ScoreBadge item={item} />
@@ -216,20 +227,42 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   watchlistAnalyzedTodayCount,
   historyItems,
   isLoadingHistory,
-  selectedStockCode,
+  isLoadingMoreHistory,
+  historyHasMore,
+  selectedHistoryIds,
   selectedRecordId,
   onHistoryItemClick,
-  onDeleteStock,
-  isDeleting = false,
+  onLoadMoreHistory,
+  onToggleHistorySelection,
+  onToggleSelectAllHistory,
+  onDeleteSelectedHistory,
+  isDeletingHistory = false,
   className = '',
 }) => {
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
+  const [watchlistPage, setWatchlistPage] = useState(1);
+  const [todayPage, setTodayPage] = useState(1);
   const pendingWatchlistCount = watchlistRows
     .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
     .length;
   const isTodayStatusUnavailable = watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown);
-  const topTodayItem = todayItems[0];
+  const topTodayScore = todayItems.reduce<number | null>((highest, item) => {
+    if (typeof item.sentimentScore !== 'number') return highest;
+    return highest === null ? item.sentimentScore : Math.max(highest, item.sentimentScore);
+  }, null);
+  const watchlistPageCount = Math.max(1, Math.ceil(watchlistRows.length / COMPACT_LIST_PAGE_SIZE));
+  const todayPageCount = Math.max(1, Math.ceil(todayItems.length / COMPACT_LIST_PAGE_SIZE));
+  const effectiveWatchlistPage = Math.min(watchlistPage, watchlistPageCount);
+  const effectiveTodayPage = Math.min(todayPage, todayPageCount);
+  const pagedWatchlistRows = watchlistRows.slice(
+    (effectiveWatchlistPage - 1) * COMPACT_LIST_PAGE_SIZE,
+    effectiveWatchlistPage * COMPACT_LIST_PAGE_SIZE,
+  );
+  const pagedTodayItems = todayItems.slice(
+    (effectiveTodayPage - 1) * COMPACT_LIST_PAGE_SIZE,
+    effectiveTodayPage * COMPACT_LIST_PAGE_SIZE,
+  );
   const tabs: Array<{ key: HomeWorkspaceTab; label: string }> = [
     { key: 'history', label: t('watchlist.tabHistory') },
     { key: 'watchlist', label: t('watchlist.tabWatchlist') },
@@ -251,7 +284,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   };
 
   const renderTabs = (
-    <div className="grid grid-cols-3 gap-1 rounded-xl border border-subtle bg-base/40 p-1">
+    <div className="sticky top-0 z-20 grid shrink-0 grid-cols-3 gap-1 rounded-xl border border-subtle bg-elevated/95 p-1 backdrop-blur">
       {tabs.map((tab) => {
         const selected = activeTab === tab.key;
         return (
@@ -275,15 +308,22 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
     return (
       <div className={`flex min-h-0 flex-1 flex-col gap-2 ${className}`}>
         {renderTabs}
-        <StockBar
+        <HistoryList
           items={historyItems}
           isLoading={isLoadingHistory}
-          selectedStockCode={selectedStockCode}
-          selectedRecordId={selectedRecordId}
+          isLoadingMore={isLoadingMoreHistory}
+          hasMore={historyHasMore}
+          selectedId={selectedRecordId}
+          selectedIds={selectedHistoryIds}
           onItemClick={onHistoryItemClick}
-          onDeleteStock={onDeleteStock}
-          isDeleting={isDeleting}
-          className="flex-1 overflow-hidden"
+          onLoadMore={onLoadMoreHistory}
+          onToggleItemSelection={onToggleHistorySelection}
+          onToggleSelectAll={onToggleSelectAllHistory}
+          onDeleteSelected={onDeleteSelectedHistory}
+          isDeleting={isDeletingHistory}
+          paginationMode="paged"
+          pageSize={COMPACT_LIST_PAGE_SIZE}
+          className="min-h-0 flex-1 overflow-hidden"
         />
       </div>
     );
@@ -388,7 +428,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
                 <p className="text-[11px] text-muted-text">{t('watchlist.topScore')}</p>
                 <p className="mt-1 truncate text-sm font-semibold text-foreground">
-                  {topTodayItem?.sentimentScore ?? '-'}
+                  {topTodayScore ?? '-'}
                 </p>
               </div>
             </div>
@@ -412,7 +452,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
                 {t('watchlist.listHint')}
               </div>
-              {watchlistRows.map((row) => (
+              {pagedWatchlistRows.map((row) => (
                 <WatchlistRowItem
                   key={row.code}
                   row={row}
@@ -442,25 +482,39 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
               {t('watchlist.todaySortHint')}
             </div>
-            {todayItems.map((item) => (
+            {pagedTodayItems.map((item) => (
               <TodayItem key={`${item.stockCode}-${item.id}`} item={item} onClick={onHistoryItemClick} />
             ))}
           </div>
         )}
       </ScrollArea>
 
-      {activeTab === 'watchlist' ? (
-        <div className="border-t border-subtle px-4 py-3">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="w-full"
-            disabled={watchlistLoading}
-            onClick={() => void onRefreshWatchlist()}
-          >
-            {t('watchlist.refresh')}
-          </Button>
+      {(
+        (activeTab === 'watchlist' && !watchlistLoading && watchlistRows.length > 0)
+        || (activeTab === 'today' && !isLoadingTodayItems && !todayLoadError && todayItems.length > 0)
+      ) ? (
+        <div
+          data-testid="home-workspace-pagination-footer"
+          className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t border-subtle bg-elevated/95 px-4 py-3 backdrop-blur"
+        >
+          {activeTab === 'watchlist' ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="w-full"
+              disabled={watchlistLoading}
+              onClick={() => void onRefreshWatchlist()}
+            >
+              {t('watchlist.refresh')}
+            </Button>
+          ) : null}
+          <Pagination
+            currentPage={activeTab === 'watchlist' ? effectiveWatchlistPage : effectiveTodayPage}
+            totalPages={activeTab === 'watchlist' ? watchlistPageCount : todayPageCount}
+            onPageChange={activeTab === 'watchlist' ? setWatchlistPage : setTodayPage}
+            alwaysVisible
+          />
         </div>
       ) : null}
     </aside>

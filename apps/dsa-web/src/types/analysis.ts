@@ -625,6 +625,7 @@ export interface HistoryItem {
   operationAdvice?: string;
   action?: DecisionAction | null;
   actionLabel?: string | null;
+  strategyNames?: string[];
   currentPrice?: number;
   changePct?: number;
   volumeRatio?: number;
@@ -688,6 +689,7 @@ export interface StockBarItem {
   operationAdvice?: string;
   action?: DecisionAction | null;
   actionLabel?: string | null;
+  strategyNames?: string[];
   analysisCount: number;
   lastAnalysisTime?: string;
   modelUsed?: string;

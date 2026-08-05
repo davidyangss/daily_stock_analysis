@@ -69,6 +69,7 @@ const fetchRunsPage = async (page: number) => {
 
 const TraderAnalysisPage: React.FC = () => {
   const [symbol, setSymbol] = useState('600519');
+  const [selectedSymbol, setSelectedSymbol] = useState<{ canonicalCode: string; displayCode: string } | null>(null);
   const [tradeDate, setTradeDate] = useState(today());
   const [run, setRun] = useState<TraderAnalysisRun | null>(null);
   const [runs, setRuns] = useState<TraderAnalysisRun[]>([]);
@@ -250,7 +251,10 @@ const TraderAnalysisPage: React.FC = () => {
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    void submitRun(symbol);
+    const requestedSymbol = selectedSymbol?.displayCode === symbol
+      ? selectedSymbol.canonicalCode
+      : symbol;
+    void submitRun(requestedSymbol);
   };
 
   const refresh = async (runId: string) => {
@@ -297,11 +301,21 @@ const TraderAnalysisPage: React.FC = () => {
               A 股代码或名称
               <StockAutocomplete
                 value={symbol}
-                onChange={setSymbol}
+                onChange={(value) => {
+                  setSelectedSymbol(null);
+                  setSymbol(value);
+                }}
                 onSubmit={(stockCode) => {
                   setSymbol(stockCode);
                   void submitRun(stockCode);
                 }}
+                onSelect={(canonicalCode, _stockName, _source, metadata) => {
+                  setSelectedSymbol({
+                    canonicalCode,
+                    displayCode: metadata?.displayCode ?? canonicalCode,
+                  });
+                }}
+                manualSubmitOnly
                 allowedMarkets={['CN', 'BSE']}
                 disabled={submitting}
                 placeholder="输入代码或名称（例如 600519 或 贵州茅台）"

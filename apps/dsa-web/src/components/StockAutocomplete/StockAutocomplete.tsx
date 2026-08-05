@@ -30,6 +30,15 @@ export interface StockAutocompleteProps {
     source?: 'manual' | 'autocomplete',
     metadata?: { market?: Market; displayCode?: string },
   ) => void;
+  /** Selection callback; unlike onSubmit, this never implies starting an action. */
+  onSelect?: (
+    code: string,
+    name?: string,
+    source?: 'autocomplete',
+    metadata?: { market?: Market; displayCode?: string },
+  ) => void;
+  /** Only update/select the input value; submission must come from an external control. */
+  manualSubmitOnly?: boolean;
   /** Whether disabled */
   disabled?: boolean;
   /** Placeholder text */
@@ -50,6 +59,7 @@ function FallbackInput({
   placeholder = '输入股票代码或名称',
   ariaLabel,
   className,
+  manualSubmitOnly = false,
 }: StockAutocompleteProps) {
   return (
     <input
@@ -57,7 +67,14 @@ function FallbackInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && !disabled && value) {
+        if (e.key !== 'Enter') {
+          return;
+        }
+        if (manualSubmitOnly) {
+          e.preventDefault();
+          return;
+        }
+        if (!disabled && value) {
           e.preventDefault();
           onSubmit(value);
         }
@@ -113,6 +130,8 @@ function StockAutocompleteInner({
   ariaLabel,
   className,
   allowedMarkets,
+  onSelect,
+  manualSubmitOnly = false,
 }: StockAutocompleteProps) {
   const { index, loading, fallback } = useStockIndex();
   const filteredIndex = useMemo(
@@ -192,6 +211,19 @@ function StockAutocompleteInner({
     console.error('Autocomplete runtime fallback activated.', autocompleteError);
   }, [autocompleteError]);
 
+  const selectSuggestion = (selected: (typeof suggestions)[number]) => {
+    onChange(selected.displayCode);
+    closeSuggestions();
+    const metadata = {
+      market: selected.market,
+      displayCode: selected.displayCode,
+    };
+    onSelect?.(selected.canonicalCode, selected.nameZh, 'autocomplete', metadata);
+    if (!manualSubmitOnly) {
+      onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', metadata);
+    }
+  };
+
   // Keyboard event handling
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     // Skip if composing (IME)
@@ -210,14 +242,8 @@ function StockAutocompleteInner({
         e.preventDefault();
         if (highlightedIndex >= 0 && suggestions[highlightedIndex]) {
           // Select highlighted item
-          const selected = suggestions[highlightedIndex];
-          onChange(selected.displayCode);
-          closeSuggestions();
-          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
-            market: selected.market,
-            displayCode: selected.displayCode,
-          });
-        } else {
+          selectSuggestion(suggestions[highlightedIndex]);
+        } else if (!manualSubmitOnly) {
           // Submit directly
           onSubmit(value);
         }
@@ -250,6 +276,8 @@ function StockAutocompleteInner({
         value={value}
         onChange={onChange}
         onSubmit={onSubmit}
+        onSelect={onSelect}
+        manualSubmitOnly={manualSubmitOnly}
         disabled={disabled}
         placeholder={placeholder}
         ariaLabel={ariaLabel}
@@ -301,17 +329,7 @@ function StockAutocompleteInner({
         <SuggestionsList
           suggestions={suggestions}
           highlightedIndex={highlightedIndex}
-          onSelect={(s) => {
-            // Update external value (shown in input box)
-            onChange(s.displayCode);
-            // Close dropdown list
-            closeSuggestions();
-            // Submit analysis
-            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete', {
-              market: s.market,
-              displayCode: s.displayCode,
-            });
-          }}
+          onSelect={selectSuggestion}
           onMouseEnter={(index) => setHighlightedIndex(index)}
           style={{ position: 'fixed', ...dropdownStyle }}
         />,

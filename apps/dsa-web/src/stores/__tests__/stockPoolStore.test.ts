@@ -140,6 +140,7 @@ describe('stockPoolStore', () => {
     expect(state.selectedReport?.meta.stockCode).toBe('600519');
     expect(state.isLoadingHistory).toBe(false);
     expect(state.isLoadingReport).toBe(false);
+    expect(historyApi.getList).toHaveBeenCalledWith({ page: 1, limit: 20 });
   });
 
   it('opens same-stock history trend and loads more records', async () => {

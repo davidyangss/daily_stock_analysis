@@ -117,6 +117,7 @@ const jpSuggestion = {
 describe('StockAutocomplete', () => {
   const mockOnChange = vi.fn();
   const mockOnSubmit = vi.fn();
+  const mockOnSelect = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -367,6 +368,29 @@ describe('StockAutocomplete', () => {
       expect(mockOnSubmit).toHaveBeenCalledWith('600519');
     });
 
+    it('does not submit from the fallback input in manual-submit-only mode', () => {
+      stockIndexHookImpl = () => ({
+        index: [],
+        loading: false,
+        fallback: true,
+        error: new Error('Index load failed'),
+        loaded: false,
+      });
+
+      render(
+        <StockAutocomplete
+          value="600519"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+          manualSubmitOnly
+        />
+      );
+
+      fireEvent.keyDown(screen.getByDisplayValue('600519'), { key: 'Enter' });
+
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
     it('applies an accessible label to the fallback input', () => {
       autocompleteHookImpl = () => ({
         query: '',
@@ -524,6 +548,61 @@ describe('StockAutocomplete', () => {
         market: 'CN',
         displayCode: '600519',
       });
+    });
+
+    it('does not submit raw input on Enter in manual-submit-only mode', () => {
+      render(
+        <StockAutocomplete
+          value="600519"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+          manualSubmitOnly
+        />
+      );
+
+      fireEvent.keyDown(screen.getByDisplayValue('600519'), { key: 'Enter' });
+
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
+    it('only fills the input when a suggestion is clicked in manual-submit-only mode', () => {
+      autocompleteHookImpl = () => ({
+        query: '',
+        setQuery: vi.fn(),
+        suggestions: mockSuggestions,
+        isOpen: true,
+        highlightedIndex: -1,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: vi.fn(),
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      render(
+        <StockAutocomplete
+          value="6005"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+          onSelect={mockOnSelect}
+          manualSubmitOnly
+        />
+      );
+
+      fireEvent.focus(screen.getByDisplayValue('6005'));
+      fireEvent.click(screen.getByRole('option', { name: /贵州茅台/ }));
+
+      expect(mockOnChange).toHaveBeenCalledWith('600519');
+      expect(mockOnSelect).toHaveBeenCalledWith('600519.SH', '贵州茅台', 'autocomplete', {
+        market: 'CN',
+        displayCode: '600519',
+      });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
     });
 
     it('submits the highlighted HK suggestion using the canonical .HK code', () => {

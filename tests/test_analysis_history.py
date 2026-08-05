@@ -270,6 +270,25 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.assertEqual(row.id, saved)
             return row.id
 
+    def test_paginated_history_uses_id_desc_as_equal_time_tiebreaker(self) -> None:
+        older_id = self._save_history("query_same_time_older")
+        newer_id = self._save_history("query_same_time_newer")
+        shared_time = datetime(2026, 8, 5, 9, 30, 0)
+        with self.db.get_session() as session:
+            rows = session.query(AnalysisHistory).filter(
+                AnalysisHistory.id.in_([older_id, newer_id])
+            ).all()
+            for row in rows:
+                row.created_at = shared_time
+            session.commit()
+
+        first_page, total = self.db.get_analysis_history_paginated(offset=0, limit=1)
+        second_page, _ = self.db.get_analysis_history_paginated(offset=1, limit=1)
+
+        self.assertEqual(total, 2)
+        self.assertEqual(first_page[0].id, newer_id)
+        self.assertEqual(second_page[0].id, older_id)
+
     def test_save_analysis_history_with_snapshot(self) -> None:
         """保存历史记录并写入上下文快照"""
         result = self._build_result()
@@ -635,6 +654,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         result = self._build_result()
         result.model_used = "gemini/gemini-2.5-pro"
         context_snapshot = {
+            "skills": ["emotion_cycle", "volume_breakout", "ma_golden_cross"],
             "enhanced_context": {
                 "realtime": {
                     "price": "51.5",
@@ -667,6 +687,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["operation_advice"], "持有")
         self.assertEqual(item["action"], "buy")
         self.assertEqual(item["action_label"], "买入")
+        self.assertEqual(item["strategy_names"], ["情绪周期", "放量突破", "均线金叉"])
         self.assertEqual(item["model_used"], "gemini/gemini-2.5-pro")
         self.assertEqual(item["current_price"], 51.5)
         self.assertEqual(item["change_pct"], -4.61)
@@ -674,6 +695,27 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["turnover_rate"], 11.46)
         self.assertEqual(item["market_phase_summary"]["phase"], "intraday")
         self.assertEqual(item["market_phase_summary"]["minutes_to_close"], 300)
+
+    def test_history_strategy_names_prefer_evidence_and_never_use_conclusions(self) -> None:
+        raw_result = {
+            "report_language": "zh",
+            "operation_advice": "立即买入并积极加仓",
+            "strategy_data_evidence": {
+                "schema_version": "strategy-evidence-v1",
+                "selected_strategies": [
+                    {"skill_id": "emotion_cycle", "skill_name": "Emotion Cycle"},
+                    {"skill_id": "volume_breakout", "skill_name": "Volume Breakout"},
+                ],
+            },
+        }
+
+        names = HistoryService._extract_strategy_names(
+            raw_result,
+            {"skills": ["emotion_cycle", "ma_golden_cross"]},
+        )
+
+        self.assertEqual(names, ["情绪周期", "放量突破", "均线金叉"])
+        self.assertEqual(HistoryService._extract_strategy_names({"operation_advice": "买入"}, None), [])
 
     def test_history_persistence_keeps_softened_operation_advice_from_guardrail(self) -> None:
         """Conservative-market guardrail short operation_advice is persisted and exposed to history list."""
@@ -839,8 +881,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             query_id="query_stock_bar_action",
             report_type="detailed",
             news_content="个股正文",
-            context_snapshot=None,
-            save_snapshot=False,
+            context_snapshot={"skills": ["emotion_cycle", "volume_breakout"]},
+            save_snapshot=True,
         )
         self.assertGreater(saved, 0)
 
@@ -855,6 +897,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(response.items[0].operation_advice, "不建议买入")
         self.assertEqual(response.items[0].action, "avoid")
         self.assertEqual(response.items[0].action_label, "回避")
+        self.assertEqual(response.items[0].strategy_names, ["情绪周期", "放量突破"])
 
     def test_stock_bar_item_aligns_score_and_legacy_advice(self) -> None:
         if get_stock_bar is None:

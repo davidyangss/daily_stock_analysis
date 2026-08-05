@@ -170,8 +170,6 @@ const initialState = {
 
 function buildHistoryParams(page: number) {
   return {
-    startDate: getRecentStartDate(30),
-    endDate: getTodayInShanghai(),
     page,
     limit: PAGE_SIZE,
   };

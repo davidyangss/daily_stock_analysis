@@ -32,7 +32,7 @@ describe('StockBarItemComponent', () => {
     const actions = screen.getByTestId('history-card-actions');
     const meta = screen.getByTestId('history-card-meta');
 
-    expect(within(actions).getByText('观望 62')).toBeInTheDocument();
+    expect(within(actions).getByText('情绪 62')).toBeInTheDocument();
     expect(within(actions).getByRole('button', { name: /删除 贵州茅台股票股份有限公司 历史记录/ })).toBeInTheDocument();
     expect(within(actions).queryByText('CN · 非交易日')).not.toBeInTheDocument();
     expect(within(meta).getByText('CN · 非交易日')).toBeVisible();
@@ -45,7 +45,7 @@ describe('StockBarItemComponent', () => {
     ).toBeInTheDocument();
   });
 
-  it('uses structured action before legacy operation advice', () => {
+  it('does not display structured or legacy operation conclusions in the score badge', () => {
     render(
       <StockBarItemComponent
         item={{
@@ -61,7 +61,8 @@ describe('StockBarItemComponent', () => {
     );
 
     const actions = screen.getByTestId('history-card-actions');
-    expect(within(actions).getByText('回避 35')).toBeInTheDocument();
+    expect(within(actions).getByText('情绪 35')).toBeInTheDocument();
+    expect(within(actions).queryByText('回避 35')).not.toBeInTheDocument();
     expect(within(actions).queryByText('买入 35')).not.toBeInTheDocument();
   });
 
@@ -81,7 +82,8 @@ describe('StockBarItemComponent', () => {
     );
 
     const actions = screen.getByTestId('history-card-actions');
-    expect(within(actions).getByText('回避 28')).toBeInTheDocument();
+    expect(within(actions).getByText('情绪 28')).toBeInTheDocument();
+    expect(within(actions).queryByText('回避 28')).not.toBeInTheDocument();
     expect(within(actions).queryByText('买入 28')).not.toBeInTheDocument();
   });
 
@@ -101,7 +103,8 @@ describe('StockBarItemComponent', () => {
     );
 
     const actions = screen.getByTestId('history-card-actions');
-    expect(within(actions).getByText('持有 48')).toBeInTheDocument();
+    expect(within(actions).getByText('情绪 48')).toBeInTheDocument();
+    expect(within(actions).queryByText('持有 48')).not.toBeInTheDocument();
   });
 
   it('does not render ambiguous English legacy advice as a buy action', () => {

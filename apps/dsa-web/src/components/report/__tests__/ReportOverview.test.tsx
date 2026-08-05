@@ -19,6 +19,12 @@ const baseSummary = {
 };
 
 describe('ReportOverview', () => {
+  it('shows the persisted record ID in the report header', () => {
+    render(<ReportOverview meta={{ ...baseMeta, id: 70 }} summary={baseSummary} />);
+
+    expect(screen.getByText('记录 ID: 70')).toBeInTheDocument();
+  });
+
   it('renders final market phase and partial-bar labels from report metadata', () => {
     render(
       <ReportOverview

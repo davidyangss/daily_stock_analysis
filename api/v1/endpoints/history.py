@@ -202,6 +202,7 @@ def get_history_list(
                 operation_advice=item.get("operation_advice"),
                 action=item.get("action"),
                 action_label=item.get("action_label"),
+                strategy_names=item.get("strategy_names") or [],
                 current_price=item.get("current_price"),
                 change_pct=item.get("change_pct"),
                 volume_ratio=item.get("volume_ratio"),
@@ -410,6 +411,10 @@ def get_stock_bar(
                     operation_advice=operation_advice,
                     action=action_fields["action"],
                     action_label=action_fields["action_label"],
+                    strategy_names=service._extract_strategy_names(
+                        raw_result,
+                        getattr(record, "context_snapshot", None),
+                    ),
                     analysis_count=analysis_count,
                     last_analysis_time=service._serialize_created_at(record.created_at),
                     model_used=normalize_model_used(model_used),

@@ -272,6 +272,11 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
                     {meta.stockCode}
                   </span>
+                  {meta.id !== undefined ? (
+                    <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
+                      {text.recordId}: {meta.id}
+                    </span>
+                  ) : null}
                   {marketPhaseLabel ? (
                     <Badge variant="info" className="shrink-0 gap-1.5 shadow-none" aria-label={marketPhaseLabel}>
                       {marketPhaseLabel}

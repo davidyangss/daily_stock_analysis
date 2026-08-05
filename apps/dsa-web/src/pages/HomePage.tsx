@@ -57,6 +57,12 @@ type StockAnalysisNavigationState = {
   selectionSource?: string;
 };
 
+type PendingStockSelection = {
+  canonicalCode: string;
+  displayCode: string;
+  stockName?: string;
+};
+
 const DUPLICATE_BANNER_AUTO_DISMISS_MS = 5000;
 const BATCH_ANALYSIS_CHUNK_SIZE = 50;
 const TODAY_ANALYSIS_PAGE_SIZE = 100;
@@ -133,6 +139,7 @@ function toStockBarItemFromHistoryItem(item: HistoryItem): StockBarItem {
     operationAdvice: item.operationAdvice,
     action: item.action ?? null,
     actionLabel: item.actionLabel ?? null,
+    strategyNames: item.strategyNames,
     analysisCount: 0,
     lastAnalysisTime: item.createdAt,
     modelUsed: item.modelUsed,
@@ -257,10 +264,15 @@ const HomePage: React.FC = () => {
     duplicateError,
     error,
     isAnalyzing,
+    historyItems,
+    selectedIds,
+    isDeletingHistory,
+    isLoadingHistory,
+    isLoadingMore,
+    hasMore,
     selectedReport,
     isLoadingReport,
     isHistoryTrendOpen,
-    marketReviewHistoryItems,
     stockHistoryItems,
     stockHistoryTotal,
     stockHistoryHasMore,
@@ -275,9 +287,13 @@ const HomePage: React.FC = () => {
     loadInitialHistory,
     refreshHistory,
     refreshHistoryForCompletedTask,
+    loadMoreHistory,
     loadMarketReviewHistory,
     refreshMarketReviewHistory,
     selectHistoryItem,
+    toggleHistorySelection,
+    toggleSelectAllVisible,
+    deleteSelectedHistory,
     submitAnalysis,
     notify,
     setNotify,
@@ -298,6 +314,25 @@ const HomePage: React.FC = () => {
     loadStockBar,
     refreshStockBar,
   } = useHomeDashboardState();
+  const [pendingStockSelection, setPendingStockSelection] = useState<PendingStockSelection | null>(null);
+
+  const handleQueryChange = useCallback((value: string) => {
+    setPendingStockSelection(null);
+    setQuery(value);
+  }, [setQuery]);
+
+  const handleStockSelect = useCallback((
+    canonicalCode: string,
+    stockName?: string,
+    _source?: 'autocomplete',
+    metadata?: { displayCode?: string },
+  ) => {
+    setPendingStockSelection({
+      canonicalCode,
+      displayCode: metadata?.displayCode ?? canonicalCode,
+      stockName,
+    });
+  }, []);
 
   const clearDuplicateBannerTimer = useCallback(() => {
     if (duplicateBannerTimer.current !== null) {
@@ -687,24 +722,6 @@ const HomePage: React.FC = () => {
     setSidebarOpen(false);
   }, [clearMarketReviewState, selectHistoryItem]);
 
-  const [isDeletingStock, setIsDeletingStock] = useState(false);
-  const handleDeleteStock = useCallback(async (stockCode: string) => {
-    if (isDeletingStock) return;
-    setIsDeletingStock(true);
-    try {
-      await historyApi.deleteByCode(stockCode);
-      await refreshStockBar();
-      await refreshHistory(true);
-      if (stockCode === 'MARKET') {
-        await refreshMarketReviewHistory(false);
-      }
-    } catch {
-      // error silently ignored
-    } finally {
-      setIsDeletingStock(false);
-    }
-  }, [isDeletingStock, refreshMarketReviewHistory, refreshStockBar, refreshHistory]);
-
   const handleSubmitAnalysis = useCallback(
     (
       stockCode?: string,
@@ -722,6 +739,18 @@ const HomePage: React.FC = () => {
     [query, selectedAnalysisSkills, submitAnalysis],
   );
 
+  const handleStartAnalysis = useCallback(() => {
+    if (pendingStockSelection?.displayCode === query) {
+      handleSubmitAnalysis(
+        pendingStockSelection.canonicalCode,
+        pendingStockSelection.stockName,
+        'autocomplete',
+      );
+      return;
+    }
+    handleSubmitAnalysis();
+  }, [handleSubmitAnalysis, pendingStockSelection, query]);
+
   useEffect(() => {
     const state = location.state as StockAnalysisNavigationState | null;
     const stockCode = typeof state?.stockCode === 'string' ? state.stockCode.trim() : '';
@@ -729,6 +758,7 @@ const HomePage: React.FC = () => {
       return;
     }
     const stockName = typeof state?.stockName === 'string' ? state.stockName.trim() : '';
+    setPendingStockSelection(null);
     setQuery(stockCode);
     navigate(location.pathname, { replace: true, state: null });
     if (state?.autoAnalyze) {
@@ -1071,16 +1101,19 @@ const HomePage: React.FC = () => {
 
     return Array.from(itemsById.values())
       .sort((left, right) => {
-        const leftScore = typeof left.sentimentScore === 'number' ? left.sentimentScore : -1;
-        const rightScore = typeof right.sentimentScore === 'number' ? right.sentimentScore : -1;
-        if (rightScore !== leftScore) {
-          return rightScore - leftScore;
-        }
         const leftTime = getShanghaiTimeValue(left.lastAnalysisTime);
         const rightTime = getShanghaiTimeValue(right.lastAnalysisTime);
-        return rightTime - leftTime;
+        return rightTime - leftTime || right.id - left.id;
       });
   }, [todayDateKey, todayHistoryItems]);
+
+  const expandedHistoryItems = useMemo(
+    () => [...historyItems].sort((left, right) => (
+      getShanghaiTimeValue(right.createdAt) - getShanghaiTimeValue(left.createdAt)
+      || right.id - left.id
+    )),
+    [historyItems],
+  );
 
   const handleAnalyzeWatchlist = useCallback(async (mode: WatchlistAnalyzeMode) => {
     if (mode === 'pending' && watchlistTodayStatusBlocked) {
@@ -1199,33 +1232,6 @@ const HomePage: React.FC = () => {
     watchlistState.watchlistCodes,
   ]);
 
-  const mergedStockBarItems = useMemo<StockBarItem[]>(() => {
-    const latestMarketReview = marketReviewHistoryItems[0];
-    const stockItems = stockBarItems.filter((item) => item.stockCode !== 'MARKET');
-    if (!latestMarketReview) {
-      return stockItems;
-    }
-
-    const marketReviewItem: StockBarItem = {
-      id: latestMarketReview.id,
-      stockCode: 'MARKET',
-      stockName: latestMarketReview.stockName || t('home.marketReview'),
-      reportType: 'market_review',
-      sentimentScore: latestMarketReview.sentimentScore,
-      operationAdvice: latestMarketReview.operationAdvice,
-      analysisCount: Math.max(marketReviewHistoryItems.length, 1),
-      lastAnalysisTime: latestMarketReview.createdAt,
-      modelUsed: latestMarketReview.modelUsed,
-      marketPhaseSummary: latestMarketReview.marketPhaseSummary,
-    };
-
-    return [marketReviewItem, ...stockItems].sort((left, right) => {
-      const leftTime = left.lastAnalysisTime ? Date.parse(left.lastAnalysisTime) : 0;
-      const rightTime = right.lastAnalysisTime ? Date.parse(right.lastAnalysisTime) : 0;
-      return rightTime - leftTime;
-    });
-  }, [marketReviewHistoryItems, stockBarItems, t]);
-
   const sidebarContent = useMemo(
     () => (
       <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
@@ -1247,13 +1253,18 @@ const HomePage: React.FC = () => {
           isLoadingTodayItems={isLoadingTodayAnalysisItems}
           todayLoadError={todayAnalysisLoadFailed}
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
-          historyItems={mergedStockBarItems}
-          isLoadingHistory={isLoadingStockBar}
-          selectedStockCode={selectedReport?.meta.stockCode}
+          historyItems={expandedHistoryItems}
+          isLoadingHistory={isLoadingHistory}
+          isLoadingMoreHistory={isLoadingMore}
+          historyHasMore={hasMore}
+          selectedHistoryIds={selectedIds}
           selectedRecordId={selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
-          onDeleteStock={handleDeleteStock}
-          isDeleting={isDeletingStock}
+          onLoadMoreHistory={loadMoreHistory}
+          onToggleHistorySelection={toggleHistorySelection}
+          onToggleSelectAllHistory={toggleSelectAllVisible}
+          onDeleteSelectedHistory={() => void deleteSelectedHistory()}
+          isDeletingHistory={isDeletingHistory}
           className="flex-1 overflow-hidden"
         />
       </div>
@@ -1262,19 +1273,24 @@ const HomePage: React.FC = () => {
       activeTasks,
       batchAnalyzeStatus,
       handleAnalyzeWatchlist,
-      handleDeleteStock,
       handleHistoryItemClick,
+      hasMore,
       isBatchAnalyzingWatchlist,
-      isDeletingStock,
-      isLoadingStockBar,
+      isDeletingHistory,
+      isLoadingHistory,
+      isLoadingMore,
       isLoadingTodayAnalysisItems,
       todayAnalysisLoadFailed,
-      mergedStockBarItems,
+      expandedHistoryItems,
+      loadMoreHistory,
       openTaskRunFlow,
+      deleteSelectedHistory,
       selectedReport?.meta.id,
-      selectedReport?.meta.stockCode,
+      selectedIds,
       sidebarWorkspaceTab,
       todayAnalysisItems,
+      toggleHistorySelection,
+      toggleSelectAllVisible,
       watchlistAnalyzedTodayCount,
       watchlistRows,
       watchlistState.actionMessage,
@@ -1307,10 +1323,12 @@ const HomePage: React.FC = () => {
               <div className="relative min-w-0 flex-1">
                 <StockAutocomplete
                   value={query}
-                  onChange={setQuery}
+                  onChange={handleQueryChange}
                   onSubmit={(stockCode, stockName, selectionSource) => {
                     handleSubmitAnalysis(stockCode, stockName, selectionSource);
                   }}
+                  onSelect={handleStockSelect}
+                  manualSubmitOnly
                   allowedMarkets={['CN', 'BSE']}
                   placeholder={t('home.placeholder')}
                   disabled={isAnalyzing}
@@ -1400,7 +1418,7 @@ const HomePage: React.FC = () => {
               </Button>
               <button
                 type="button"
-                onClick={() => handleSubmitAnalysis()}
+                onClick={handleStartAnalysis}
                 disabled={!query || isAnalyzing}
                 className="btn-primary flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap md:flex-none"
               >

@@ -38,6 +38,7 @@ class HistoryItem(BaseModel):
     operation_advice: Optional[str] = Field(None, description="操作建议")
     action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
     action_label: Optional[str] = Field(None, description="建议动作展示标签")
+    strategy_names: List[str] = Field(default_factory=list, description="本次分析实际采用的策略名称")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
     volume_ratio: Optional[float] = Field(None, description="分析时量比")
@@ -358,6 +359,7 @@ class StockBarItem(BaseModel):
     operation_advice: Optional[str] = Field(None, description="最新操作建议")
     action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
     action_label: Optional[str] = Field(None, description="建议动作展示标签")
+    strategy_names: List[str] = Field(default_factory=list, description="最新分析实际采用的策略名称")
     analysis_count: int = Field(..., description="该股票的历史分析总次数")
     last_analysis_time: Optional[str] = Field(None, description="最近一次分析时间")
     model_used: Optional[str] = Field(

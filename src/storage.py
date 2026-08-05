@@ -2392,7 +2392,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             results = session.execute(
                 select(AnalysisHistory)
                 .where(and_(*conditions))
-                .order_by(desc(AnalysisHistory.created_at))
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
                 .limit(limit)
             ).scalars().all()
 
@@ -2481,7 +2481,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             data_query = (
                 select(AnalysisHistory)
                 .where(where_clause)
-                .order_by(desc(AnalysisHistory.created_at))
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
                 .offset(offset)
                 .limit(limit)
             )

@@ -90,12 +90,16 @@ describe('TraderAnalysisPage', () => {
     }));
   });
 
-  it('starts an analysis when the autocomplete input is submitted', async () => {
+  it('waits for the start button before submitting the autocomplete input', async () => {
     render(<TraderAnalysisPage />);
 
     const symbolInput = await screen.findByLabelText('A 股代码或名称');
+    await screen.findAllByText(firstRun.runId);
     fireEvent.change(symbolInput, { target: { value: '300750' } });
     fireEvent.keyDown(symbolInput, { key: 'Enter' });
+
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '开始分析' }));
 
     await waitFor(() => expect(mockCreateRun).toHaveBeenCalledWith({
       symbol: '300750',

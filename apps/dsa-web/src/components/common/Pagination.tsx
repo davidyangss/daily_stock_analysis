@@ -38,6 +38,7 @@ interface PaginationProps {
   currentPage: number;
   totalPages: number;
   onPageChange: (page: number) => void;
+  alwaysVisible?: boolean;
   className?: string;
 }
 
@@ -48,9 +49,10 @@ export const Pagination: React.FC<PaginationProps> = ({
   currentPage,
   totalPages,
   onPageChange,
+  alwaysVisible = false,
   className = '',
 }) => {
-  if (totalPages <= 1) return null;
+  if (totalPages <= 1 && !alwaysVisible) return null;
 
   // Build the page list with ellipsis placeholders.
   const getPageNumbers = (): (number | string)[] => {

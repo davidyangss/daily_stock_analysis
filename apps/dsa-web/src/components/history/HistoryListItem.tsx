@@ -2,10 +2,10 @@ import type React from 'react';
 import { Badge } from '../common';
 import type { HistoryItem } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
-import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel } from '../../utils/marketPhase';
 import { truncateStockName } from '../../utils/stockName';
+import { formatStrategyNames } from '../../utils/strategyNames';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 interface HistoryListItemProps {
@@ -28,14 +28,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
   const { language, t } = useUiLanguage();
   const sentimentColor = item.sentimentScore !== undefined ? getSentimentColor(item.sentimentScore) : null;
   const stockName = item.stockName || item.stockCode;
-  const actionLabels = buildDecisionActionLabelMap(t);
-  const operationLabel = getDecisionActionLabel(
-    item.action,
-    item.actionLabel,
-    item.operationAdvice,
-    t('history.sentiment'),
-    actionLabels,
-  );
+  const strategyLabel = formatStrategyNames(item.strategyNames, t('common.noData'), language);
   const phaseLabel = getMarketPhaseSummaryLabel(item.marketPhaseSummary, language)
     ?.replace('市场阶段: ', '')
     .replace('市场阶段：', '')
@@ -89,7 +82,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
                       backgroundColor: `${sentimentColor}10`,
                     }}
                   >
-                    {operationLabel} {item.sentimentScore}
+                    {t('history.sentiment')} {item.sentimentScore}
                   </Badge>
                 )}
               </div>
@@ -100,7 +93,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
               </span>
               <span className="w-1 h-1 rounded-full bg-subtle-hover" />
               <span className="text-[11px] text-muted-text">
-                {formatDateTime(item.createdAt)}
+                {t('history.analysisTime', { time: formatDateTime(item.createdAt) })}
               </span>
               {phaseLabel ? (
                 <>
@@ -111,6 +104,9 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
                 </>
               ) : null}
             </div>
+            <p className="mt-1 whitespace-normal break-words text-[11px] leading-4 text-secondary-text" title={strategyLabel}>
+              {strategyLabel}
+            </p>
           </div>
         </div>
       </button>

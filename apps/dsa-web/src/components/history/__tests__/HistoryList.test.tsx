@@ -23,6 +23,7 @@ const items: HistoryItem[] = [
     stockName: '贵州茅台',
     sentimentScore: 82,
     operationAdvice: '买入',
+    strategyNames: ['情绪周期', '放量突破'],
     createdAt: '2026-03-15T08:00:00Z',
   },
 ];
@@ -68,7 +69,10 @@ describe('HistoryList', () => {
     );
 
     expect(screen.getByText('已选 1')).toBeInTheDocument();
-    expect(screen.getByText('买入 82')).toBeInTheDocument();
+    expect(screen.getByText('情绪 82')).toBeInTheDocument();
+    expect(screen.getByText(/分析时间：/)).toBeInTheDocument();
+    expect(screen.getByText('情绪周期、放量突破')).toBeInTheDocument();
+    expect(screen.queryByText(/采取策略/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /贵州茅台/i }));
     expect(onItemClick).toHaveBeenCalledWith(1);
@@ -77,7 +81,7 @@ describe('HistoryList', () => {
     expect(onToggleItemSelection).toHaveBeenCalledWith(1);
   });
 
-  it('uses structured action before legacy operation advice', () => {
+  it('does not display structured or legacy operation conclusions in the score badge', () => {
     render(
       <HistoryList
         {...baseProps}
@@ -93,8 +97,23 @@ describe('HistoryList', () => {
       />,
     );
 
-    expect(screen.getByText('回避 35')).toBeInTheDocument();
+    expect(screen.getByText('情绪 35')).toBeInTheDocument();
+    expect(screen.queryByText('回避 35')).not.toBeInTheDocument();
     expect(screen.queryByText('买入 35')).not.toBeInTheDocument();
+    expect(screen.getByText('情绪周期、放量突破')).toBeInTheDocument();
+    expect(screen.queryByText(/采取策略/)).not.toBeInTheDocument();
+  });
+
+  it('shows no strategy data instead of falling back to the operation conclusion', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[{ ...items[0], strategyNames: [], operationAdvice: '立即买入并积极加仓' }]}
+      />,
+    );
+
+    expect(screen.getByText('暂无数据')).toBeInTheDocument();
+    expect(screen.queryByText(/立即买入/)).not.toBeInTheDocument();
   });
 
   it('uses the unified legacy fallback for negated buy advice without structured action', () => {
@@ -113,7 +132,8 @@ describe('HistoryList', () => {
       />,
     );
 
-    expect(screen.getByText('回避 28')).toBeInTheDocument();
+    expect(screen.getByText('情绪 28')).toBeInTheDocument();
+    expect(screen.queryByText('回避 28')).not.toBeInTheDocument();
     expect(screen.queryByText('买入 28')).not.toBeInTheDocument();
   });
 
@@ -133,8 +153,8 @@ describe('HistoryList', () => {
       />,
     );
 
-    expect(screen.getByText('持有 48')).toBeInTheDocument();
-    expect(screen.queryByText('情绪 48')).not.toBeInTheDocument();
+    expect(screen.getByText('情绪 48')).toBeInTheDocument();
+    expect(screen.queryByText('持有 48')).not.toBeInTheDocument();
   });
 
   it('does not render ambiguous English legacy advice as a buy action', () => {
@@ -309,5 +329,57 @@ describe('HistoryList', () => {
 
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('shows expanded records one page at a time in paged mode', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        paginationMode="paged"
+        pageSize={1}
+        items={[
+          items[0],
+          { ...items[0], id: 2, queryId: 'q-2', stockName: '五粮液', stockCode: '000858' },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /贵州茅台/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /五粮液/ })).not.toBeInTheDocument();
+    expect(screen.getByText('第 1 页')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+
+    expect(screen.queryByRole('button', { name: /贵州茅台/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /五粮液/ })).toBeInTheDocument();
+    expect(screen.getByText('第 2 页')).toBeInTheDocument();
+  });
+
+  it('shows five records by default and keeps pagination pinned outside the scroll viewport', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        paginationMode="paged"
+        items={Array.from({ length: 6 }, (_, index) => ({
+          ...items[0],
+          id: index + 1,
+          queryId: `q-${index + 1}`,
+          stockCode: `T00${index + 1}`,
+          stockName: `股票${index + 1}`,
+        }))}
+      />,
+    );
+
+    expect(screen.getByText('股票5')).toBeInTheDocument();
+    expect(screen.queryByText('股票6')).not.toBeInTheDocument();
+
+    const footer = screen.getByTestId('history-pagination-footer');
+    const scrollViewport = screen.getByTestId('home-history-list-scroll');
+    expect(footer).toHaveClass('sticky', 'bottom-0', 'shrink-0');
+    expect(scrollViewport).not.toContainElement(footer);
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expect(screen.getByText('股票6')).toBeInTheDocument();
+    expect(screen.queryByText('股票5')).not.toBeInTheDocument();
   });
 });

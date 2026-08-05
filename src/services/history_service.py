@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
-from src.agent.evidence import format_strategy_evidence_markdown
+from src.agent.evidence import extract_strategy_evidence_manifest, format_strategy_evidence_markdown
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.report_language import (
     get_bias_status_emoji,
@@ -323,16 +323,55 @@ class HistoryService:
         normalized = region.strip() if isinstance(region, str) else ""
         return normalized or None
 
+    @staticmethod
+    def _extract_strategy_names(raw_result: Any, context_snapshot: Any) -> List[str]:
+        """Return persisted strategy display names without falling back to conclusions."""
+        raw = parse_json_field(raw_result)
+        snapshot = parse_json_field(context_snapshot)
+        report_language = normalize_report_language(
+            raw.get("report_language") if isinstance(raw, dict) else None
+        )
+        names: List[str] = []
+        seen_ids: set[str] = set()
+
+        manifest = extract_strategy_evidence_manifest(raw) if isinstance(raw, dict) else None
+        selected = manifest.get("selected_strategies") if isinstance(manifest, dict) else None
+        for item in selected if isinstance(selected, list) else []:
+            if not isinstance(item, dict):
+                continue
+            skill_id = str(item.get("skill_id") or "").strip()
+            raw_name = str(item.get("skill_name") or skill_id).strip()
+            if not raw_name or (skill_id and skill_id in seen_ids):
+                continue
+            if skill_id:
+                seen_ids.add(skill_id)
+            name = localize_strategy_skill(raw_name, report_language).strip()
+            if name and name not in names:
+                names.append(name)
+
+        snapshot_skills = snapshot.get("skills") if isinstance(snapshot, dict) else None
+        for value in snapshot_skills if isinstance(snapshot_skills, list) else []:
+            skill_id = str(value or "").strip()
+            if not skill_id or skill_id in seen_ids:
+                continue
+            seen_ids.add(skill_id)
+            name = localize_strategy_skill(skill_id, report_language).strip()
+            if name and name not in names:
+                names.append(name)
+
+        return names
+
     def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
         raw_result = parse_json_field(getattr(record, "raw_result", None))
+        context_snapshot = getattr(record, "context_snapshot", None)
         model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
         display_code = self._display_stock_code(record.code)
         market_fields = self._extract_history_market_fields(
-            getattr(record, "context_snapshot", None)
+            context_snapshot
         )
         market_phase_summary = self._display_market_phase_summary(
             record.code,
-            getattr(record, "context_snapshot", None),
+            context_snapshot,
         )
         action_fields = self._decision_action_fields_for_record(record, raw_result)
 
@@ -352,6 +391,7 @@ class HistoryService:
             "action": action_fields["action"],
             "action_label": action_fields["action_label"],
             "model_used": normalize_model_used(model_used),
+            "strategy_names": self._extract_strategy_names(raw_result, context_snapshot),
             "created_at": self._serialize_created_at(record.created_at),
             "market_phase_summary": market_phase_summary,
             **market_fields,

@@ -2,10 +2,10 @@ import type React from 'react';
 import { Badge, Button } from '../common';
 import type { StockBarItem as StockBarItemType } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
-import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel } from '../../utils/marketPhase';
 import { truncateStockName } from '../../utils/stockName';
+import { formatStrategyNames } from '../../utils/strategyNames';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 interface StockBarItemProps {
@@ -29,14 +29,7 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
   const sentimentScore = typeof item.sentimentScore === 'number' ? item.sentimentScore : null;
   const sentimentColor = sentimentScore !== null ? getSentimentColor(sentimentScore) : null;
   const stockName = item.stockName || item.stockCode;
-  const actionLabels = buildDecisionActionLabelMap(t);
-  const operationLabel = getDecisionActionLabel(
-    item.action,
-    item.actionLabel,
-    item.operationAdvice,
-    t('history.sentiment'),
-    actionLabels,
-  );
+  const strategyLabel = formatStrategyNames(item.strategyNames, t('common.noData'), language);
   const phaseLabel = getMarketPhaseSummaryLabel(item.marketPhaseSummary, language)
     ?.replace('市场阶段: ', '')
     .replace('市场阶段：', '')
@@ -97,7 +90,7 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
                     backgroundColor: `${sentimentColor}10`,
                   }}
                 >
-                  {operationLabel} {sentimentScore}
+                  {t('history.sentiment')} {sentimentScore}
                 </Badge>
               ) : null}
               {onDelete && (
@@ -127,7 +120,7 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
               <>
                 <span className="w-1 h-1 rounded-full bg-subtle-hover" />
                 <span className="text-[11px] text-muted-text">
-                  {formatDateTime(item.lastAnalysisTime)}
+                  {t('history.analysisTime', { time: formatDateTime(item.lastAnalysisTime) })}
                 </span>
               </>
             )}
@@ -148,6 +141,9 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
               </>
             ) : null}
           </div>
+          <p className="mt-1 whitespace-normal break-words text-[11px] leading-4 text-secondary-text" title={strategyLabel}>
+            {strategyLabel}
+          </p>
         </div>
       </div>
     </button>
