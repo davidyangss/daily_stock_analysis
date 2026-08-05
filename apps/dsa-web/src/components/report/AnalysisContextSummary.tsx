@@ -74,6 +74,7 @@ const TEXT = {
     diagnosticCode: '诊断码',
     inputScope: '本次分析输入',
     evidenceScope: '仅代表进入本次 LLM 的输入，不等同于数据源运行成功',
+    limitedInputs: '受限输入',
     qualityScore: '质量分',
     limitations: '数据限制',
     availableItems: '已获取',
@@ -108,6 +109,7 @@ const TEXT = {
     diagnosticCode: 'Diagnostic code',
     inputScope: 'Analysis Input',
     evidenceScope: 'Shows inputs included in this LLM run, not provider run success',
+    limitedInputs: 'Limited inputs',
     qualityScore: 'Quality',
     limitations: 'Data Limitations',
     availableItems: 'Available',
@@ -142,6 +144,7 @@ const TEXT = {
     diagnosticCode: '진단 코드',
     inputScope: '이번 분석 입력',
     evidenceScope: '이번 LLM 입력에 포함된 항목만 표시하며, 데이터 소스 실행 성공과는 다릅니다',
+    limitedInputs: '제한된 입력',
     qualityScore: '품질 점수',
     limitations: '데이터 한계',
     availableItems: '사용 가능',
@@ -249,6 +252,45 @@ const UNKNOWN_REASON_DETAILS: Record<ReportLanguage, string> = {
   ko: '명확한 원인이 기록되지 않았습니다. 상태, 출처 및 경고를 함께 확인하세요',
 };
 
+const COMPACT_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
+  zh: {
+    daily_bars_missing: '日线未进入分析',
+    news_context_missing: '新闻上下文未进入分析',
+    realtime_quote_missing: '实时行情未进入分析',
+    trend_result_missing: '技术分析结果未进入分析',
+    fundamental_context_missing: '基本面未进入分析',
+    fundamental_pipeline_failed: '基本面抓取失败',
+    fundamentals_not_supported: '当前标的不支持基本面',
+    fundamental_coverage_missing: '基本面覆盖不完整',
+    chip_distribution_missing: '筹码数据未进入分析',
+    chip_not_supported: '当前标的不支持筹码数据',
+  },
+  en: {
+    daily_bars_missing: 'daily bars were not included',
+    news_context_missing: 'news context was not included',
+    realtime_quote_missing: 'real-time quotes were not included',
+    trend_result_missing: 'technical analysis was not included',
+    fundamental_context_missing: 'fundamentals were not included',
+    fundamental_pipeline_failed: 'fundamental retrieval failed',
+    fundamentals_not_supported: 'fundamentals are not supported',
+    fundamental_coverage_missing: 'fundamental coverage is incomplete',
+    chip_distribution_missing: 'chip data was not included',
+    chip_not_supported: 'chip data is not supported',
+  },
+  ko: {
+    daily_bars_missing: '일봉이 분석에 포함되지 않음',
+    news_context_missing: '뉴스 맥락이 분석에 포함되지 않음',
+    realtime_quote_missing: '실시간 시세가 분석에 포함되지 않음',
+    trend_result_missing: '기술 분석 결과가 포함되지 않음',
+    fundamental_context_missing: '펀더멘털이 분석에 포함되지 않음',
+    fundamental_pipeline_failed: '펀더멘털 수집 실패',
+    fundamentals_not_supported: '펀더멘털을 지원하지 않음',
+    fundamental_coverage_missing: '펀더멘털 범위가 불완전함',
+    chip_distribution_missing: '매물대 데이터가 분석에 포함되지 않음',
+    chip_not_supported: '매물대 데이터를 지원하지 않음',
+  },
+};
+
 const STATUS_FALLBACK_GUIDANCE: Record<
   ReportLanguage,
   Partial<Record<AnalysisContextPackBlockStatus, string>>
@@ -338,6 +380,26 @@ const formatMissingReason = (
   return `${detail} (${TEXT[language].diagnosticCode}: ${reason})`;
 };
 
+const compactLimitedBlockDetail = (
+  block: AnalysisContextPackOverview['blocks'][number],
+  language: ReportLanguage,
+): string | null => {
+  const unavailableItems = block.unavailableItems
+    ?.slice(0, 2)
+    .map((item) => formatCoverageItem(item, language))
+    .filter(Boolean);
+  if (unavailableItems?.length) return unavailableItems.join(language === 'zh' ? '、' : ', ');
+
+  const reason = block.missingReasons?.[0];
+  if (reason) {
+    return COMPACT_REASON_LABELS[language][reason] || reason;
+  }
+
+  return block.warnings?.[0]
+    || STATUS_FALLBACK_GUIDANCE[language][block.status]
+    || null;
+};
+
 export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
   overview,
   language = 'zh',
@@ -366,6 +428,16 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
   const qualityStyle = qualityLevel ? QUALITY_STYLE[qualityLevel] : undefined;
   const qualityLabel = qualityLevel ? text.qualityLevel[qualityLevel] : undefined;
   const limitations = quality?.limitations?.map((item) => formatLimitation(item, reportLanguage, text)) || [];
+  const limitedBlocks = overview.blocks
+    .filter((block) => block.status !== 'available')
+    .slice(0, 3)
+    .map((block) => {
+      const label = block.label || BLOCK_LABELS[reportLanguage][block.key] || block.key;
+      const status = text.status[block.status] || block.status;
+      const detail = compactLimitedBlockDetail(block, reportLanguage);
+      const separator = reportLanguage === 'zh' || reportLanguage === 'ko' ? '：' : ': ';
+      return `${label}（${status}）${detail ? `${separator}${detail}` : ''}`;
+    });
 
   return (
     <Card variant="bordered" padding="none" className="home-panel-card">
@@ -383,6 +455,11 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
               <span className="mt-1 block text-xs leading-5 text-muted-text">
                 {text.evidenceScope}
               </span>
+              {limitedBlocks.length ? (
+                <span className="mt-1 block text-xs leading-5 text-warning">
+                  {text.limitedInputs}：{limitedBlocks.join('；')}
+                </span>
+              ) : null}
             </span>
           </div>
           <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">

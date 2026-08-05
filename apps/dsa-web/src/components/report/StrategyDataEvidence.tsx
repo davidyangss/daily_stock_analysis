@@ -109,6 +109,28 @@ const REQUIRED_METRIC_FALLBACK: Record<string, Array<[string, string]>> = {
   ],
 };
 
+const formatDataLimitation = (limitation: string, language: ReportLanguage): string => {
+  const missingFields = limitation.match(/^missing source fields:\s*(.+)$/i);
+  if (missingFields) {
+    const metricLabels = new Map(REQUIRED_METRIC_FALLBACK.get_stock_info || []);
+    const fields = missingFields[1]
+      .split(',')
+      .map((field) => field.trim())
+      .filter(Boolean)
+      .map((field) => localizeDisplayText(metricLabels.get(field) || field, language));
+    if (language === 'zh') return `数据源未返回字段：${fields.join('、')}`;
+    return `Source fields missing: ${fields.join(', ')}`;
+  }
+  if (language === 'zh') {
+    return localizeDisplayText(limitation
+      .replace(/^fundamental_context unavailable:\s*/i, '基本面上下文不可用：')
+      .replace(/^valuation fallback unavailable:\s*/i, '估值备用数据不可用：')
+      .replace(/^belong_boards unavailable:\s*/i, '所属板块数据不可用：')
+      .replace(/^stock_name unavailable:\s*/i, '股票名称不可用：'), language);
+  }
+  return localizeDisplayText(limitation, language);
+};
+
 const localizeDisplayText = (value: string, language: ReportLanguage): string => {
   if (language !== 'zh') return value;
   return Object.entries(ZH_DISPLAY_TOKENS).reduce(
@@ -450,6 +472,7 @@ const buildLimitationDetails = (
           statusLabel(evidenceItem.status, language),
           evidenceItem.sources?.join(', ') || text.noSource,
           ...failureDetails,
+          ...(evidenceItem.dataLimitations || []).map((limitation) => formatDataLimitation(limitation, language)),
         ]
       : [text.noSource];
 

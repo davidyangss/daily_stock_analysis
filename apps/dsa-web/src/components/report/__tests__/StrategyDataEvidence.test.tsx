@@ -205,6 +205,10 @@ describe('StrategyDataEvidence', () => {
                 cached: false,
                 partial: true,
                 keyValues: { pe_ratio: 18.5 },
+                dataLimitations: [
+                  'missing source fields: revenue_yoy, roe',
+                  'belong_boards unavailable: provider timeout',
+                ],
                 metricDetails: [{
                   key: 'revenue_yoy',
                   label: '营收同比增长率',
@@ -252,7 +256,8 @@ describe('StrategyDataEvidence', () => {
     expect(screen.getByText('数据限制')).toBeInTheDocument();
     expect(screen.getByText('必需输入数据部分可用')).toBeInTheDocument();
     expect(screen.getByText('营收同比增长率、净资产收益率（ROE）')).toBeInTheDocument();
-    expect(screen.getByText('部分数据；iwencai')).toBeInTheDocument();
+    expect(container.textContent).toContain('数据源未返回字段：营收同比增长率、净资产收益率（ROE）');
+    expect(container.textContent).toContain('所属板块数据不可用：provider timeout');
     expect(container.textContent).toContain('概念板块排名');
     expect(container.textContent).not.toContain('concept_ranking');
     expect(container.textContent).not.toContain('expectation_repricing');

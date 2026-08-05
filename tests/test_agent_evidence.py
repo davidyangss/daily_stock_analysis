@@ -46,6 +46,7 @@ class TestToolEvidence(unittest.TestCase):
         self.assertEqual(evidence["status"], "available")
         self.assertFalse(evidence["partial"])
         self.assertEqual(evidence["missing_fields"], [])
+        self.assertEqual(evidence["data_limitations"], ["belong_boards unavailable"])
 
     def test_incomplete_stock_info_metrics_remain_partial(self) -> None:
         evidence = summarize_tool_result(

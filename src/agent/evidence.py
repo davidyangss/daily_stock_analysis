@@ -765,6 +765,9 @@ def summarize_tool_result(
         "partial": status == "partial",
         "key_values": key_values,
     }
+    data_limitations = _safe_string_list(mapping.get("data_limitations"), limit=10)
+    if data_limitations:
+        evidence["data_limitations"] = data_limitations
     metric_details = _metric_details(tool_name, {**mapping, **key_values})
     if metric_details:
         # Older/prefetched fundamental contexts may carry a broad ``partial``

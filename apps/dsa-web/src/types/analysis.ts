@@ -386,6 +386,7 @@ export interface StrategyEvidenceItem {
     missingReason?: string | null;
   }>;
   missingFields?: string[];
+  dataLimitations?: string[];
   prefetched?: boolean;
   stage?: string;
   asOf?: string;

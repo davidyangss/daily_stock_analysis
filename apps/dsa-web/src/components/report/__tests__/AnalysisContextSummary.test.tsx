@@ -133,6 +133,7 @@ describe('AnalysisContextSummary', () => {
     expect(screen.getAllByText('抓取失败 1')[0]).toBeVisible();
     expect(screen.getAllByText('质量分 82/100 可用')[0]).toBeVisible();
     expect(screen.getByText('触发来源: api')).toBeVisible();
+    expect(screen.getByText(/受限输入：新闻（缺失）：新闻上下文未进入分析；基本面（抓取失败）：基本面抓取失败/)).toBeVisible();
     expect(screen.getByText('来源: mock_quote')).not.toBeVisible();
 
     fireEvent.click(within(panel).getAllByText('输入数据块')[0]);
