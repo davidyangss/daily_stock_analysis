@@ -1868,8 +1868,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         )
 
         self.assertIn("策略关键数据与来源", markdown)
-        self.assertIn("source=searxng", markdown)
-        self.assertIn("reason=no results", markdown)
+        self.assertIn("searxng", markdown)
+        self.assertIn("no results", markdown)
 
     def test_history_markdown_returns_persisted_market_review_report(self) -> None:
         """Market review history should return the saved Markdown without rebuilding a stock report."""

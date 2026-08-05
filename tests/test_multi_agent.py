@@ -1005,13 +1005,24 @@ class TestOrchestratorModes(unittest.TestCase):
 
     def test_build_context_from_dict(self):
         orch = self._make_orchestrator()
+        fundamental_context = {
+            "status": "partial",
+            "source_chain": [{"provider": "iwencai", "result": "ok"}],
+            "valuation": {"status": "ok", "data": {"pe_ratio": 18.5}},
+        }
         ctx = orch._build_context(
             "Analyze 600519",
-            context={"stock_code": "600519", "stock_name": "贵州茅台", "skills": ["bull_trend"]},
+            context={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "skills": ["bull_trend"],
+                "fundamental_context": fundamental_context,
+            },
         )
         self.assertEqual(ctx.stock_code, "600519")
         self.assertEqual(ctx.stock_name, "贵州茅台")
         self.assertEqual(ctx.meta["skills_requested"], ["bull_trend"])
+        self.assertEqual(ctx.data["fundamental_context"], fundamental_context)
 
     def test_specialist_builder_allows_four_requested_skills(self):
         orch = self._make_orchestrator("specialist")
@@ -1246,6 +1257,84 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIn("Analysis Summary", result.content)
         skill.run.assert_called_once()
         decision.run.assert_called_once()
+
+    def test_standard_pipeline_runs_selected_specialist_before_decision(self):
+        orch = self._make_orchestrator()
+        orch.mode = "standard"
+        ctx = AgentContext(query="test", stock_code="600519")
+        ctx.meta["selected_strategy_skills"] = [
+            {"skill_id": "box_oscillation", "skill_name": "箱体震荡"}
+        ]
+        ctx.add_opinion(AgentOpinion(
+            agent_name="technical",
+            signal="hold",
+            confidence=0.5,
+            reasoning="fixture technical opinion",
+        ))
+        call_order = []
+
+        technical = MagicMock(agent_name="technical")
+        technical.run.side_effect = lambda *_args, **_kwargs: (
+            call_order.append("technical") or self._stage_result("technical")
+        )
+        intel = MagicMock(agent_name="intel")
+        intel.run.side_effect = lambda *_args, **_kwargs: (
+            call_order.append("intel") or self._stage_result("intel")
+        )
+        skill = MagicMock(agent_name="strategy_box_oscillation")
+        skill.run.side_effect = lambda *_args, **_kwargs: (
+            call_order.append("strategy_box_oscillation")
+            or self._stage_result("strategy_box_oscillation")
+        )
+        decision = MagicMock(agent_name="decision")
+        decision.run.side_effect = lambda *_args, **_kwargs: (
+            call_order.append("decision") or self._stage_result("decision")
+        )
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, decision]):
+            with patch.object(orch, "_build_specialist_agents", return_value=[skill]):
+                result = orch._execute_pipeline(ctx, parse_dashboard=False)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            call_order,
+            ["technical", "intel", "strategy_box_oscillation", "decision"],
+        )
+
+    def test_standard_pipeline_specialist_failure_is_non_critical(self):
+        orch = self._make_orchestrator()
+        orch.mode = "standard"
+        ctx = AgentContext(query="test", stock_code="600519")
+        ctx.meta["selected_strategy_skills"] = [
+            {"skill_id": "box_oscillation", "skill_name": "箱体震荡"}
+        ]
+        ctx.add_opinion(AgentOpinion(
+            agent_name="technical",
+            signal="hold",
+            confidence=0.5,
+            reasoning="fixture technical opinion",
+        ))
+        skill = MagicMock(agent_name="strategy_box_oscillation")
+        skill.run.return_value = self._stage_result(
+            "strategy_box_oscillation",
+            StageStatus.FAILED,
+            error="strategy data unavailable",
+        )
+        decision = MagicMock(agent_name="decision")
+        decision.run.return_value = self._stage_result("decision")
+
+        with patch.object(orch, "_build_agent_chain", return_value=[decision]):
+            with patch.object(orch, "_build_specialist_agents", return_value=[skill]):
+                result = orch._execute_pipeline(ctx, parse_dashboard=False)
+
+        self.assertTrue(result.success)
+        skill.run.assert_called_once()
+        decision.run.assert_called_once()
+        self.assertEqual(ctx.meta["degraded_stages"], [{
+            "stage_name": "strategy_box_oscillation",
+            "status": "failed",
+            "non_critical": True,
+        }])
 
     def test_pipeline_summary_and_risk_override_share_disabled_override_contract(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=False))

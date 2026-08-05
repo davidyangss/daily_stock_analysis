@@ -211,16 +211,68 @@ def load_history_df_with_metadata(
     try:
         db = get_db()
         _code, bars = _select_best_bars(db, stock_code, start, end)
+        _candidates, normalized_code = _history_code_candidates(stock_code)
         required_records = max(min(days, _CACHE_MIN_RECORDS), 1)
         latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
-        if bars and latest_date >= end and len(bars) >= required_records:
-            df = pd.DataFrame([b.to_dict() for b in bars])
+        from src.core.trading_calendar import get_effective_trading_date, get_market_for_stock
+
+        market = get_market_for_stock(normalized_code) or "cn"
+        expected_completed_date = (
+            get_effective_trading_date(market)
+            if end == date.today()
+            else get_effective_trading_date(
+                market,
+                current_time=datetime.combine(end, datetime.max.time()),
+            )
+        )
+        bar_payloads = [bar.to_dict() for bar in bars]
+        required_fields = ("open", "high", "low", "close", "volume")
+        complete_ohlcv = all(
+            all(payload.get(field) not in (None, "") for field in required_fields)
+            for payload in bar_payloads
+        )
+        no_future_bars = all(
+            date.min < _bar_date(bar) <= expected_completed_date for bar in bars
+        )
+        from data_provider.base import DataFetcherManager
+
+        adjustments = {
+            DataFetcherManager._daily_adjustment(
+                str(payload.get("data_source") or "")
+            )
+            for payload in bar_payloads
+        }
+        # A legacy/custom source may not have a registered adjustment mapping,
+        # but a single internally-consistent source is still preferable to an
+        # avoidable network fallback.  Reject only mixed adjustment semantics.
+        compatible_adjustment = len(adjustments) == 1
+        if (
+            bars
+            and latest_date >= expected_completed_date
+            and len(bars) >= required_records
+            and complete_ohlcv
+            and no_future_bars
+            and compatible_adjustment
+        ):
+            df = pd.DataFrame(bar_payloads)
             logger.debug(
-                "load_history_df(%s): %d bars from DB (requested %d)",
-                stock_code, len(df), days,
+                "load_history_df(%s): %d eligible bars from DB (requested %d, expected=%s)",
+                stock_code, len(df), days, expected_completed_date,
             )
             metadata["source"] = "db_cache"
             return df, "db_cache", metadata
+        if bars:
+            logger.info(
+                "load_history_df(%s): local rows rejected (rows=%d required=%d latest=%s expected=%s complete_ohlcv=%s no_future=%s adjustments=%s)",
+                stock_code,
+                len(bars),
+                required_records,
+                latest_date,
+                expected_completed_date,
+                complete_ohlcv,
+                no_future_bars,
+                sorted(adjustments),
+            )
     except Exception as e:
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 

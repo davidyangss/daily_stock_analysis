@@ -884,6 +884,7 @@ class Config:
     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
     serpapi_timeout_seconds: int = 20  # SerpAPI primary request timeout
+    serpapi_hard_deadline_seconds: float = 20.0  # Bounded worker wait even if the SDK stalls
     searxng_base_urls: List[str] = field(default_factory=list)  # SearXNG instance URLs (self-hosted, no quota)
     searxng_public_instances_enabled: bool = True  # Auto-discover public SearXNG instances when base URLs are absent
 
@@ -919,7 +920,9 @@ class Config:
     agent_risk_agent_timeout_s: float = 0
     agent_decision_agent_timeout_s: float = 0
     agent_portfolio_agent_timeout_s: float = 0
-    agent_skill_agent_timeout_s: float = 0
+    agent_skill_agent_timeout_s: float = 120
+    agent_stock_info_timeout_seconds: float = 60
+    agent_stock_info_provider_timeout_seconds: float = 8
     agent_skill_concurrency: int = 3
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
@@ -1086,6 +1089,8 @@ class Config:
     
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
+    stock_optional_provider_timeout_seconds: float = 10.0
+    stock_optional_evidence_timeout_seconds: float = 90.0
     debug: bool = False
     http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
     https_proxy: Optional[str] = None # HTTPS 代理
@@ -1098,6 +1103,10 @@ class Config:
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
+    daily_market_context_timeout_seconds: float = 120.0
+    market_context_provider_timeout_seconds: float = 10.0
+    market_context_stage_timeout_seconds: float = 12.0
+    market_context_overview_timeout_seconds: float = 48.0
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
@@ -1835,6 +1844,13 @@ class Config:
                 minimum=1,
                 maximum=300,
             ),
+            serpapi_hard_deadline_seconds=parse_env_float(
+                os.getenv('SERPAPI_HARD_DEADLINE_SECONDS'),
+                20.0,
+                field_name='SERPAPI_HARD_DEADLINE_SECONDS',
+                minimum=1.0,
+                maximum=300.0,
+            ),
             searxng_base_urls=searxng_base_urls,
             searxng_public_instances_enabled=searxng_public_instances_enabled,
             social_sentiment_api_key=os.getenv('SOCIAL_SENTIMENT_API_KEY') or None,
@@ -1913,8 +1929,16 @@ class Config:
                 field_name='AGENT_PORTFOLIO_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_skill_agent_timeout_s=parse_env_float(
-                os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
+                os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 120,
                 field_name='AGENT_SKILL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_stock_info_timeout_seconds=parse_env_float(
+                os.getenv('AGENT_STOCK_INFO_TIMEOUT_SECONDS'), 60,
+                field_name='AGENT_STOCK_INFO_TIMEOUT_SECONDS', minimum=1, maximum=300,
+            ),
+            agent_stock_info_provider_timeout_seconds=parse_env_float(
+                os.getenv('AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS'), 8,
+                field_name='AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS', minimum=1, maximum=120,
             ),
             agent_skill_concurrency=parse_env_int(
                 os.getenv('AGENT_SKILL_CONCURRENCY'),
@@ -2101,6 +2125,20 @@ class Config:
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=parse_env_int(os.getenv('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
+            stock_optional_provider_timeout_seconds=parse_env_float(
+                os.getenv('STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS'),
+                10.0,
+                field_name='STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=300.0,
+            ),
+            stock_optional_evidence_timeout_seconds=parse_env_float(
+                os.getenv('STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS'),
+                90.0,
+                field_name='STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=900.0,
+            ),
             debug=os.getenv('DEBUG', 'false').lower() == 'true',
             config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
             http_proxy=os.getenv('HTTP_PROXY'),
@@ -2119,6 +2157,34 @@ class Config:
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
+            daily_market_context_timeout_seconds=parse_env_float(
+                os.getenv('DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS'),
+                120.0,
+                field_name='DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=1800.0,
+            ),
+            market_context_provider_timeout_seconds=parse_env_float(
+                os.getenv('MARKET_CONTEXT_PROVIDER_TIMEOUT_SECONDS'),
+                10.0,
+                field_name='MARKET_CONTEXT_PROVIDER_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=300.0,
+            ),
+            market_context_stage_timeout_seconds=parse_env_float(
+                os.getenv('MARKET_CONTEXT_STAGE_TIMEOUT_SECONDS'),
+                12.0,
+                field_name='MARKET_CONTEXT_STAGE_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=600.0,
+            ),
+            market_context_overview_timeout_seconds=parse_env_float(
+                os.getenv('MARKET_CONTEXT_OVERVIEW_TIMEOUT_SECONDS'),
+                48.0,
+                field_name='MARKET_CONTEXT_OVERVIEW_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=1200.0,
+            ),
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),

@@ -15,7 +15,11 @@ import math
 from typing import Any, Dict, List, Optional
 
 from src.agent.agents.base_agent import BaseAgent
-from src.agent.evidence import canonical_tool_name
+from src.agent.evidence import (
+    build_prefetched_context_evidence,
+    canonical_tool_name,
+    summarize_tool_result,
+)
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
 from src.agent.skills.defaults import build_skill_agent_name
@@ -66,10 +70,32 @@ class SkillAgent(BaseAgent):
             display = self.skill_id
 
         required_tools = list(self._skill.required_tools) if self._skill else []
+        prefetched_tools = {
+            canonical_tool_name(item.get("tool"))
+            for item in build_prefetched_context_evidence(ctx.data)
+            if item.get("prefetched") and canonical_tool_name(item.get("tool"))
+        }
+        prefetched_required = [
+            tool for tool in required_tools if canonical_tool_name(tool) in prefetched_tools
+        ]
+        unresolved_required = [
+            tool for tool in required_tools if canonical_tool_name(tool) not in prefetched_tools
+        ]
         required_tool_instruction = (
             "Required evidence tools: " + ", ".join(required_tools) + ". "
-            "Call every required tool and do not claim a condition is verified when "
-            "the tool returns missing/error/not_supported data."
+            + (
+                "Use the immutable [Pre-fetched] inputs for these tools and do not call them again: "
+                + ", ".join(prefetched_required)
+                + ". "
+                if prefetched_required else ""
+            )
+            + (
+                "Call each still-unresolved required tool once: "
+                + ", ".join(unresolved_required)
+                + ". "
+                if unresolved_required else ""
+            )
+            + "Do not claim a condition is verified when its input is missing/error/not_supported."
             if required_tools
             else "No machine-readable required evidence tools are declared."
         )
@@ -106,8 +132,10 @@ Return **only** a JSON object:
         self,
         opinion: AgentOpinion,
         tool_calls_log: List[Dict[str, Any]],
+        *,
+        ctx: Optional[AgentContext] = None,
     ) -> AgentOpinion:
-        opinion = super().attach_execution_evidence(opinion, tool_calls_log)
+        opinion = super().attach_execution_evidence(opinion, tool_calls_log, ctx=ctx)
         required_tools = list(self._skill.required_tools) if self._skill else []
         if not required_tools:
             return opinion
@@ -118,6 +146,12 @@ Return **only** a JSON object:
             for item in raw_data.get("tool_evidence", [])
             if isinstance(item, dict)
         ]
+        # Pipeline inputs are immutable for the duration of one Agent run and
+        # are injected into the Specialist prompt.  Treat those exact inputs as
+        # strategy-owned evidence as well, so a second provider call cannot
+        # hide data the current analysis already fetched successfully.
+        if ctx is not None:
+            all_evidence.extend(build_prefetched_context_evidence(ctx.data))
         status_rank = {
             "available": 0,
             "fallback": 1,
@@ -141,15 +175,14 @@ Return **only** a JSON object:
             if matching:
                 evidence = dict(matching[0])
             else:
-                evidence = {
-                    "tool": tool_name,
-                    "status": "missing",
-                    "sources": [],
-                    "cached": False,
-                    "partial": False,
-                    "key_values": {},
-                    "missing_reason": "required_tool_not_called",
-                }
+                evidence = summarize_tool_result(
+                    tool_name,
+                    {
+                        "status": "missing",
+                        "missing_reason": "required_tool_not_called",
+                    },
+                    execution_success=True,
+                )
             evidence["required"] = True
             evidence["required_by"] = [self.skill_id]
             required_evidence.append(evidence)

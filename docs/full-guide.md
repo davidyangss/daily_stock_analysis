@@ -157,6 +157,7 @@ daily_stock_analysis/
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `SERPAPI_TIMEOUT_SECONDS` | SerpAPI 主搜索请求超时秒数，默认 `20`，有效范围 `1-300` | 可选 |
+| `SERPAPI_HARD_DEADLINE_SECONDS` | SerpAPI SDK 卡住时 worker 最多等待秒数，默认 `20`，有效范围 `1-300` | 可选 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
@@ -244,6 +245,9 @@ daily_stock_analysis/
 | `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
 | `AGENT_SKILL_CONCURRENCY` | `specialist` 模式策略专家 worker 并发上限，范围 `1-4`；最多选择 4 个策略，默认 3 个并发，第 4 个进入下一批次并共享整体超时预算 | `3` | 否 |
+| `AGENT_SKILL_AGENT_TIMEOUT_S` | 普通多策略分析中单个 Specialist 的独立超时上限；实际取该值与编排剩余预算的较小值，`0` 关闭独立上限 | `120` | 否 |
+| `AGENT_STOCK_INFO_TIMEOUT_SECONDS` | 普通 Agent `get_stock_info` 的调用方总预算；不改变交易员分析独立超时或共享 Provider 默认值 | `60` | 否 |
+| `AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS` | `get_stock_info` 内估值补充、所属板块和名称解析的单来源预算 | `8` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
@@ -362,6 +366,7 @@ daily_stock_analysis/
 | `ANSPIRE_API_KEYS` | Anspire Open API Key（可用于搜索与大模型网关共享场景的配置示例；是否可用取决于账号权限与网关可见性，可有效增强 A 股分析效果） | 推荐 |
 | `SERPAPI_API_KEYS` | SerpAPI 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `SERPAPI_TIMEOUT_SECONDS` | SerpAPI 主搜索请求超时秒数，默认 `20`，有效范围 `1-300` | 可选 |
+| `SERPAPI_HARD_DEADLINE_SECONDS` | SerpAPI SDK 卡住时 worker 最多等待秒数；默认 `20`，与主请求超时取更严格边界 | 可选 |
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |
 | `BOCHA_API_KEYS` | 博查搜索 API Key（中文优化） | 可选 |
 | `BRAVE_API_KEYS` | Brave Search API Key（美股优化） | 可选 |
@@ -481,6 +486,15 @@ daily_stock_analysis/
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
+| `DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS` | 个股分析等待实时大盘上下文的总截止秒数 | `120` |
+| `MARKET_CONTEXT_PROVIDER_TIMEOUT_SECONDS` | 大盘上下文内部单 provider 预算秒数 | `10` |
+| `MARKET_CONTEXT_STAGE_TIMEOUT_SECONDS` | 大盘上下文内部单阶段预算秒数 | `12` |
+| `MARKET_CONTEXT_OVERVIEW_TIMEOUT_SECONDS` | 大盘上下文行情总览预算秒数 | `48` |
+| `STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS` | API 普通个股可选证据的单 provider 预算秒数 | `10` |
+| `STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS` | API 普通个股可选证据的整体等待截止秒数 | `90` |
+| `AGENT_SKILL_AGENT_TIMEOUT_S` | 普通策略单个 Specialist 的独立上限，超时后记录诊断并继续最终决策 | `120` |
+| `AGENT_STOCK_INFO_TIMEOUT_SECONDS` | 普通 Agent 基本信息工具总预算 | `60` |
+| `AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS` | 普通 Agent 基本信息工具单来源预算 | `8` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)，us/jp/kr 适合仅关注单区域用户 | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
@@ -944,13 +958,19 @@ P5 在不修改 `PACK_VERSION = "1.0"`、不新增数据源和不改变报告 JS
 
 历史详情、同步分析响应和 completed 任务状态继续只通过 `report.details.analysis_context_pack_overview` 暴露低敏字段；P5 只在该 overview 下新增 `data_quality`，包含 score、level、block_scores 和 limitations，不重复公开 `warnings`。Web 报告页仍默认折叠展示数据块摘要，折叠头部新增质量分/等级，展开后展示限制说明和 `fetch_failed` 状态；`details.context_snapshot` 继续剥离顶层 `analysis_context_pack_overview`。
 
+#### 大盘上下文配置
+
+每日大盘上下文是普通个股报告的可选增强，不是完成报告的硬前置。个股分析最多等待 `DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS=120` 秒；内部 provider、阶段和行情总览仍分别受 `10` / `12` / `48` 秒默认预算约束。任一截止到达后保留已经通过校验的输入，缺失部分标记为降级并继续报告。API 普通个股的基本面/市场结构可选证据使用 `STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS=10` 与 `STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS=90` 两层预算。
+
 #### 策略关键数据与来源
 
-Specialist 策略会把 YAML 中的 `required_tools` 作为硬数据依赖。运行时基于真实工具结果生成 `dashboard.strategy_data_evidence`（`strategy-evidence-v1`）：全部必需数据可用为 `verified`，fallback/partial/estimated/stale 为 `limited`，未调用或 missing/fetch_failed/not_supported 为 `insufficient`。证据不足的策略观点不会参与多策略投票，但单个策略缺失不会中断整个分析任务。
+Specialist 策略会把 YAML 中的 `required_tools` 作为硬数据依赖。运行时基于真实工具结果生成 `dashboard.strategy_data_evidence`（`strategy-evidence-v1`）：全部必需数据可用为 `verified`，fallback/partial/estimated/stale 为 `limited`，未调用或 missing/fetch_failed/not_supported 为 `insufficient`。`verification_scope=required_inputs` 明确表示 `verified` 只证明输入可用，不表示策略条件已经满足。证据不足的策略观点不会参与多策略投票，但单个策略缺失不会中断整个分析任务。
+
+`standard` / `full` 模式存在已选策略时，会按 Technical → Intel（`full` 含 Risk）→ 各策略隔离 Specialist → `StrategyEngine` 确定性汇总 → Decision 执行。每个 Specialist 只能使用自身工具结果和明确的 Pipeline 预取输入，不能借用其他策略的证据。`quick` 保留快速路径；联合评估也必须为每个策略分别输出信号、置信度、实际字段依据、满足/未满足条件与限制。缺数据时明确披露，不会用总体结论补齐逐策略结果。
 
 问股页面可同时选择任意数量的当前可用策略，不再限制最多 3 个；所选策略会按界面顺序随请求发送。策略越多通常意味着更长的执行时间和更高的模型调用成本，实际可执行性仍受 Agent 编排与运行时资源配置约束。
 
-同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；显式选择策略后，清单会保存策略 ID 与展示名、综合判定，并在 Specialist 模式下额外保存每个策略的信号、置信度、满足/未满足条件和判定依据。single Agent 或非 Specialist 编排只公开真实的综合判定，并明确标记策略未经过独立 Specialist 评估，不会把综合结论伪造成逐策略结论。Web 报告与通知详细报告会在“策略分析详情”中展示上述判定，以及策略依赖、工具的中文用途说明、获取内容、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。指标的展示值保留既有精度并使用千分位分隔，例如 `35,483,794,588.00元`、`97,123,885.00股`；原始数值字段不变。已知数据源成功时，Web 会提供该源的公开网站链接；本地缓存不伪造外部链接。日线数据源失败时，清单会列出各实际尝试过的源、请求操作和已脱敏的失败原因，例如“AkshareFetcher：日线K线（get_daily_data）失败：empty result”。清单来自实际请求、工具执行日志与 Pipeline 已使用输入的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告没有新增字段时继续按已有证据展示或兼容隐藏，不影响既有客户端。
+同步响应、completed task 和历史详情通过 `report.details.strategy_data_evidence` 返回同一份持久化低敏清单；显式选择策略后，清单会保存策略 ID 与展示名、综合判定，并在 Specialist 模式下额外保存每个策略的信号、置信度、满足/未满足条件和判定依据。single Agent 或非 Specialist 编排只公开真实的综合判定，并明确标记策略未经过独立 Specialist 评估，不会把综合结论伪造成逐策略结论。Web 报告与通知详细报告会在“策略分析详情”中展示上述判定，以及策略依赖、工具的中文用途说明、获取内容、关键标量、来源、as-of/记录覆盖、cache/partial 标记和缺失原因。满足/未满足条件按一条条件一行的状态表展示；“数据限制”把笼统的不可用/部分可用说明与该工具的 `metric_details/missing_fields` 合并，逐项列出仍需补充的指标和当前来源/失败原因，例如 `get_stock_info` 会明确区分 PE、PB、营收增速、净利润增速、ROE 与毛利率。指标的展示值保留既有精度并使用千分位分隔，例如 `35,483,794,588.00元`、`97,123,885.00股`；原始数值字段不变。已知数据源成功时，Web 会提供该源的公开网站链接；本地缓存不伪造外部链接。日线数据源失败时，清单会列出各实际尝试过的源、请求操作和已脱敏的失败原因，例如“AkshareFetcher：日线K线（get_daily_data）失败：empty result”。清单来自实际请求、工具执行日志与 Pipeline 已使用输入的确定性投影，不包含工具原始全文、新闻正文、密钥或 webhook，也不采信模型自报来源。旧报告没有新增字段时继续按已有证据展示或兼容隐藏，不影响既有客户端。
 
 `AnalysisContextPack.data_quality.limitations` 现在也会保留辅助块的 missing/not_supported/partial/estimated 状态，避免报告只显示分数而隐藏新闻、基本面或筹码缺失；这不改变既有固定权重评分公式。
 

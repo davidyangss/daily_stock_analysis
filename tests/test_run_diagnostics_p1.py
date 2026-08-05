@@ -164,12 +164,17 @@ class RunDiagnosticsP1TestCase(unittest.TestCase):
         self.assertFalse(df.empty)
         self.assertEqual(source, "SuccessfulDailyFetcher")
         runs = snapshot["provider_runs"]
-        self.assertEqual([run["provider"] for run in runs], ["FailingDailyFetcher", "SuccessfulDailyFetcher"])
+        self.assertEqual(
+            [run["provider"] for run in runs],
+            ["market_data_db", "FailingDailyFetcher", "SuccessfulDailyFetcher"],
+        )
         self.assertFalse(runs[0]["success"])
-        self.assertEqual(runs[0]["fallback_to"], "SuccessfulDailyFetcher")
-        self.assertNotIn("secret-token", runs[0]["error_message_sanitized"])
-        self.assertTrue(runs[1]["success"])
-        self.assertEqual(runs[1]["record_count"], 1)
+        self.assertEqual(runs[0]["operation"], "load_cached_daily_data")
+        self.assertFalse(runs[1]["success"])
+        self.assertEqual(runs[1]["fallback_to"], "SuccessfulDailyFetcher")
+        self.assertNotIn("secret-token", runs[1]["error_message_sanitized"])
+        self.assertTrue(runs[2]["success"])
+        self.assertEqual(runs[2]["record_count"], 1)
 
     def test_realtime_quote_provider_run_records_success(self) -> None:
         manager = DataFetcherManager(fetchers=[_EfinanceRealtimeFetcher()])

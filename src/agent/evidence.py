@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -276,6 +277,137 @@ def _joint_assessment_fields(value: Any) -> tuple[str, List[str], List[str]]:
     return reasoning, decisive_evidence, limitations
 
 
+def _safe_mapping_list(value: Any, *, limit: int = 20) -> List[Dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [dict(item) for item in value[:limit] if isinstance(item, Mapping)]
+
+
+def _available_evidence_fields(evidence: Mapping[str, Any]) -> set[str]:
+    """Return fields that are actually present in one summarized tool result."""
+    available = {
+        str(key)
+        for key, value in (evidence.get("key_values") or {}).items()
+        if value not in (None, "", [], {})
+    }
+    for metric in evidence.get("metric_details") or []:
+        if (
+            isinstance(metric, Mapping)
+            and metric.get("status") == "available"
+            and metric.get("key")
+        ):
+            available.add(str(metric["key"]))
+    for field in ("record_count", "as_of", "sources"):
+        if evidence.get(field) not in (None, "", [], {}):
+            available.add(field)
+    return available
+
+
+def _normalize_joint_assessment(
+    value: Any,
+    *,
+    required_tools: Iterable[str],
+    evidence_by_tool: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Validate a new joint assessment against its strategy-owned evidence.
+
+    Plain strings remain readable for legacy reports, but new runtime output is
+    not considered completed unless it follows the structured contract and its
+    decisive-evidence references can be resolved to available fields.
+    """
+    required = {
+        canonical_tool_name(tool)
+        for tool in required_tools or []
+        if canonical_tool_name(tool)
+    }
+    if not isinstance(value, Mapping):
+        return {
+            "reasoning": _safe_text(value, 1000),
+            "status": "invalid",
+            "failure_reason": "unstructured_assessment",
+            "conditions_met": [],
+            "conditions_missed": [],
+            "limitations": ["assessment did not use the structured strategy contract"],
+            "decisive_evidence": [],
+        }
+
+    reasoning = _first_text(
+        value,
+        ("joint_assessment", "assessment", "conclusion", "reasoning", "summary"),
+    ) or ""
+    signal = _safe_text(value.get("signal"), 80).lower()
+    valid_signals = {"strong_buy", "buy", "hold", "sell", "strong_sell"}
+    confidence_raw = value.get("confidence")
+    confidence_valid = (
+        isinstance(confidence_raw, (int, float))
+        and not isinstance(confidence_raw, bool)
+        and math.isfinite(float(confidence_raw))
+        and 0.0 <= float(confidence_raw) <= 1.0
+    )
+    limitations = _safe_string_list(
+        value.get("limitations") or value.get("data_limitations"),
+        item_limit=500,
+    )
+    conditions_met = _safe_string_list(value.get("conditions_met"), item_limit=500)
+    conditions_missed = _safe_string_list(value.get("conditions_missed"), item_limit=500)
+
+    decisive_evidence: List[Dict[str, Any]] = []
+    invalid_references: List[str] = []
+    for raw_reference in _safe_mapping_list(value.get("decisive_evidence")):
+        tool = canonical_tool_name(raw_reference.get("tool"))
+        fields = _safe_string_list(raw_reference.get("fields"), limit=30, item_limit=120)
+        summary = _safe_text(raw_reference.get("summary"), 500)
+        if not tool or tool not in required:
+            invalid_references.append(tool or "missing_tool")
+            continue
+        owned_evidence = evidence_by_tool.get(tool)
+        if not isinstance(owned_evidence, Mapping):
+            invalid_references.append(f"{tool}:no_owned_evidence")
+            continue
+        available_fields = _available_evidence_fields(owned_evidence)
+        unresolved_fields = [field for field in fields if field not in available_fields]
+        if not fields or unresolved_fields:
+            suffix = ",".join(unresolved_fields) if unresolved_fields else "missing_fields"
+            invalid_references.append(f"{tool}:{suffix}")
+            continue
+        decisive_evidence.append({
+            "tool": tool,
+            "fields": fields,
+            "summary": summary,
+        })
+
+    failure_reasons: List[str] = []
+    if not reasoning:
+        failure_reasons.append("missing_joint_assessment")
+    if signal not in valid_signals:
+        failure_reasons.append("invalid_signal")
+    if not confidence_valid:
+        failure_reasons.append("invalid_confidence")
+    if required and not decisive_evidence:
+        failure_reasons.append("unverified_decisive_evidence")
+    if invalid_references:
+        failure_reasons.append("invalid_evidence_reference")
+        limitations.append(
+            "unresolved decisive evidence: " + "; ".join(invalid_references[:10])
+        )
+
+    normalized: Dict[str, Any] = {
+        "reasoning": reasoning,
+        "status": "invalid" if failure_reasons else "completed",
+        "conditions_met": conditions_met,
+        "conditions_missed": conditions_missed,
+        "limitations": list(dict.fromkeys(limitations))[:20],
+        "decisive_evidence": decisive_evidence,
+    }
+    if signal in valid_signals:
+        normalized["signal"] = signal
+    if confidence_valid:
+        normalized["confidence"] = _safe_confidence(confidence_raw)
+    if failure_reasons:
+        normalized["failure_reason"] = ",".join(dict.fromkeys(failure_reasons))
+    return normalized
+
+
 def _safe_confidence(value: Any) -> float:
     if isinstance(value, bool):
         return 0.0
@@ -338,6 +470,12 @@ def _sanitize_overall_decision(value: Any) -> Optional[Dict[str, Any]]:
 
 def _strategy_evaluation_from_opinion(opinion: Any) -> Optional[Dict[str, Any]]:
     agent_name = str(getattr(opinion, "agent_name", "") or "")
+    # StrategyEngine's deterministic consensus is an aggregate, not a fourth
+    # selected strategy or a separately executed Specialist evaluation.
+    from src.agent.skills.defaults import is_skill_consensus_name
+
+    if is_skill_consensus_name(agent_name):
+        return None
     skill_id = _skill_id_from_agent(agent_name)
     if not skill_id or not agent_name.startswith(("skill_", "skill:", "strategy_")):
         return None
@@ -349,6 +487,7 @@ def _strategy_evaluation_from_opinion(opinion: Any) -> Optional[Dict[str, Any]]:
         "skill_id": skill_id,
         "status": "insufficient" if evidence_insufficient else "completed",
         "evaluation_mode": "specialist",
+        "verification_scope": "required_inputs",
         "reasoning": _safe_text(getattr(opinion, "reasoning", ""), 1000),
         "conditions_met": _safe_string_list(raw_data.get("conditions_met")),
         "conditions_missed": _safe_string_list(raw_data.get("conditions_missed")),
@@ -364,6 +503,10 @@ def _strategy_evaluation_from_opinion(opinion: Any) -> Optional[Dict[str, Any]]:
 
 
 def _strategy_evaluation_from_invalid_record(record: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    from src.agent.skills.defaults import is_skill_consensus_name
+
+    if is_skill_consensus_name(str(record.get("agent_name") or "")):
+        return None
     skill_id = _skill_id_from_agent(record.get("agent_name"))
     if not skill_id:
         return None
@@ -379,6 +522,7 @@ def _strategy_evaluation_from_invalid_record(record: Mapping[str, Any]) -> Optio
         "skill_id": skill_id,
         "status": status,
         "evaluation_mode": "specialist",
+        "verification_scope": "required_inputs",
         "reasoning": _safe_text(record.get("reasoning") or record.get("error"), 1000),
         "conditions_met": _safe_string_list(record.get("conditions_met")),
         "conditions_missed": _safe_string_list(record.get("conditions_missed")),
@@ -623,6 +767,19 @@ def summarize_tool_result(
     }
     metric_details = _metric_details(tool_name, {**mapping, **key_values})
     if metric_details:
+        # Older/prefetched fundamental contexts may carry a broad ``partial``
+        # status because an optional subdomain (for example boards) degraded.
+        # Strategy admission for get_stock_info is based on the explicit
+        # report-safe metric contract below. Do not emit a false required-data
+        # limitation when every one of those fields is present.
+        if (
+            canonical_tool_name(tool_name) == "get_stock_info"
+            and status == "partial"
+            and all(item["status"] == "available" for item in metric_details)
+        ):
+            status = "available"
+            evidence["status"] = status
+            evidence["partial"] = False
         evidence["metric_details"] = metric_details
         evidence["missing_fields"] = [
             item["key"] for item in metric_details if item["status"] == "missing"
@@ -716,6 +873,74 @@ def build_prefetched_context_evidence(context: Any) -> List[Dict[str, Any]]:
     return evidence
 
 
+def _supplement_owned_evidence(
+    owned: Mapping[str, Any],
+    prefetched: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Supplement one strategy-owned result only with shared prefetch data."""
+    result = dict(owned)
+    if not isinstance(prefetched, Mapping):
+        return result
+    status_rank = {
+        "available": 6,
+        "fallback": 5,
+        "estimated": 4,
+        "stale": 3,
+        "partial": 2,
+        "missing": 1,
+        "fetch_failed": 0,
+        "not_supported": 0,
+    }
+    incoming_status = str(prefetched.get("status") or "missing")
+    existing_status = str(result.get("status") or "missing")
+    if status_rank.get(incoming_status, -1) > status_rank.get(existing_status, -1):
+        result["status"] = incoming_status
+        result["partial"] = bool(prefetched.get("partial"))
+        result["cached"] = bool(prefetched.get("cached"))
+        for stale_key in (
+            "missing_reason", "failure_attempts", "failure_source",
+            "failure_operation", "failure_reason",
+        ):
+            result.pop(stale_key, None)
+    result["prefetched"] = True
+    key_values = dict(result.get("key_values") or {})
+    key_values.update(prefetched.get("key_values") or {})
+    result["key_values"] = key_values
+    sources = list(result.get("sources") or [])
+    for source in prefetched.get("sources") or []:
+        if source not in sources:
+            sources.append(source)
+    result["sources"] = sources[:10]
+    metrics = {
+        str(metric.get("key")): dict(metric)
+        for metric in result.get("metric_details") or []
+        if isinstance(metric, Mapping) and metric.get("key")
+    }
+    for metric in prefetched.get("metric_details") or []:
+        if not isinstance(metric, Mapping) or not metric.get("key"):
+            continue
+        key = str(metric["key"])
+        current = metrics.get(key)
+        if current is None or (
+            current.get("status") == "missing" and metric.get("status") == "available"
+        ):
+            metrics[key] = dict(metric)
+    if metrics:
+        result["metric_details"] = list(metrics.values())
+        result["missing_fields"] = [
+            metric["key"]
+            for metric in result["metric_details"]
+            if metric.get("status") == "missing"
+        ]
+    for key in (
+        "record_count", "requested_records", "as_of", "data_description",
+        "tool_display_name", "tool_description", "source_links",
+    ):
+        if result.get(key) in (None, "", [], {}) and prefetched.get(key) not in (None, "", [], {}):
+            result[key] = prefetched[key]
+    return result
+
+
 def merge_prefetched_evidence(
     manifest: Any,
     prefetched_items: Iterable[Mapping[str, Any]],
@@ -742,11 +967,13 @@ def merge_prefetched_evidence(
         "fetch_failed": 0,
         "not_supported": 0,
     }
+    prefetched_by_tool: Dict[str, Dict[str, Any]] = {}
     for raw_item in prefetched_items:
         item = dict(raw_item)
         tool = canonical_tool_name(item.get("tool"))
         if not tool:
             continue
+        prefetched_by_tool[tool] = item
         existing = by_tool.get(tool)
         if existing is None:
             items.append(item)
@@ -828,7 +1055,13 @@ def merge_prefetched_evidence(
             if not isinstance(raw_evidence, Mapping):
                 continue
             tool = canonical_tool_name(raw_evidence.get("tool"))
-            evidence_item = dict(by_tool.get(tool) or raw_evidence)
+            # Never use another Specialist's same-named tool result here.
+            # Only the strategy's own evidence and the immutable pipeline
+            # prefetch are allowed to satisfy this requirement.
+            evidence_item = _supplement_owned_evidence(
+                raw_evidence,
+                prefetched_by_tool.get(tool),
+            )
             evidence_items.append(evidence_item)
             evidence_status = str(evidence_item.get("status") or "missing")
             if evidence_status in {"missing", "fetch_failed", "not_supported"}:
@@ -864,9 +1097,10 @@ def merge_prefetched_evidence(
             or "unknown"
         )
         evaluation["evidence_status"] = requirement_status
-        evaluation["status"] = (
-            "insufficient" if requirement_status == "insufficient" else "completed"
-        )
+        if requirement_status == "insufficient":
+            evaluation["status"] = "insufficient"
+        elif evaluation.get("status") not in {"completed", "invalid"}:
+            evaluation["status"] = "invalid"
     merged["strategy_evaluations"] = evaluations
 
     if requirements:
@@ -1111,23 +1345,41 @@ def build_strategy_evidence_manifest(
         skill_id = selected_item["skill_id"]
         if skill_id in evaluations_by_id:
             continue
-        reasoning, conditions_met, conditions_missed = _joint_assessment_fields(
-            joint_assessments.get(skill_id)
+        requirement = requirements_by_id.get(skill_id, {})
+        requirement_evidence = {
+            canonical_tool_name(item.get("tool")): item
+            for item in requirement.get("evidence") or []
+            if isinstance(item, Mapping) and canonical_tool_name(item.get("tool"))
+        }
+        normalized_assessment = _normalize_joint_assessment(
+            joint_assessments.get(skill_id),
+            required_tools=declared_requirements.get(skill_id, ()) or (),
+            evidence_by_tool=requirement_evidence,
         )
-        if not reasoning:
+        if not normalized_assessment.get("reasoning") and skill_id not in joint_assessments:
             continue
         evidence_status = str(
-            requirements_by_id.get(skill_id, {}).get("status") or "unknown"
+            requirement.get("status") or "unknown"
         )
-        evaluations_by_id[skill_id] = {
+        evaluation_status = str(normalized_assessment.get("status") or "invalid")
+        if evidence_status == "insufficient":
+            evaluation_status = "insufficient"
+        evaluation: Dict[str, Any] = {
             "skill_id": skill_id,
-            "status": "insufficient" if evidence_status == "insufficient" else "completed",
+            "status": evaluation_status,
             "evaluation_mode": "joint",
-            "reasoning": reasoning,
-            "conditions_met": conditions_met,
-            "conditions_missed": conditions_missed,
+            "reasoning": normalized_assessment.get("reasoning") or "",
+            "conditions_met": normalized_assessment.get("conditions_met") or [],
+            "conditions_missed": normalized_assessment.get("conditions_missed") or [],
+            "decisive_evidence": normalized_assessment.get("decisive_evidence") or [],
+            "limitations": normalized_assessment.get("limitations") or [],
             "evidence_status": evidence_status,
+            "verification_scope": "required_inputs",
         }
+        for field in ("signal", "confidence", "failure_reason"):
+            if normalized_assessment.get(field) not in (None, ""):
+                evaluation[field] = normalized_assessment[field]
+        evaluations_by_id[skill_id] = evaluation
 
     if not selected:
         derived_ids = [
@@ -1188,6 +1440,7 @@ def build_strategy_evidence_manifest(
     return {
         "schema_version": "strategy-evidence-v1",
         "status": status,
+        "verification_scope": "required_inputs",
         "selected_strategies": selected,
         "strategy_evaluations": strategy_evaluations[:20],
         "overall_decision": sanitized_overall_decision,
@@ -1231,153 +1484,521 @@ def update_strategy_overall_decision(
     return updated
 
 
+def build_strategy_synthesis_from_manifest(manifest: Any) -> Optional[Dict[str, Any]]:
+    """Aggregate validated per-strategy evaluations without another LLM call."""
+    if not isinstance(manifest, Mapping) or manifest.get("schema_version") != "strategy-evidence-v1":
+        return None
+    from src.agent.protocols import AgentOpinion
+    from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+    opinions: List[AgentOpinion] = []
+    for evaluation in manifest.get("strategy_evaluations") or []:
+        if not isinstance(evaluation, Mapping) or evaluation.get("status") != "completed":
+            continue
+        signal = str(evaluation.get("signal") or "").strip().lower()
+        confidence = evaluation.get("confidence")
+        if signal not in {"strong_buy", "buy", "hold", "sell", "strong_sell"}:
+            continue
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            continue
+        skill_id = str(evaluation.get("skill_id") or "").strip()
+        if not skill_id:
+            continue
+        opinions.append(AgentOpinion(
+            agent_name=f"skill_{skill_id}",
+            signal=signal,
+            confidence=_safe_confidence(confidence),
+            reasoning=_safe_text(evaluation.get("reasoning"), 1000),
+            raw_data={
+                "conditions_met": list(evaluation.get("conditions_met") or []),
+                "conditions_missed": list(evaluation.get("conditions_missed") or []),
+                "evidence_status": evaluation.get("evidence_status"),
+            },
+        ))
+    if not opinions:
+        return None
+    result = StrategyEngine().process(opinions)
+    if result.status != StrategyResultStatus.CONSENSUS:
+        return result.synthesis_dict
+    return result.synthesis_dict
+
+
 def format_strategy_evidence_markdown(
     manifest: Any,
     report_language: str = "zh",
     *,
     compact: bool = False,
 ) -> str:
-    """Render one low-sensitivity evidence manifest for text report surfaces."""
+    """Render per-strategy outputs and their owned inputs for report surfaces."""
     if not isinstance(manifest, Mapping) or manifest.get("schema_version") != "strategy-evidence-v1":
         return ""
     language = str(report_language or "zh").strip().lower()
+    is_zh = not language.startswith(("en", "ko"))
     if language.startswith("en"):
-        heading = "Strategy analysis details"
-        overall_label = "Overall evidence"
-        selected_label = "Selected strategies"
-        evaluation_heading = "Strategy decisions"
-        overall_decision_heading = "Overall decision"
-        source_heading = "Data source overview"
-        metrics_heading = "Key metrics"
-        limitations_heading = "Data limitations"
-        headers = ("Status", "Data requested", "Source / coverage")
-        metric_headers = ("Metric", "Status", "Value", "Meaning")
-        evaluation_headers = ("Strategy", "Status", "Signal / confidence", "Decision basis")
-        available_text, missing_text = "Available", "Missing"
-        selected_separator = ", "
-        condition_labels = ("Conditions met", "Conditions missed")
-        decision_labels = ("Signal", "Confidence", "Action", "Decision basis")
+        text = {
+            "heading": "Strategy analysis details",
+            "overall_evidence": "Overall evidence",
+            "strategy": "Strategy",
+            "selected": "Selected strategies",
+            "output": "Strategy output",
+            "input": "Strategy input data",
+            "overall_decision": "Overall decision",
+            "limitations": "Data limitations",
+            "no_input": "No displayable strategy input data was recorded",
+            "tool": "Data tool", "status": "Status", "data": "Data requested",
+            "values": "Key values", "source": "Source / coverage", "failure": "Failure details",
+            "metric": "Metric", "value": "Value", "meaning": "Meaning",
+            "available": "Available", "missing": "Missing", "none": "N/A",
+            "signal": "Signal", "confidence": "Confidence", "reasoning": "Decision basis",
+            "conditions_met": "Conditions met", "conditions_missed": "Conditions missed",
+            "condition": "Condition", "condition_status": "Condition status",
+            "met": "Met", "missed": "Not met",
+            "limitation_status": "Limitation", "required_data": "Still required",
+            "current_state": "Current data / failure",
+            "required_unavailable": "Required input unavailable",
+            "required_degraded": "Required input partially available",
+            "action": "Action",
+        }
         public_status_labels = {
             "verified": "Verified", "limited": "Limited", "insufficient": "Insufficient",
+            "available": "Success", "fallback": "Fallback", "partial": "Partial",
+            "estimated": "Estimated", "stale": "Stale", "missing": "No data",
+            "fetch_failed": "Fetch failed", "not_supported": "Unsupported",
             "completed": "Completed", "failed": "Failed", "invalid": "Invalid",
-            "not_evaluated": "Not separately evaluated",
+            "not_evaluated": "Not separately evaluated", "unknown": "Unknown",
         }
         public_signal_labels = {
             "strong_buy": "Strong buy", "buy": "Buy", "add": "Add", "hold": "Hold",
             "reduce": "Reduce", "sell": "Sell", "strong_sell": "Strong sell",
             "watch": "Watch", "avoid": "Avoid", "alert": "Alert",
         }
-    elif language.startswith("ko"):
-        heading = "전략 분석 상세"
-        overall_label = "전체 근거"
-        selected_label = "선택 전략"
-        evaluation_heading = "전략 판정"
-        overall_decision_heading = "종합 판정"
-        source_heading = "데이터 출처 개요"
-        metrics_heading = "핵심 지표"
-        limitations_heading = "데이터 한계"
-        headers = ("상태", "수집 데이터", "출처 / 범위")
-        metric_headers = ("지표", "상태", "값", "의미")
-        evaluation_headers = ("전략", "상태", "신호 / 신뢰도", "판정 근거")
-        available_text, missing_text = "사용 가능", "누락"
         selected_separator = ", "
-        condition_labels = ("충족 조건", "미충족 조건")
-        decision_labels = ("판정 신호", "신뢰도", "조치", "판정 근거")
+    elif language.startswith("ko"):
+        text = {
+            "heading": "전략 분석 상세",
+            "overall_evidence": "전체 근거",
+            "strategy": "전략",
+            "selected": "선택 전략",
+            "output": "전략 분석 출력",
+            "input": "전략 분석 입력 데이터",
+            "overall_decision": "종합 판정",
+            "limitations": "데이터 한계",
+            "no_input": "표시 가능한 전략 입력 데이터가 기록되지 않음",
+            "tool": "데이터 도구", "status": "상태", "data": "수집 데이터",
+            "values": "핵심 값", "source": "출처 / 범위", "failure": "실패 상세",
+            "metric": "지표", "value": "값", "meaning": "의미",
+            "available": "사용 가능", "missing": "누락", "none": "N/A",
+            "signal": "판정 신호", "confidence": "신뢰도", "reasoning": "판정 근거",
+            "conditions_met": "충족 조건", "conditions_missed": "미충족 조건",
+            "condition": "판정 조건", "condition_status": "조건 상태",
+            "met": "충족", "missed": "미충족",
+            "limitation_status": "제한 상태", "required_data": "추가 필요 데이터",
+            "current_state": "현재 데이터 / 실패",
+            "required_unavailable": "필수 입력 사용 불가",
+            "required_degraded": "필수 입력 일부 사용 가능",
+            "action": "조치",
+        }
         public_status_labels = {
             "verified": "검증됨", "limited": "데이터 제한", "insufficient": "근거 부족",
+            "available": "사용 가능", "fallback": "강등", "partial": "부분 사용",
+            "estimated": "추정", "stale": "만료", "missing": "누락",
+            "fetch_failed": "수집 실패", "not_supported": "미지원",
             "completed": "완료", "failed": "실행 실패", "invalid": "결과 무효",
-            "not_evaluated": "개별 평가 없음",
+            "not_evaluated": "개별 평가 없음", "unknown": "알 수 없음",
         }
         public_signal_labels = {
             "strong_buy": "강력 매수", "buy": "매수", "add": "추가 매수", "hold": "보유/관망",
             "reduce": "축소", "sell": "매도", "strong_sell": "강력 매도",
             "watch": "관찰", "avoid": "회피", "alert": "경고",
         }
+        selected_separator = ", "
     else:
-        heading = "策略分析详情：策略关键数据与来源"
-        overall_label = "总体证据"
-        selected_label = "所选策略"
-        evaluation_heading = "策略判定结果"
-        overall_decision_heading = "综合判定"
-        source_heading = "数据获取概览"
-        metrics_heading = "关键指标"
-        limitations_heading = "数据限制"
-        headers = ("状态", "获取内容", "来源 / 覆盖")
-        metric_headers = ("指标", "状态", "数值", "含义")
-        evaluation_headers = ("策略", "状态", "信号 / 置信度", "判定依据")
-        available_text, missing_text = "可用", "缺失"
-        selected_separator = "、"
-        condition_labels = ("满足条件", "未满足条件")
-        decision_labels = ("判定信号", "置信度", "操作建议", "判定依据")
+        text = {
+            "heading": "策略分析详情：策略关键数据与来源",
+            "overall_evidence": "总体证据",
+            "strategy": "策略",
+            "selected": "所选策略",
+            "output": "策略分析输出",
+            "input": "策略分析输入数据",
+            "overall_decision": "综合判定",
+            "limitations": "数据限制",
+            "no_input": "本次未记录可展示的策略输入数据",
+            "tool": "关键数据工具", "status": "状态", "data": "获取内容",
+            "values": "关键值", "source": "来源 / 覆盖", "failure": "失败详情",
+            "metric": "指标", "value": "数值", "meaning": "含义",
+            "available": "可用", "missing": "缺失", "none": "未记录",
+            "signal": "判定信号", "confidence": "置信度", "reasoning": "判定依据",
+            "conditions_met": "满足条件", "conditions_missed": "未满足条件",
+            "condition": "判定条件", "condition_status": "条件状态",
+            "met": "满足条件", "missed": "未满足条件",
+            "limitation_status": "限制状态", "required_data": "仍需补充的数据",
+            "current_state": "当前数据 / 失败情况",
+            "required_unavailable": "必需输入数据不可用",
+            "required_degraded": "必需输入数据部分可用",
+            "action": "操作建议",
+        }
         public_status_labels = {
             "verified": "已验证", "limited": "数据受限", "insufficient": "证据不足",
+            **_ZH_EVIDENCE_STATUS_LABELS,
             "completed": "已完成", "failed": "执行失败", "invalid": "结果无效",
-            "not_evaluated": "未单独评估",
+            "not_evaluated": "未单独评估", "unknown": "未知",
         }
         public_signal_labels = {
             "strong_buy": "强烈买入", "buy": "买入", "add": "加仓", "hold": "持有/观望",
             "reduce": "减仓", "sell": "卖出", "strong_sell": "强烈卖出",
             "watch": "观察", "avoid": "回避", "alert": "警示",
         }
+        selected_separator = "、"
+
+    zh_tokens = {
+        "concept_rankings": "概念板块排名",
+        "concept_ranking": "概念板块排名",
+        "expectation_repricing": "预期重估",
+        "get_stock_info": "基本信息获取",
+        "search_stock_news": "新闻搜索",
+        "required_tool_not_called": "本次策略未再次调用该工具",
+        "source_field_missing": "数据源未返回该字段",
+    }
+
+    def localize(value: Any) -> str:
+        result = str(value if value not in (None, "") else text["none"])
+        if not is_zh:
+            return result
+        for token, label in zh_tokens.items():
+            result = result.replace(token, label)
+        match = re.match(
+            r"^([^:]+): required data (unavailable|degraded) \(([^)]+)\)$",
+            result,
+        )
+        if match:
+            strategy, state, tool = match.groups()
+            state_text = "必需输入数据不可用" if state == "unavailable" else "必需输入数据部分可用"
+            return f"{strategy}：{state_text}（{tool}）"
+        return result
 
     def cell(value: Any) -> str:
-        return str(value if value not in (None, "") else "N/A").replace("|", "\\|").replace("\n", "<br>")
+        return localize(value).replace("|", "\\|").replace("\n", "<br>")
 
     def public_status(value: Any) -> str:
         status = str(value or "unknown")
-        return public_status_labels.get(status, status)
+        return public_status_labels.get(status, localize(status))
 
     def public_signal(value: Any) -> str:
         signal = str(value or "")
-        return public_signal_labels.get(signal, signal or "N/A")
+        return public_signal_labels.get(signal, localize(signal) if signal else text["none"])
 
-    lines = [f"### 🔎 {heading}", "", f"> **{overall_label}**：{public_status(manifest.get('status'))}"]
+    def strategy_label(skill_id: str, *candidates: Any) -> str:
+        name = next((str(value).strip() for value in candidates if str(value or "").strip()), skill_id)
+        label = localize(name)
+        if not is_zh and label != skill_id:
+            return f"{label} (`{skill_id}`)"
+        return label
+
     selected = [
         item for item in (manifest.get("selected_strategies") or [])
         if isinstance(item, Mapping) and item.get("skill_id")
     ]
-    if selected:
-        selected_text = selected_separator.join(
-            f"{item.get('skill_name') or item['skill_id']} (`{item['skill_id']}`)"
-            for item in selected[:20]
-        )
-        lines.append(f"> **{selected_label}**：{selected_text}")
-    for requirement in (manifest.get("strategy_requirements") or [])[:10]:
-        if not isinstance(requirement, Mapping):
-            continue
-        skill_id = str(requirement.get("skill_id") or "").strip()
-        if skill_id:
-            lines.append(f"> {skill_id}：{public_status(requirement.get('status'))}")
-
     evaluations = [
         item for item in (manifest.get("strategy_evaluations") or [])
         if isinstance(item, Mapping) and item.get("skill_id")
     ]
-    if evaluations:
+    requirements = [
+        item for item in (manifest.get("strategy_requirements") or [])
+        if isinstance(item, Mapping) and item.get("skill_id")
+    ]
+    selected_by_id = {str(item["skill_id"]): item for item in selected}
+    evaluations_by_id = {str(item["skill_id"]): item for item in evaluations}
+    requirements_by_id = {str(item["skill_id"]): item for item in requirements}
+    strategy_ids: List[str] = []
+    for collection in (selected, requirements, evaluations):
+        for item in collection:
+            skill_id = str(item.get("skill_id") or "").strip()
+            if skill_id and skill_id not in strategy_ids:
+                strategy_ids.append(skill_id)
+
+    all_items = [item for item in (manifest.get("items") or []) if isinstance(item, Mapping)]
+    has_owned_items = any(item.get("required_by") for item in all_items)
+    item_limit = 8 if compact else 20
+    metric_limit = 6 if compact else 12
+
+    def strategy_items(skill_id: str) -> List[Mapping[str, Any]]:
+        requirement = requirements_by_id.get(skill_id, {})
+        owned = [
+            item for item in (requirement.get("evidence") or [])
+            if isinstance(item, Mapping)
+        ]
+        if not owned:
+            owned = [
+                item for item in all_items
+                if skill_id in [str(value) for value in (item.get("required_by") or [])]
+            ]
+        if not owned and (len(strategy_ids) == 1 or not has_owned_items):
+            owned = list(all_items)
+        present_tools = {canonical_tool_name(item.get("tool")) for item in owned}
+        for tool in requirement.get("missing_tools") or []:
+            canonical = canonical_tool_name(tool)
+            if canonical and canonical not in present_tools:
+                owned.append({
+                    "tool": canonical,
+                    "status": "missing",
+                    "sources": [],
+                    "key_values": {},
+                    "missing_reason": "required_tool_not_called",
+                })
+                present_tools.add(canonical)
+        for tool in requirement.get("limited_tools") or []:
+            canonical = canonical_tool_name(tool)
+            if canonical and canonical not in present_tools:
+                owned.append({
+                    "tool": canonical,
+                    "status": "partial",
+                    "sources": [],
+                    "key_values": {},
+                    "missing_reason": "source_field_missing",
+                })
+                present_tools.add(canonical)
+        return owned[:item_limit]
+
+    def required_data_text(tool_name: str, evidence_item: Mapping[str, Any]) -> str:
+        missing_labels: List[str] = []
+        known_keys: set[str] = set()
+        for metric in evidence_item.get("metric_details") or []:
+            if not isinstance(metric, Mapping) or not metric.get("key"):
+                continue
+            key = str(metric["key"])
+            known_keys.add(key)
+            if metric.get("status") != "available":
+                label = localize(metric.get("label") or key)
+                if label not in missing_labels:
+                    missing_labels.append(label)
+        for field in evidence_item.get("missing_fields") or []:
+            key = str(field)
+            if key not in known_keys:
+                label = localize(key)
+                if label not in missing_labels:
+                    missing_labels.append(label)
+        if not evidence_item.get("metric_details"):
+            key_values = evidence_item.get("key_values") or {}
+            for key, (label, _unit, _description) in _METRIC_SPECS.get(tool_name, {}).items():
+                if key_values.get(key) in (None, "", [], {}):
+                    localized_label = localize(label)
+                    if localized_label not in missing_labels:
+                        missing_labels.append(localized_label)
+        if missing_labels:
+            return "、".join(missing_labels) if is_zh else ", ".join(missing_labels)
+        presentation = _TOOL_PRESENTATION.get(tool_name)
+        description = evidence_item.get("data_description") or (
+            presentation[2] if presentation else tool_name
+        )
+        if str(evidence_item.get("status") or "") == "stale":
+            return f"最新{description}" if is_zh else f"Latest {description}"
+        return localize(description)
+
+    def current_data_text(evidence_item: Mapping[str, Any]) -> str:
+        details = [public_status(evidence_item.get("status"))]
+        sources = [str(source) for source in evidence_item.get("sources") or [] if source]
+        if sources:
+            details.append(", ".join(sources))
+        failures: List[str] = []
+        for attempt in evidence_item.get("failure_attempts") or []:
+            if isinstance(attempt, Mapping):
+                failures.append(
+                    f"{attempt.get('provider') or 'unknown'}: "
+                    f"{attempt.get('reason') or 'unknown'}"
+                )
+        if not failures and (evidence_item.get("failure_reason") or evidence_item.get("missing_reason")):
+            failures.append(str(evidence_item.get("failure_reason") or evidence_item.get("missing_reason")))
+        if failures:
+            details.append("; ".join(localize(value) for value in failures[:3]))
+        return "；".join(details) if is_zh else "; ".join(details)
+
+    def limitation_rows(limitations: Iterable[Any]) -> List[Dict[str, str]]:
+        rows: List[Dict[str, str]] = []
+        pattern = re.compile(
+            r"^([^:]+): required data (unavailable|degraded) \(([^)]+)\)$"
+        )
+        for raw_limitation in list(limitations)[:10]:
+            limitation = str(raw_limitation)
+            match = pattern.match(limitation)
+            if not match:
+                rows.append({
+                    "strategy": text["none"],
+                    "status": localize(limitation),
+                    "tool": text["none"],
+                    "required": text["none"],
+                    "current": text["none"],
+                })
+                continue
+            skill_id, state, raw_tool = match.groups()
+            tool_name = canonical_tool_name(raw_tool)
+            evidence_item = next(
+                (
+                    item for item in strategy_items(skill_id)
+                    if canonical_tool_name(item.get("tool")) == tool_name
+                ),
+                {},
+            )
+            presentation = _TOOL_PRESENTATION.get(tool_name)
+            tool_label = evidence_item.get("tool_display_name") or (
+                presentation[0] if presentation else tool_name
+            )
+            state_label = (
+                text["required_unavailable"]
+                if state == "unavailable"
+                else text["required_degraded"]
+            )
+            rows.append({
+                "strategy": strategy_label(
+                    skill_id,
+                    selected_by_id.get(skill_id, {}).get("skill_name"),
+                    evaluations_by_id.get(skill_id, {}).get("skill_name"),
+                ),
+                "status": state_label,
+                "tool": localize(tool_label),
+                "required": required_data_text(tool_name, evidence_item),
+                "current": current_data_text(evidence_item),
+            })
+        return rows
+
+    def render_input_table(lines: List[str], items: List[Mapping[str, Any]]) -> None:
+        if not items:
+            lines.extend(["", f"> {text['no_input']}"])
+            return
         lines.extend([
             "",
-            f"#### {evaluation_heading}",
-            "",
-            f"| {evaluation_headers[0]} | {evaluation_headers[1]} | {evaluation_headers[2]} | {evaluation_headers[3]} |",
-            "|------|:------:|:------:|------|",
+            f"| {text['tool']} | {text['status']} | {text['data']} | {text['values']} | {text['source']} | {text['failure']} |",
+            "|------|:------:|------|------|------|------|",
         ])
-        for evaluation in evaluations[:10]:
-            confidence = evaluation.get("confidence")
-            confidence_text = f"{float(confidence):.0%}" if isinstance(confidence, (int, float)) else "N/A"
-            signal = public_signal(evaluation.get("signal"))
-            reasoning_parts = [str(evaluation.get("reasoning") or "").strip()]
-            conditions_met = _safe_string_list(evaluation.get("conditions_met"), limit=5)
-            conditions_missed = _safe_string_list(evaluation.get("conditions_missed"), limit=5)
-            if conditions_met:
-                reasoning_parts.append(f"{condition_labels[0]}: " + "; ".join(conditions_met))
-            if conditions_missed:
-                reasoning_parts.append(f"{condition_labels[1]}: " + "; ".join(conditions_missed))
-            lines.append(
-                f"| {cell(evaluation.get('skill_name') or evaluation['skill_id'])} "
-                f"(`{cell(evaluation['skill_id'])}`) | {cell(public_status(evaluation.get('status')))} | "
-                f"{cell(signal)} / {cell(confidence_text)} | "
-                f"{cell('<br>'.join(part for part in reasoning_parts if part))} |"
+        metric_groups: List[tuple[str, List[Mapping[str, Any]]]] = []
+        for item in items:
+            tool_name = canonical_tool_name(item.get("tool")) or str(item.get("tool") or "unknown")
+            presentation = _TOOL_PRESENTATION.get(tool_name)
+            tool_label = str(item.get("tool_display_name") or (presentation[0] if presentation else tool_name))
+            tool_text = localize(tool_label)
+            if not is_zh and tool_text != tool_name:
+                tool_text = f"{tool_text} (`{tool_name}`)"
+            data_description = item.get("data_description") or (presentation[2] if presentation else text["none"])
+            values = item.get("key_values") if isinstance(item.get("key_values"), Mapping) else {}
+            value_text = ", ".join(
+                f"{localize(key)}={localize(value)}" for key, value in list(values.items())[:6]
+            ) or text["none"]
+            sources = ", ".join(str(value) for value in (item.get("sources") or []) if value) or text["none"]
+            source_links = item.get("source_links") if isinstance(item.get("source_links"), list) else []
+            link_text = ", ".join(
+                f"[{link.get('name') or 'source'}]({link.get('url')})"
+                for link in source_links
+                if isinstance(link, Mapping) and link.get("url")
             )
+            if link_text:
+                sources = f"{sources}<br>{link_text}"
+            coverage: List[str] = []
+            if item.get("as_of"):
+                coverage.append(f"as-of={item['as_of']}")
+            if isinstance(item.get("record_count"), int):
+                coverage.append(f"records={item['record_count']}")
+            if isinstance(item.get("requested_records"), int):
+                coverage.append(f"requested={item['requested_records']}")
+            if item.get("cached"):
+                coverage.append("cache")
+            if item.get("partial"):
+                coverage.append("partial")
+            if coverage:
+                sources += "<br>" + "; ".join(coverage)
+            failures: List[str] = []
+            for attempt in item.get("failure_attempts") or []:
+                if isinstance(attempt, Mapping):
+                    failures.append(
+                        f"{attempt.get('provider') or 'unknown'} "
+                        f"{attempt.get('operation') or 'get_data'}: "
+                        f"{attempt.get('reason') or 'unknown'}"
+                    )
+            if not failures and (item.get("failure_reason") or item.get("missing_reason")):
+                failures.append(str(item.get("failure_reason") or item.get("missing_reason")))
+            lines.append(
+                f"| {cell(tool_text)} | {cell(public_status(item.get('status')))} | "
+                f"{cell(data_description)} | {cell(value_text)} | {cell(sources)} | "
+                f"{cell('<br>'.join(failures) if failures else text['none'])} |"
+            )
+            metrics = [
+                metric for metric in (item.get("metric_details") or [])[:metric_limit]
+                if isinstance(metric, Mapping)
+            ]
+            if metrics:
+                metric_groups.append((tool_text, metrics))
+        for tool_text, metrics in metric_groups:
+            lines.extend([
+                "",
+                f"**{cell(tool_text)} · {text['input']}**",
+                "",
+                f"| {text['metric']} | {text['status']} | {text['value']} | {text['meaning']} |",
+                "|------|:------:|------:|------|",
+            ])
+            for metric in metrics:
+                available = metric.get("status") == "available"
+                metric_value = metric.get("display_value") or metric.get("value") if available else "—"
+                lines.append(
+                    f"| {cell(metric.get('label') or metric.get('key') or 'unknown')} | "
+                    f"{cell(text['available'] if available else text['missing'])} | "
+                    f"{cell(metric_value)} | {cell(metric.get('description') or text['none'])} |"
+                )
+
+    lines = [
+        f"### 🔎 {text['heading']}",
+        "",
+        f"> **{text['overall_evidence']}**：{public_status(manifest.get('status'))}",
+    ]
+    if selected:
+        selected_text = selected_separator.join(
+            strategy_label(str(item["skill_id"]), item.get("skill_name"))
+            for item in selected[:20]
+        )
+        lines.append(f"> **{text['selected']}**：{selected_text}")
+
+    for skill_id in strategy_ids[:10]:
+        selected_item = selected_by_id.get(skill_id, {})
+        evaluation = evaluations_by_id.get(skill_id, {})
+        requirement = requirements_by_id.get(skill_id, {})
+        label = strategy_label(
+            skill_id,
+            selected_item.get("skill_name"),
+            evaluation.get("skill_name"),
+        )
+        status = evaluation.get("status") or requirement.get("status") or "not_evaluated"
+        confidence = evaluation.get("confidence")
+        confidence_text = f"{float(confidence):.0%}" if isinstance(confidence, (int, float)) else text["none"]
+        lines.extend([
+            "",
+            f"#### {label}",
+            "",
+            f"##### {text['output']}",
+            "",
+            f"| {text['status']} | {text['signal']} | {text['confidence']} | {text['reasoning']} |",
+            "|:------:|:------:|:------:|------|",
+            f"| {cell(public_status(status))} | {cell(public_signal(evaluation.get('signal')))} | "
+            f"{cell(confidence_text)} | {cell(evaluation.get('reasoning') or text['none'])} |",
+        ])
+        conditions_met = _safe_string_list(evaluation.get("conditions_met"), limit=10)
+        conditions_missed = _safe_string_list(evaluation.get("conditions_missed"), limit=10)
+        if conditions_met or conditions_missed:
+            lines.extend([
+                "",
+                f"| {text['condition_status']} | {text['condition']} |",
+                "|:------:|------|",
+            ])
+            lines.extend(
+                f"| {text['met']} | {cell(condition)} |"
+                for condition in conditions_met
+            )
+            lines.extend(
+                f"| {text['missed']} | {cell(condition)} |"
+                for condition in conditions_missed
+            )
+        lines.extend(["", f"##### {text['input']}"])
+        render_input_table(lines, strategy_items(skill_id))
+
+    if not strategy_ids:
+        lines.extend(["", f"#### {text['input']}"])
+        render_input_table(lines, all_items[:item_limit])
 
     overall_decision = manifest.get("overall_decision")
     if isinstance(overall_decision, Mapping):
@@ -1385,127 +2006,33 @@ def format_strategy_evidence_markdown(
         confidence_text = (
             f"{float(confidence):.0%}"
             if isinstance(confidence, (int, float))
-            else str(overall_decision.get("confidence_label") or "N/A")
+            else overall_decision.get("confidence_label") or text["none"]
         )
         lines.extend([
             "",
-            f"#### {overall_decision_heading}",
+            f"#### {text['overall_decision']}",
             "",
-            f"- {decision_labels[0]}: {cell(public_signal(overall_decision.get('signal')))}",
-            f"- {decision_labels[1]}: {cell(confidence_text)}",
+            f"- {text['signal']}：{cell(public_signal(overall_decision.get('signal')))}",
+            f"- {text['confidence']}：{cell(confidence_text)}",
         ])
         if overall_decision.get("operation_advice"):
-            lines.append(f"- {decision_labels[2]}: {cell(overall_decision.get('operation_advice'))}")
+            lines.append(f"- {text['action']}：{cell(overall_decision.get('operation_advice'))}")
         if overall_decision.get("reasoning"):
-            lines.append(f"- {decision_labels[3]}: {cell(overall_decision.get('reasoning'))}")
+            lines.append(f"- {text['reasoning']}：{cell(overall_decision.get('reasoning'))}")
 
-    lines.extend([
-        "",
-        f"#### {source_heading}",
-    ])
-
-    item_limit = 8 if compact else 20
-    for item in (manifest.get("items") or [])[:item_limit]:
-        if not isinstance(item, Mapping):
-            continue
-        sources = ", ".join(
-            str(value) for value in (item.get("sources") or []) if value
-        ) or "N/A"
-        source_links = item.get("source_links") if isinstance(item.get("source_links"), list) else []
-        source_link_text = ", ".join(
-            f"[{link.get('name') or 'source'}]({link.get('url')})"
-            for link in source_links
-            if isinstance(link, Mapping) and link.get("url")
-        )
-        if source_link_text:
-            sources = f"{sources} ({source_link_text})"
-        values = item.get("key_values") if isinstance(item.get("key_values"), Mapping) else {}
-        value_text = ", ".join(
-            f"{key}={value}" for key, value in list(values.items())[:6]
-        ) or "N/A"
-        coverage: List[str] = []
-        if sources != "N/A":
-            coverage.append(f"source={sources}")
-        if item.get("as_of"):
-            coverage.append(f"as-of={item['as_of']}")
-        if isinstance(item.get("record_count"), int):
-            coverage.append(f"records={item['record_count']}")
-        if isinstance(item.get("requested_records"), int):
-            coverage.append(f"requested={item['requested_records']}")
-        if item.get("cached"):
-            coverage.append("cache")
-        if item.get("partial"):
-            coverage.append("partial")
-        required_by = ", ".join(
-            str(value) for value in (item.get("required_by") or []) if value
-        )
-        if required_by:
-            coverage.append(f"required_by={required_by}")
-        failure_attempts = item.get("failure_attempts")
-        if isinstance(failure_attempts, list):
-            for attempt in failure_attempts[:5]:
-                if not isinstance(attempt, Mapping):
-                    continue
-                coverage.append(
-                    "failure="
-                    f"{attempt.get('provider') or 'unknown'} "
-                    f"{attempt.get('operation') or 'get_data'}: "
-                    f"{attempt.get('reason') or 'unknown'}"
-                )
-        elif item.get("failure_reason") or item.get("missing_reason"):
-            coverage.append(
-                "reason=" + str(item.get("failure_reason") or item.get("missing_reason"))
-            )
-        tool_name = str(item.get("tool") or "unknown")
-        tool_label = str(item.get("tool_display_name") or tool_name)
-        data_description = str(item.get("data_description") or "")
-        status = str(item.get("status") or "unknown")
-        display_status = _ZH_EVIDENCE_STATUS_LABELS.get(status, status) if language.startswith("zh") else status
-        tool_text = f"{tool_label} (`{tool_name}`)" if tool_label != tool_name else f"`{tool_name}`"
-        source_and_coverage = sources
-        if coverage:
-            source_and_coverage += "<br>" + "; ".join(coverage)
-        if value_text != "N/A" and not item.get("metric_details"):
-            source_and_coverage += f"<br>{value_text}"
-        lines.extend([
-            "",
-            f"##### {tool_text}",
-            "",
-            f"| {headers[0]} | {headers[1]} | {headers[2]} |",
-            "|------|------|------|",
-            f"| {cell(display_status)} | {cell(data_description)} | {cell(source_and_coverage)} |",
-        ])
-        metric_details = item.get("metric_details")
-        if isinstance(metric_details, list):
-            metric_rows: List[str] = []
-            for metric in metric_details[:12]:
-                if not isinstance(metric, Mapping):
-                    continue
-                metric_label = metric.get("label") or metric.get("key") or "unknown"
-                if metric.get("status") == "available":
-                    metric_value = metric.get("display_value") or metric.get("value")
-                    metric_status = available_text
-                else:
-                    metric_status = missing_text
-                    metric_value = "—"
-                description = str(metric.get("description") or "").strip()
-                metric_rows.append(
-                    f"| {cell(metric_label)} | {cell(metric_status)} | "
-                    f"{cell(metric_value)} | {cell(description)} |"
-                )
-            if metric_rows:
-                lines.extend([
-                    "",
-                    f"**{metrics_heading}**",
-                    "",
-                    f"| {metric_headers[0]} | {metric_headers[1]} | {metric_headers[2]} | {metric_headers[3]} |",
-                    "|------|:------:|------:|------|",
-                    *metric_rows,
-                ])
-    limitations = list(manifest.get("limitations") or [])[:10]
+    limitations = limitation_rows(manifest.get("limitations") or [])
     if limitations:
-        lines.extend(["", f"#### ⚠️ {limitations_heading}", ""])
-        lines.extend(f"- {limitation}" for limitation in limitations)
+        lines.extend(["", f"#### ⚠️ {text['limitations']}", ""])
+        lines.extend([
+            f"| {text['strategy']} | {text['limitation_status']} | {text['tool']} | "
+            f"{text['required_data']} | {text['current_state']} |",
+            "|------|------|------|------|------|",
+        ])
+        lines.extend(
+            f"| {cell(item['strategy'])} | {cell(item['status'])} | "
+            f"{cell(item['tool'])} | {cell(item['required'])} | {cell(item['current'])} |"
+            for item in limitations
+        )
     return "\n".join(lines)
 
 

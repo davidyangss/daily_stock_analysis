@@ -10,6 +10,7 @@ Tools:
 """
 
 import logging
+import time
 from datetime import date
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,6 +49,8 @@ _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
 _DAILY_HISTORY_DEFAULT_DAYS = 60
 _DAILY_HISTORY_MAX_DAYS = 365
+_STOCK_INFO_TIMEOUT_SECONDS_DEFAULT = 60.0
+_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS_DEFAULT = 8.0
 
 
 def _get_fetcher_manager():
@@ -488,13 +491,61 @@ get_analysis_context_tool = ToolDefinition(
 # ============================================================
 
 def _handle_get_stock_info(stock_code: str) -> dict:
-    """Get stock fundamental information through unified fundamental context."""
+    """Get stock fundamentals under the ordinary-Agent caller budget.
+
+    The shared provider manager keeps its global timeout semantics.  This tool
+    supplies a narrower caller budget so an optional strategy input cannot
+    consume the whole multi-Agent report deadline.
+    """
+    from src.config import get_config
+
     manager = _get_fetcher_manager()
+    config = get_config()
+    total_timeout = max(
+        1.0,
+        float(
+            getattr(
+                config,
+                "agent_stock_info_timeout_seconds",
+                _STOCK_INFO_TIMEOUT_SECONDS_DEFAULT,
+            )
+            or _STOCK_INFO_TIMEOUT_SECONDS_DEFAULT
+        ),
+    )
+    provider_timeout = max(
+        1.0,
+        min(
+            total_timeout,
+            float(
+                getattr(
+                    config,
+                    "agent_stock_info_provider_timeout_seconds",
+                    _STOCK_INFO_PROVIDER_TIMEOUT_SECONDS_DEFAULT,
+                )
+                or _STOCK_INFO_PROVIDER_TIMEOUT_SECONDS_DEFAULT
+            ),
+        ),
+    )
+    started_at = time.monotonic()
+    deadline = started_at + total_timeout
+    limitations: List[str] = []
+
+    # Reserve one provider-sized slice for bounded valuation/name fallback and
+    # belong-board membership.  The fundamental pipeline itself remains
+    # provider-neutral and receives only the caller's available share.
+    reserved_seconds = min(provider_timeout, max(1.0, total_timeout * 0.35))
+    fundamental_budget = max(0.1, total_timeout - reserved_seconds)
+    check_tool_execution()
     try:
-        fundamental_context = manager.get_fundamental_context(stock_code)
+        fundamental_context = manager.get_fundamental_context(
+            stock_code,
+            budget_seconds=fundamental_budget,
+        )
     except Exception as e:
         logger.warning(f"get_stock_info via fundamental pipeline failed for {stock_code}: {e}")
         fundamental_context = manager.build_failed_fundamental_context(stock_code, str(e))
+        limitations.append(f"fundamental_context unavailable: {type(e).__name__}")
+    check_tool_execution()
 
     compact_context = _compact_fundamental_context(fundamental_context)
     valuation = compact_context.get("valuation", {}).get("data", {})
@@ -505,32 +556,85 @@ def _handle_get_stock_info(stock_code: str) -> dict:
         growth = {}
 
     quote_fallback: Dict[str, Any] = {}
+    quote_fallback_error: Optional[str] = None
     if any(valuation.get(field) is None for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv")):
-        try:
-            quote = manager.get_realtime_quote(stock_code)
-            for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"):
-                value = getattr(quote, field, None) if quote is not None else None
-                if value is not None:
-                    quote_fallback[field] = value
-        except Exception as e:
-            logger.debug("get_stock_info realtime valuation fallback failed for %s: %s", stock_code, e)
+        remaining = max(0.0, deadline - time.monotonic())
+        # Do not let a duplicate valuation fallback starve belong-board input.
+        quote_budget = min(provider_timeout, remaining / 2.0)
+        if quote_budget > 0:
+            try:
+                timeout_runner = getattr(manager, "_run_with_timeout", None)
+                if callable(timeout_runner):
+                    quote, quote_fallback_error, _duration_ms = timeout_runner(
+                        lambda: manager.get_realtime_quote(stock_code),
+                        quote_budget,
+                        "agent_stock_info_quote",
+                    )
+                else:
+                    # Compatibility for lightweight test/extension managers;
+                    # the production DataFetcherManager always supplies the
+                    # bounded runner above.
+                    quote = manager.get_realtime_quote(stock_code)
+                for field in ("pe_ratio", "pb_ratio", "total_mv", "circ_mv"):
+                    value = getattr(quote, field, None) if quote is not None else None
+                    if value is not None:
+                        quote_fallback[field] = value
+            except Exception as e:
+                quote_fallback_error = f"{type(e).__name__}: {e}"
+                logger.debug("get_stock_info realtime valuation fallback failed for %s: %s", stock_code, e)
+        else:
+            quote_fallback_error = "caller budget exhausted before valuation fallback"
+        if not quote_fallback:
+            limitations.append(
+                f"valuation fallback unavailable: {quote_fallback_error or 'no data'}"
+            )
 
     def valuation_value(field: str) -> Any:
         value = valuation.get(field)
         return value if value is not None else quote_fallback.get(field)
 
     sector_rankings = compact_context.get("boards", {}).get("data", {})
-    belong_boards = manager.get_belong_boards(stock_code)
+    belong_boards: List[Dict[str, Any]] = []
+    belong_boards_error: Optional[str] = None
+    remaining = max(0.0, deadline - time.monotonic())
+    if remaining > 0:
+        try:
+            belong_boards = manager.get_belong_boards(
+                stock_code,
+                provider_timeout_seconds=min(provider_timeout, remaining),
+                total_timeout_seconds=min(provider_timeout, remaining),
+            )
+        except Exception as exc:
+            belong_boards_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("get_stock_info belong boards failed for %s: %s", stock_code, exc)
+    else:
+        belong_boards_error = "caller budget exhausted before belong-board lookup"
+    if not belong_boards:
+        limitations.append(
+            f"belong_boards unavailable: {belong_boards_error or 'no validated data'}"
+        )
+    check_tool_execution()
 
     stock_name = stock_code.upper()
-    try:
-        stock_name = manager.get_stock_name(stock_code) or stock_name
-    except Exception:
-        pass
+    remaining = max(0.0, deadline - time.monotonic())
+    if remaining > 0:
+        try:
+            timeout_runner = getattr(manager, "_run_with_timeout", None)
+            if callable(timeout_runner):
+                resolved_name, name_error, _duration_ms = timeout_runner(
+                    lambda: manager.get_stock_name(stock_code, allow_realtime=False),
+                    min(1.0, remaining),
+                    "agent_stock_info_name",
+                )
+                if name_error:
+                    limitations.append(f"stock_name unavailable: {name_error}")
+            else:
+                resolved_name = manager.get_stock_name(stock_code)
+            stock_name = resolved_name or stock_name
+        except Exception as exc:
+            limitations.append(f"stock_name unavailable: {type(exc).__name__}")
 
-    return {
-        "code": stock_code.upper(),
-        "name": stock_name,
+    resolved_values = {
         "pe_ratio": valuation_value("pe_ratio"),
         "pb_ratio": valuation_value("pb_ratio"),
         "total_mv": valuation_value("total_mv"),
@@ -539,12 +643,46 @@ def _handle_get_stock_info(stock_code: str) -> dict:
         "net_profit_yoy": growth.get("net_profit_yoy"),
         "roe": growth.get("roe"),
         "gross_margin": growth.get("gross_margin"),
+    }
+    missing_fields = [key for key, value in resolved_values.items() if value is None]
+    has_validated_data = any(value is not None for value in resolved_values.values()) or bool(
+        belong_boards or sector_rankings
+    )
+    if not has_validated_data:
+        status = "missing"
+    elif missing_fields:
+        status = "partial"
+    else:
+        # ``fundamental_context.status`` covers optional subdomains as well as
+        # the flattened get_stock_info contract. A missing board/institution
+        # block must not downgrade valuation and growth fields that were all
+        # resolved successfully; those auxiliary gaps remain auditable through
+        # ``data_limitations`` and the nested context.
+        status = "available"
+    if missing_fields:
+        limitations.append("missing source fields: " + ", ".join(missing_fields))
+    elapsed_seconds = round(time.monotonic() - started_at, 3)
+
+    return {
+        "status": status,
+        "code": stock_code.upper(),
+        "name": stock_name,
+        **resolved_values,
         "fundamental_context": compact_context,
         "belong_boards": belong_boards,
         # Compatibility alias for existing callers; prefer belong_boards.
         # Planned for future deprecation in a major version.
         "boards": belong_boards,
         "sector_rankings": sector_rankings,
+        "missing_fields": missing_fields,
+        "data_limitations": list(dict.fromkeys(limitations)),
+        "timeout_budget": {
+            "total_seconds": total_timeout,
+            "fundamental_seconds": round(fundamental_budget, 3),
+            "provider_seconds": provider_timeout,
+            "elapsed_seconds": elapsed_seconds,
+            "deadline_exhausted": time.monotonic() >= deadline,
+        },
     }
 
 

@@ -503,7 +503,12 @@ class SerpAPISearchProvider(BaseSearchProvider):
         "resource_file",
     }
     
-    def __init__(self, api_keys: List[str], request_timeout_seconds: Optional[int] = None):
+    def __init__(
+        self,
+        api_keys: List[str],
+        request_timeout_seconds: Optional[int] = None,
+        hard_deadline_seconds: Optional[float] = None,
+    ):
         super().__init__(api_keys, "SerpAPI")
         timeout = (
             self._DEFAULT_SEARCH_REQUEST_TIMEOUT
@@ -511,6 +516,13 @@ class SerpAPISearchProvider(BaseSearchProvider):
             else request_timeout_seconds
         )
         self.request_timeout_seconds = max(1, min(300, int(timeout)))
+        # Keep the built-in default dynamic so emergency/test overrides of the
+        # class safety limit take effect even after provider construction.
+        self.hard_deadline_seconds = (
+            None
+            if hard_deadline_seconds is None
+            else max(0.01, min(300.0, float(hard_deadline_seconds)))
+        )
 
     def _get_search_response_with_deadline(self, search: Any) -> Dict[str, Any]:
         """Run the SerpAPI SDK request behind a hard, bounded deadline."""
@@ -536,9 +548,14 @@ class SerpAPISearchProvider(BaseSearchProvider):
             name="serpapi-search-request",
         )
         worker.start()
+        configured_hard_deadline = (
+            self._HARD_DEADLINE_SECONDS
+            if self.hard_deadline_seconds is None
+            else self.hard_deadline_seconds
+        )
         hard_deadline_seconds = min(
             float(self.request_timeout_seconds),
-            self._HARD_DEADLINE_SECONDS,
+            max(0.01, float(configured_hard_deadline)),
         )
         if not completed.wait(timeout=hard_deadline_seconds):
             raise requests.Timeout(
@@ -2330,6 +2347,7 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         serpapi_timeout_seconds: int = 20,
+        serpapi_hard_deadline_seconds: float = 20.0,
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = True,
@@ -2391,6 +2409,7 @@ class SearchService:
             self._providers.append(SerpAPISearchProvider(
                 serpapi_keys,
                 request_timeout_seconds=serpapi_timeout_seconds,
+                hard_deadline_seconds=serpapi_hard_deadline_seconds,
             ))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
 
@@ -2671,6 +2690,132 @@ class SearchService:
                     for k in oldest:
                         self._cache.pop(k, None)
             self._cache[key] = (time.time(), response)
+
+    def _load_eligible_persisted_stock_news(
+        self,
+        *,
+        stock_code: str,
+        stock_name: str,
+        query: str,
+        search_days: int,
+        max_results: int,
+        provider_max_results: int,
+        prefer_chinese: bool,
+    ) -> Optional[SearchResponse]:
+        """Load current, attributable, directly relevant local news first."""
+        try:
+            from data_provider.base import canonical_stock_code, normalize_stock_code
+            from src.storage import get_db
+
+            code = canonical_stock_code(normalize_stock_code(str(stock_code or "").strip()))
+            rows = get_db().get_recent_news(
+                code,
+                days=search_days,
+                limit=max(provider_max_results * 4, 20),
+            )
+        except Exception as exc:
+            logger.info("本地新闻读取失败，继续远端检索: %s", exc)
+            return None
+
+        now = datetime.now()
+        cutoff = now - timedelta(days=search_days)
+        future_cutoff = now + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
+        results: List[SearchResult] = []
+        rejection_counts: Dict[str, int] = {}
+
+        def reject(reason: str) -> None:
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+        for row in rows or []:
+            published = getattr(row, "published_date", None)
+            if not isinstance(published, datetime):
+                reject("published_date_missing")
+                continue
+            if published.tzinfo is not None:
+                published = published.astimezone(timezone.utc).replace(tzinfo=None)
+            if published < cutoff:
+                reject("outside_requested_window")
+                continue
+            if published > future_cutoff:
+                reject("future_publication")
+                continue
+            title = str(getattr(row, "title", "") or "").strip()
+            snippet = str(getattr(row, "snippet", "") or "").strip()
+            url = str(getattr(row, "url", "") or "").strip()
+            source = str(getattr(row, "source", "") or "").strip()
+            parsed_url = urlparse(url)
+            if not title or not snippet:
+                reject("content_fields_missing")
+                continue
+            if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+                reject("source_url_invalid")
+                continue
+            if not source:
+                reject("publisher_missing")
+                continue
+            results.append(SearchResult(
+                title=title,
+                snippet=snippet,
+                url=url,
+                source=source,
+                published_date=published.isoformat(),
+            ))
+
+        if not results:
+            if rows:
+                logger.info(
+                    "本地新闻不满足当前请求，继续远端检索: %s(%s) reasons=%s",
+                    stock_name,
+                    stock_code,
+                    rejection_counts,
+                )
+            return None
+
+        response = SearchResponse(
+            query=query,
+            results=results,
+            provider="local_news_db",
+            success=True,
+        )
+        filtered = self._filter_news_response(
+            response,
+            search_days=search_days,
+            max_results=provider_max_results,
+            log_scope=f"{stock_code}:local_news_db:stock_news",
+        )
+        language_response, _ = self._prioritize_news_language(
+            filtered,
+            prefer_chinese=prefer_chinese,
+        )
+        ranked = self._rank_news_response(
+            language_response,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            prefer_chinese=prefer_chinese,
+            max_results=provider_max_results,
+            log_scope=f"{stock_code}:local_news_db:stock_news",
+        )
+        admitted = self._filter_ranked_news_for_context(
+            ranked,
+            log_scope=f"{stock_code}:local_news_db:stock_news",
+        )
+        limited = self._limit_search_response(admitted, max_results=max_results)
+        stats = self._news_relevance_stats(limited, prefer_chinese=prefer_chinese)
+        if not limited.results or stats.get("direct_count", 0) <= 0:
+            logger.info(
+                "本地新闻缺少直接个股命中，继续远端检索: %s(%s)",
+                stock_name,
+                stock_code,
+            )
+            return None
+        logger.info(
+            "本地新闻优先命中: %s(%s) count=%s window=%s天",
+            stock_name,
+            stock_code,
+            len(limited.results),
+            search_days,
+        )
+        return limited
 
     def _effective_news_window_days(self) -> int:
         """Resolve effective news window from strategy profile and global max-age."""
@@ -3812,6 +3957,42 @@ class SearchService:
             max_results,
             search_days,
         )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
+            self._record_news_search_run(
+                provider=cached.provider or "SearchCache",
+                operation="search_stock_news_cache",
+                success=bool(cached.success),
+                latency_ms=0,
+                record_count=len(cached.results or []),
+                cache_hit=True,
+                error_message=cached.error_message,
+            )
+            return cached
+
+        if not focus_keywords:
+            local_response = self._load_eligible_persisted_stock_news(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                query=query,
+                search_days=search_days,
+                max_results=max_results,
+                provider_max_results=provider_max_results,
+                prefer_chinese=prefer_chinese,
+            )
+            if local_response is not None:
+                self._put_cache(cache_key, local_response)
+                self._record_news_search_run(
+                    provider=local_response.provider,
+                    operation="search_stock_news_local_cache",
+                    success=True,
+                    latency_ms=0,
+                    record_count=len(local_response.results),
+                    cache_hit=True,
+                )
+                return local_response
+
         cached, cache_owner, cache_event = self._get_cached_or_reserve(cache_key)
         if cached is not None:
             logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
@@ -4709,6 +4890,9 @@ def get_search_service() -> SearchService:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     serpapi_timeout_seconds=getattr(config, "serpapi_timeout_seconds", 20),
+                    serpapi_hard_deadline_seconds=getattr(
+                        config, "serpapi_hard_deadline_seconds", 20.0
+                    ),
                     minimax_keys=config.minimax_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,

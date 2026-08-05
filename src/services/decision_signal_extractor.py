@@ -133,6 +133,9 @@ def build_decision_signal_payload_from_report(
     if market_structure_summary:
         metadata.update(market_structure_summary)
     metadata["holding_state"] = _extract_holding_state(portfolio_context)
+    strategy_evidence_summary = _strategy_evidence_summary(dashboard)
+    if strategy_evidence_summary:
+        metadata["strategy_evidence"] = strategy_evidence_summary
 
     payload: Dict[str, Any] = {
         "stock_code": raw_code,
@@ -160,8 +163,11 @@ def build_decision_signal_payload_from_report(
         "risk_summary": _risk_summary(result, dashboard),
         "catalyst_summary": _catalyst_summary(dashboard),
         "watch_conditions": _watch_conditions(dashboard),
-        "evidence": _evidence(result, sniper_points),
-        "data_quality_summary": _extract_data_quality(context_snapshot, result),
+        "evidence": _evidence(result, sniper_points, dashboard=dashboard),
+        "data_quality_summary": _data_quality_with_strategy_evidence(
+            _extract_data_quality(context_snapshot, result),
+            strategy_evidence_summary,
+        ),
         "metadata": metadata,
         "report_language": getattr(result, "report_language", None),
     }
@@ -438,6 +444,59 @@ def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result:
     return _as_mapping(getattr(result, "analysis_context_pack_overview", None)).get("data_quality")
 
 
+def _strategy_evidence_summary(dashboard: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    manifest = _as_mapping(dashboard.get("strategy_data_evidence"))
+    selected = manifest.get("selected_strategies")
+    if manifest.get("schema_version") != "strategy-evidence-v1" or not isinstance(selected, list) or not selected:
+        return None
+    evaluations = []
+    for raw in manifest.get("strategy_evaluations") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        evaluations.append({
+            key: raw.get(key)
+            for key in (
+                "skill_id", "skill_name", "status", "signal", "confidence",
+                "evidence_status", "verification_scope", "failure_reason",
+            )
+            if raw.get(key) not in (None, "")
+        })
+    status = str(manifest.get("status") or "insufficient")
+    quality = {
+        "verified": "medium",
+        "limited": "low",
+        "insufficient": "poor",
+    }.get(status, "unknown")
+    return {
+        "status": status,
+        "quality": quality,
+        "verification_scope": "required_inputs",
+        "selected_count": len(selected),
+        "evaluations": evaluations[:20],
+        "limitations": [str(item) for item in manifest.get("limitations") or []][:20],
+    }
+
+
+def _data_quality_with_strategy_evidence(
+    value: Any,
+    strategy_summary: Optional[Mapping[str, Any]],
+) -> Any:
+    if not strategy_summary:
+        return value
+    if isinstance(value, Mapping):
+        combined = dict(value)
+    elif value not in (None, ""):
+        combined = {"level": value}
+    else:
+        combined = {}
+    combined["strategy_evidence"] = {
+        "status": strategy_summary.get("quality") or "unknown",
+        "input_status": strategy_summary.get("status") or "unknown",
+        "verification_scope": "required_inputs",
+    }
+    return combined
+
+
 def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> str:
     context = _as_mapping(portfolio_context)
     quantity = context.get("quantity")
@@ -485,7 +544,12 @@ def _watch_conditions(dashboard: Mapping[str, Any]) -> Optional[Any]:
     return None
 
 
-def _evidence(result: AnalysisResult, sniper_points: Mapping[str, Any]) -> Dict[str, Any]:
+def _evidence(
+    result: AnalysisResult,
+    sniper_points: Mapping[str, Any],
+    *,
+    dashboard: Mapping[str, Any],
+) -> Dict[str, Any]:
     evidence = {
         "operation_advice": getattr(result, "operation_advice", None),
         "decision_type": getattr(result, "decision_type", None),
@@ -494,5 +558,6 @@ def _evidence(result: AnalysisResult, sniper_points: Mapping[str, Any]) -> Dict[
         "current_price": getattr(result, "current_price", None),
         "change_pct": getattr(result, "change_pct", None),
         "sniper_points": dict(sniper_points),
+        "strategy_evidence": _strategy_evidence_summary(dashboard),
     }
     return {key: value for key, value in evidence.items() if value not in (None, "", [], {})}

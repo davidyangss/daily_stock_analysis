@@ -14,6 +14,7 @@ from src.services.decision_signal_data_quality import normalize_decision_signal_
         ({"status": "fetch_failed"}, "poor"),
         ({"quote": "high", "daily_bars": "fetch_failed"}, "poor"),
         ({"level": "good", "technical": {"status": "degraded"}}, "low"),
+        ({"level": "good", "strategy_evidence": {"status": "poor"}}, "poor"),
         ({"not_quality": "good", "fields": ["many"]}, "unknown"),
         (None, "unknown"),
     ],

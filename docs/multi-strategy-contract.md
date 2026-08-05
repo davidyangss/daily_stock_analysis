@@ -96,17 +96,24 @@ Skill YAML 的 `required_tools` 是硬数据依赖。SkillAgent 必须调用全�
 
 分析任务本身保持 fail-open，策略观点采用 fail-closed：单个策略的硬依赖缺失不阻断其他策略、DecisionAgent 或报告生成，但不得让该策略用猜测结果参与共识计算。
 
+`get_stock_info` 的策略准入状态以其公开估值与成长指标契约为准：指标全部取得时为 `available`，不会因为所属板块、机构等可选基本面子域单独降级而误报必需数据受限；任一公开指标缺失时仍为 `partial`，可选子域的真实失败继续保留在 `data_limitations` 和嵌套基本面上下文中。
+
+普通策略分析的 `standard` / `full` 模式只要存在已选策略，就在 Technical、Intel（`full` 另含 Risk）之后为每个策略创建隔离的 Specialist；每个 Specialist 只能用自身声明的 `required_tools` 及 Pipeline 明确标记为 `prefetched=true` 的共享输入，不能借用另一个 Specialist 的同名工具结果。随后由 `StrategyEngine` 对验证通过的逐策略观点确定性汇总，再把汇总结果和逐策略限制交给 DecisionAgent。单个 Specialist 失败仍按非关键阶段降级，完整报告继续生成。`quick` 保留快速路径；兼容联合评估必须先逐策略输出结构化评估，不能用一条总体结论替代各策略结论。
+
+联合评估对象必须包含 `joint_assessment`、五态 `signal`、`0..1` 的 `confidence`、`decisive_evidence[{tool, fields, summary}]`、`conditions_met`、`conditions_missed` 和 `limitations`。`tool` 必须属于该策略自身的 `required_tools`，`fields` 必须是本次该策略证据中真实存在且非空的字段；引用未返回字段、跨策略证据或字符串式旧结论会标记为 `invalid`，不会进入确定性汇总。没有数据时必须写入 `limitations` / `conditions_missed`，不得推断或造数。
+
 Orchestrator 确定性生成 `dashboard.strategy_data_evidence`，当前 `schema_version="strategy-evidence-v1"`。该低敏清单包含：
 
 - `status`：本次策略依赖总体状态（`verified` / `limited` / `insufficient`）。
+- `verification_scope=required_inputs`：`verified` 只表示声明的必需输入通过准入，不表示策略交易条件成立；条件是否成立由每个 `strategy_evaluations` 的 `conditions_met` / `conditions_missed` 表达。
 - `selected_strategies`：本次实际选择的策略 ID 与持久化展示名。
 - `strategy_evaluations`：逐策略执行状态，以及有效 Specialist 观点的信号、置信度、判定依据和满足/未满足条件。独立 Specialist 使用 `evaluation_mode=specialist`；标准/快速 Agent 只有在 dashboard 明确返回对应策略的 `skill_assessment` 时，才可使用 `evaluation_mode=joint` 记录该策略的联合评估结论。没有策略专属结论时仍使用 `not_evaluated`，不得复制综合结论冒充逐策略结论。
 - `overall_decision`：Pipeline 的综合信号、置信度/置信度标签、操作建议和判定依据。
 - `strategy_requirements`：各策略从 Skill 定义读取的必需工具、缺失/降级工具及对应真实运行证据。联合评估也必须逐策略投影自身依赖，不能只展示一份未标注归属的公共输入列表。
 - `items`：工具状态、来源、cache/partial/prefetched 标记、as-of、请求/实际记录数和允许公开的关键标量；常用行情、估值、资金流和筹码字段同时提供中文指标名、格式化值、单位、含义、可用/缺失状态与缺失字段清单。
-- `limitations`：必需数据不可用或降级的确定性说明。
+- `limitations`：必需数据不可用或降级的确定性说明。Web 与完整 Markdown 报告会把该说明和对应 `strategy_requirements.evidence.metric_details/missing_fields` 合并为数据限制表，逐项列出策略、限制状态、工具、仍需补充的指标以及当前来源/失败原因；工具完全未调用时也按工具契约列出全部所需指标。
 
-该清单由请求中的策略选择、真实工具结果、有效/无效策略观点、Pipeline 综合结论和已预取且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；新增字段保持可选，旧报告没有该字段时继续兼容。
+该清单由请求中的策略选择、真实工具结果、有效/无效策略观点、Pipeline 综合结论和已预取且实际进入报告分析的上下文共同投影，禁止让 LLM 重写、删除或把空结果描述为成功。Agent 没有重复调用筹码等工具时，预取成功的数据仍以 `stage=prefetch` 进入证据清单。同步报告、completed task、历史详情、Web 报告和通知报告消费同一份持久化清单；逐策略输出中的 `conditions_met` / `conditions_missed` 按一条条件一行的状态表展示，不再压成两段长文本。新增字段保持可选，旧报告没有该字段时继续兼容。
 
 ### 动态二分阵营（Supporting / Opposing）
 
@@ -379,7 +386,9 @@ Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调
 
 - `src/agent/skills/scheduler.py::AgentSkillScheduler` 使用 thread pool 并发执行 specialist skill agents；每个 skill 使用 `AgentContext` 副本运行，并通过独立的 `copy_context()` 把主管线冻结的 target date 等 `ContextVar` 状态传播到 worker，主线程按路由顺序合并结构化 opinion，避免多个 skill 同时写共享 `ctx.opinions`。
 - specialist 最终入口最多选择 4 个策略；`AGENT_SKILL_CONCURRENCY` 控制同时运行的 worker 数，默认 `3`，范围 `1–4`。默认值下第 4 个策略进入下一 concurrency wave，不会被路由层静默丢弃。
-- `AGENT_SKILL_AGENT_TIMEOUT_S` 继续作为单个 skill 的独立超时上限；Pipeline 总预算开启时，`_run_stage_agent()` 仍取 Pipeline 剩余预算与 skill 独立上限的较小值。
+- `AGENT_SKILL_AGENT_TIMEOUT_S` 继续作为单个 skill 的独立超时上限，默认 `120` 秒；Pipeline 总预算开启时，`_run_stage_agent()` 仍取 Pipeline 剩余预算与 skill 独立上限的较小值。
+- 普通 Agent 的 `get_stock_info` 使用独立调用方预算：`AGENT_STOCK_INFO_TIMEOUT_SECONDS=60` 为无 Pipeline 预取时的总兜底预算，`AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS=8` 为估值补充、所属板块和名称解析的单来源预算。普通策略与交易员分析复用同一个 `DataFetcherManager` 及相同的顺序收敛语义：按配置优先级逐个检查 provider 的启用、凭据和能力条件，每轮只调用一个可用 provider，高优先级结果保留，后续来源只补缺失字段；只对超时、连接、限流和 5xx 等瞬时错误做有界重试，配置、认证、校验和不支持错误直接进入下一来源。Pipeline 已取得的 `fundamental_context` 作为本次运行的不可变预取输入交给 Specialist，不再重复获取；只有未预取入口才使用 60 秒兜底。截止后保留已取得字段，并用 `partial/missing`、`missing_fields` 与 `data_limitations` 明确披露缺口。
+- `skill_consensus` 是 StrategyEngine 的确定性汇总产物，不得出现在 `selected_strategies` 或伪装成第四条 `strategy_evaluations`；它仅通过 `strategy_synthesis` 进入最终决策上下文。
 - 单个 skill 超时或异常，走 Diagnostics 路径（`reason="skill_timeout"` / `"skill_error"`），进入 `ctx.meta["invalid_opinions"]`，不阻塞其他 skill 与主流程。
 - Phase 2 不改变 Baseline Evidence Chain / Diagnostics 分离原则、不改变阵营语义、不改变共识门槛、不改变 `strategy_synthesis` payload schema。
 - Phase 2 不改变 renderer 展示逻辑；scheduler timeout/error/no-opinion 与 signal 校验失败统一进入 StrategyEngine 的 authoritative Diagnostics，`invalid_opinion_count` / `total_opinion_count` 覆盖这些失败 skill。

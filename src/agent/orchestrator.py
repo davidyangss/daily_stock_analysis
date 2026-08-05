@@ -7,9 +7,9 @@ Specialist → Decision) for a single stock analysis run.
 
 Modes:
 - ``quick``   : Technical only → Decision (fastest, ~2 LLM calls)
-- ``standard``: Technical → Intel → Decision (default)
-- ``full``    : Technical → Intel → Risk → Decision
-- ``specialist``: Technical → Intel → Risk → specialist evaluation → Decision
+- ``standard``: Technical → Intel → selected strategy specialists → Decision
+- ``full``    : Technical → Intel → Risk → selected strategy specialists → Decision
+- ``specialist``: Technical → Intel → Risk → routed strategy specialists → Decision
 
 The orchestrator:
 1. Seeds an :class:`AgentContext` with the user query and stock code
@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
 from src.agent.disagreement import build_agent_disagreement_summary
-from src.agent.evidence import build_strategy_evidence_manifest, collect_tool_evidence
+from src.agent.evidence import (
+    build_strategy_evidence_manifest,
+    build_strategy_synthesis_from_manifest,
+    collect_tool_evidence,
+)
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -582,7 +586,7 @@ class AgentOrchestrator:
                 )
 
             if (
-                self.mode == "specialist"
+                self._should_run_specialists(ctx)
                 and agent.agent_name == "decision"
                 and not specialist_agents_inserted
             ):
@@ -855,6 +859,15 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] failed to build skill agents: %s", exc)
             return []
+
+    def _should_run_specialists(self, ctx: AgentContext) -> bool:
+        """Run isolated strategy evaluation before Decision when strategies exist."""
+        if self.mode == "specialist":
+            return True
+        if self.mode not in {"standard", "full"}:
+            return False
+        selected = ctx.meta.get("selected_strategy_skills")
+        return isinstance(selected, list) and bool(selected)
 
     def _describe_strategy_skills(self, skill_ids: Any) -> List[Dict[str, str]]:
         """Return stable, report-safe ids and display names for selected skills."""
@@ -1206,7 +1219,13 @@ class AgentOrchestrator:
             ctx.stock_name = context.get("stock_name", "")
             requested_skills = context.get("skills")
             if requested_skills is None:
-                requested_skills = context.get("strategies", [])
+                requested_skills = context.get("strategies")
+            if requested_skills is None and self.skill_manager is not None:
+                requested_skills = [
+                    str(getattr(skill, "name", "") or "").strip()
+                    for skill in self.skill_manager.list_active_skills()
+                    if str(getattr(skill, "name", "") or "").strip()
+                ]
             ctx.meta["skills_requested"] = requested_skills or []
             ctx.meta["strategies_requested"] = requested_skills or []
             ctx.meta["selected_strategy_skills"] = self._describe_strategy_skills(
@@ -1226,8 +1245,14 @@ class AgentOrchestrator:
                 ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # Pre-populate data fields that the caller already has
-            for data_key in ("realtime_quote", "daily_history", "chip_distribution",
-                             "trend_result", "news_context"):
+            for data_key in (
+                "realtime_quote",
+                "daily_history",
+                "chip_distribution",
+                "trend_result",
+                "news_context",
+                "fundamental_context",
+            ):
                 if context.get(data_key):
                     ctx.set_data(data_key, context[data_key])
 
@@ -1632,6 +1657,12 @@ class AgentOrchestrator:
         )
         if strategy_data_evidence:
             dashboard_block["strategy_data_evidence"] = strategy_data_evidence
+            if not isinstance(dashboard_block.get("strategy_synthesis"), dict):
+                joint_synthesis = build_strategy_synthesis_from_manifest(
+                    strategy_data_evidence
+                )
+                if joint_synthesis is not None:
+                    dashboard_block["strategy_synthesis"] = joint_synthesis
 
         dashboard_block["core_conclusion"] = core
         dashboard_block["intelligence"] = intelligence

@@ -711,11 +711,39 @@ class DataFetcherManager:
         min_rows: Optional[int],
         preferred_adjustments: Optional[Sequence[str]] = None,
     ) -> Optional[Tuple[pd.DataFrame, str]]:
+        def reject(reason: str, *, observed_rows: int = 0) -> None:
+            logger.info(
+                "[日线缓存未采用] %s market=%s reason=%s rows=%s",
+                stock_code,
+                market,
+                reason,
+                observed_rows,
+            )
+            record_provider_run(
+                data_type="daily_data",
+                provider="market_data_db",
+                operation="load_cached_daily_data",
+                success=False,
+                latency_ms=0,
+                error_type="CacheIneligible",
+                error_message=reason,
+                record_count=observed_rows,
+            )
+
         try:
             requested_end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
-            # Today's bar is provisional and must still come from a live provider.
-            if requested_end >= date.today():
+            if requested_end > date.today():
+                reject("requested_end_is_in_the_future")
                 return None
+            from src.core.trading_calendar import get_effective_trading_date
+
+            if requested_end == date.today():
+                expected_completed_date = get_effective_trading_date(market)
+            else:
+                expected_completed_date = get_effective_trading_date(
+                    market,
+                    current_time=datetime.combine(requested_end, datetime.max.time()),
+                )
             requested_start = (
                 datetime.strptime(start_date, "%Y-%m-%d").date()
                 if start_date else requested_end - timedelta(days=days * 2)
@@ -731,14 +759,50 @@ class DataFetcherManager:
                 preferred_adjustments=preferred_adjustments,
             )
             required = max(1, int(min_rows if min_rows is not None else days))
-            if frame.empty or len(frame) < required:
+            if frame.empty:
+                reject("no_cached_rows")
                 return None
-            last_date = pd.to_datetime(frame["date"], errors="coerce").max()
-            if pd.isna(last_date) or last_date.date() < requested_end - timedelta(days=7):
+            if len(frame) < required:
+                reject(f"insufficient_rows:{len(frame)}<{required}", observed_rows=len(frame))
+                return None
+            if "date" not in frame.columns:
+                reject("missing_columns:date", observed_rows=len(frame))
+                return None
+            parsed_dates = pd.to_datetime(frame["date"], errors="coerce")
+            if parsed_dates.isna().any():
+                reject("invalid_trade_date", observed_rows=len(frame))
+                return None
+            if (parsed_dates.dt.date > expected_completed_date).any():
+                reject("contains_future_or_incomplete_bar", observed_rows=len(frame))
+                return None
+            last_date = parsed_dates.max()
+            if pd.isna(last_date) or last_date.date() < expected_completed_date:
+                reject(
+                    f"stale_cache:last={getattr(last_date, 'date', lambda: None)()} expected={expected_completed_date}",
+                    observed_rows=len(frame),
+                )
+                return None
+            required_columns = ("open", "high", "low", "close", "volume")
+            missing_columns = [column for column in required_columns if column not in frame.columns]
+            if missing_columns:
+                reject(
+                    "missing_columns:" + ",".join(missing_columns),
+                    observed_rows=len(frame),
+                )
+                return None
+            normalized_required = frame.loc[:, required_columns].apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
+            if normalized_required.isna().any().any():
+                reject("missing_or_non_numeric_ohlcv", observed_rows=len(frame))
+                return None
+            if adjustment not in {"qfq", "auto_adjust", "none"}:
+                reject(f"unsupported_adjustment:{adjustment}", observed_rows=len(frame))
                 return None
             logger.info(
-                "[日线缓存命中] %s market=%s adjustment=%s rows=%s",
-                stock_code, market, adjustment, len(frame),
+                "[日线缓存命中] %s market=%s adjustment=%s rows=%s expected_completed_date=%s",
+                stock_code, market, adjustment, len(frame), expected_completed_date,
             )
             frame.attrs["adjustment"] = adjustment
             record_provider_run(

@@ -64,6 +64,16 @@ EASTMONEY_BROWSER_ENABLED=false
 
 当前超时保护属于调用预算上限；底层第三方库若不支持取消，超时后其后台调用可能短暂继续运行。优先使用 provider 自身的网络超时或可终止子进程实现硬取消。
 
+### 普通个股可选数据预算
+
+API 普通个股分析的基本面与市场结构等可选证据使用两层预算：基本面阶段按财务与治理优先级配置中的去重 provider 数量预留逐源收敛轮次，单来源使用 `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS`（默认 `8` 秒）；`STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS` 控制后续市场结构单个 provider，默认 `10` 秒；`STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS` 控制整段可选证据等待，默认 `90` 秒。每轮先检查 provider 是否启用、凭据和能力是否满足，不可用时记录 `skipped` 并立即进入下一来源；可用来源每轮只调用一个，高优先级字段不会被低优先级覆盖，后续结果只补缺失字段。仅超时、连接、限流和 5xx 等瞬时错误执行有界重试，配置、认证、校验和不支持错误不重试。总截止到达后保留已经取得且通过校验的数据，缺失部分明确标记为降级并继续生成报告，不会为凑齐策略结果补造输入。
+
+普通策略与交易员分析共享上述 `DataFetcherManager` 收敛实现，但任务实例和调用方总预算各自独立。普通策略优先复用当前 Pipeline 已收敛的不可变 `fundamental_context`，Specialist 不再为 `get_stock_info` 重复请求；没有 Pipeline 预取的独立 Agent 入口才使用 `AGENT_STOCK_INFO_TIMEOUT_SECONDS=60` 总兜底预算和 `AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS=8` 单来源预算。单个来源失败或耗尽预算不会阻断其余策略、综合决策和完整报告。
+
+每日大盘上下文同样保持有界：`DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS=120` 是个股分析等待实时上下文的总截止；内部的单 provider、单阶段和行情总览预算分别由 `MARKET_CONTEXT_PROVIDER_TIMEOUT_SECONDS=10`、`MARKET_CONTEXT_STAGE_TIMEOUT_SECONDS=12`、`MARKET_CONTEXT_OVERVIEW_TIMEOUT_SECONDS=48` 控制。扩大外层截止不会放大各内部请求到无上限。
+
+SerpAPI 的 socket/SDK 请求预算由 `SERPAPI_TIMEOUT_SECONDS=20` 控制，卡住 worker 的等待硬截止由 `SERPAPI_HARD_DEADLINE_SECONDS=20` 独立控制；两者均有范围校验，实际等待取更严格的界限。
+
 ## 质量排序与运行时排序
 
 跨市场的数据质量参考顺序为：
@@ -105,15 +115,25 @@ EASTMONEY_BROWSER_ENABLED=false
 | 重试基础退避秒数 | `DATA_PROVIDER_RETRY_BASE_DELAY_SECONDS` | `0.5` |
 | 重试最大退避秒数 | `DATA_PROVIDER_RETRY_MAX_DELAY_SECONDS` | `2` |
 | 单能力总预算 | `PROVIDER_LOOP_TOTAL_TIMEOUT_SECONDS` | `600` |
+| 普通个股可选数据单 provider 预算 | `STOCK_OPTIONAL_PROVIDER_TIMEOUT_SECONDS` | `10` |
+| 普通个股可选数据总截止 | `STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS` | `90` |
+| 每日大盘上下文总截止 | `DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS` | `120` |
+| 大盘上下文单 provider / 单阶段 / 总览预算 | `MARKET_CONTEXT_PROVIDER_TIMEOUT_SECONDS` / `MARKET_CONTEXT_STAGE_TIMEOUT_SECONDS` / `MARKET_CONTEXT_OVERVIEW_TIMEOUT_SECONDS` | `10` / `12` / `48` |
+| SerpAPI SDK 硬截止 | `SERPAPI_HARD_DEADLINE_SECONDS` | `20` |
 
 ## 历史日线本地存储
 
 - 标准化历史日线默认启用并存入独立 SQLite：`MARKET_DATA_CACHE_ENABLED=true`、`MARKET_DATA_DATABASE_PATH=./data/market_data.db`，与分析业务库分离，不按月拆库。
 - 非今日的日线请求优先读取本地库；缓存数量不足、日期覆盖不足或不存在时，才按 `DAILY_SOURCE_PRIORITY` 请求远程来源。
+- 本地日线只有在覆盖最新已完成交易日、满足请求行数、没有未来或未完成 bar、`open/high/low/close/volume` 均为有效数值且整段复权口径一致时才命中；任何一项不满足都会记录拒绝原因并进入远端 fallback。前复权、供应商自动复权与不复权序列不会混用。
 - 远程获取成功后仅将今日之前的数据幂等写入本地库；今日盘中数据保持临时状态，不固化为历史最终值。
 - 日线按 `market + symbol + adjustment + trade_date` 唯一保存，前复权、不复权及供应商自动复权序列不会静默混合。
 - 同一身份的数据发生变化时更新标准记录、增加 `revision`，并在 `daily_bar_observations` 保存本次插入或修订证据；完全相同的数据不重复写观察记录。
 - SQLite 启用 WAL、`busy_timeout` 与短写事务。后续达到明确容量或并发阈值时，可保持 Repository 接口不变迁移 PostgreSQL，或按年份/证券哈希分片；当前不采用月度文件分片。
+
+## 本地新闻复用
+
+普通策略分析、AI 问股和交易员分析继续共享同一个 provider-neutral `SearchService`，不为任一工作流维护偏置分支。个股新闻检索会先检查本地 `news_intel`，但只有精确 canonical 股票代码、发布时间位于当前策略窗口、标题/摘要/发布方完整、HTTP(S) URL 合法，并通过既有时效、语言、相关性和上下文准入，且至少有一条直接个股命中时才优先返回。缺少发布时间、时间越界、只有行业/宏观背景、URL 或来源无效时继续远端检索。无本地和远端数据时明确返回无可用新闻，不构造摘要或来源。
 
 ## 问财数据契约和边界
 

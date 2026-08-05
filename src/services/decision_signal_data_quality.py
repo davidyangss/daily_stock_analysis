@@ -78,7 +78,7 @@ def _explicit_quality_levels(value: Any) -> Iterable[DecisionSignalDataQuality]:
         if key in value:
             yield from _explicit_quality_levels(value.get(key))
 
-    for key in ("quote", "daily_bars", "technical"):
+    for key in ("quote", "daily_bars", "technical", "strategy_evidence"):
         if key in value:
             yield from _explicit_quality_levels(value.get(key))
 

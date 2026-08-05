@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from src.agent.evidence import format_strategy_evidence_markdown
 
 
 def _value(value: Any) -> str:
@@ -53,13 +54,17 @@ def render_analysis_result_markdown(result: Any) -> str:
 
     evidence = details.get("strategy_data_evidence")
     if evidence:
-        lines.extend([
-            "",
-            "## 策略数据证据",
-            "",
-            "```json",
-            json.dumps(evidence, ensure_ascii=False, indent=2),
-            "```",
-        ])
+        report_language = (
+            meta.get("report_language")
+            or report.get("report_language")
+            or payload.get("report_language")
+            or "zh"
+        )
+        rendered_evidence = format_strategy_evidence_markdown(
+            evidence,
+            str(report_language),
+        )
+        if rendered_evidence:
+            lines.extend(["", "## 策略数据证据", "", rendered_evidence])
     lines.extend(["", "> 本报告仅用于研究，不构成投资建议或交易指令。", ""])
     return "\n".join(lines)

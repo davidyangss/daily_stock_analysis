@@ -97,6 +97,8 @@ class BaseAgent(ABC):
         self,
         opinion: AgentOpinion,
         tool_calls_log: List[Dict[str, Any]],
+        *,
+        ctx: Optional[AgentContext] = None,
     ) -> AgentOpinion:
         """Attach deterministic tool evidence without trusting model-authored fields."""
         raw_data = dict(opinion.raw_data or {})
@@ -166,6 +168,7 @@ class BaseAgent(ABC):
                 opinion = self.attach_execution_evidence(
                     opinion,
                     loop_result.tool_calls_log,
+                    ctx=ctx,
                 )
                 self._apply_memory_calibration(ctx, opinion, result)
                 ctx.add_opinion(opinion)

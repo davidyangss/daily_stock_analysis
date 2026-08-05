@@ -63,6 +63,7 @@ from src.agent.final_explanation import (
 )
 from src.agent.evidence import (
     build_prefetched_context_evidence,
+    build_strategy_synthesis_from_manifest,
     build_strategy_evidence_manifest,
     collect_tool_evidence,
     merge_prefetched_evidence,
@@ -200,7 +201,7 @@ class StockAnalysisPipeline:
     # only to optional fundamental and market-structure enrichment.
     _API_FUNDAMENTAL_BUDGET_SECONDS = 30.0
     _API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS = 10.0
-    _API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS = 45.0
+    _API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS = 90.0
     _API_OPTIONAL_EVIDENCE_SLOTS = threading.BoundedSemaphore(2)
     
     def __init__(
@@ -275,6 +276,9 @@ class StockAnalysisPipeline:
                 brave_keys=self.config.brave_api_keys,
                 serpapi_keys=self.config.serpapi_keys,
                 serpapi_timeout_seconds=getattr(self.config, "serpapi_timeout_seconds", 20),
+                serpapi_hard_deadline_seconds=getattr(
+                    self.config, "serpapi_hard_deadline_seconds", 20.0
+                ),
                 minimax_keys=self.config.minimax_api_keys,
                 searxng_base_urls=self.config.searxng_base_urls,
                 searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
@@ -1121,7 +1125,36 @@ class StockAnalysisPipeline:
         except (TypeError, ValueError):
             budget = FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT
         if getattr(self, "query_source", None) == "api":
-            return min(budget, self._API_FUNDAMENTAL_BUDGET_SECONDS)
+            # Match Trader Analysis' sequential convergence semantics.  Size
+            # this stage for one valuation round plus every configured source;
+            # unavailable sources are skipped without consuming their slice.
+            configured_sources: List[str] = []
+            for priority in (
+                getattr(self.config, "financial_source_priority", ""),
+                getattr(self.config, "governance_source_priority", ""),
+            ):
+                for source in str(priority or "").split(","):
+                    normalized = source.strip().lower()
+                    if normalized and normalized not in configured_sources:
+                        configured_sources.append(normalized)
+            per_provider = max(
+                0.0,
+                float(getattr(
+                    self.config,
+                    "fundamental_fetch_timeout_seconds",
+                    FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
+                )),
+            )
+            convergence_budget = per_provider * (max(1, len(configured_sources)) + 1)
+            optional_deadline = max(
+                0.0,
+                float(getattr(
+                    self.config,
+                    "stock_optional_evidence_timeout_seconds",
+                    self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS,
+                )),
+            )
+            return min(optional_deadline, max(budget, convergence_budget))
         return budget
 
     def _build_optional_evidence_context(
@@ -1139,7 +1172,13 @@ class StockAnalysisPipeline:
         holder = result_holder if isinstance(result_holder, dict) else {}
         deadline = None
         if getattr(self, "query_source", None) == "api":
-            deadline = time.monotonic() + self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS
+            deadline = time.monotonic() + float(
+                getattr(
+                    self.config,
+                    "stock_optional_evidence_timeout_seconds",
+                    self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS,
+                )
+            )
         fundamental_budget = self._fundamental_stage_budget_seconds()
         if deadline is not None:
             fundamental_budget = min(
@@ -1169,7 +1208,11 @@ class StockAnalysisPipeline:
             fundamental_context,
             deadline=deadline,
             provider_timeout_seconds=(
-                self._API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS
+                float(getattr(
+                    self.config,
+                    "stock_optional_provider_timeout_seconds",
+                    self._API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS,
+                ))
                 if deadline is not None else None
             ),
         )
@@ -1255,11 +1298,16 @@ class StockAnalysisPipeline:
         except BaseException:
             self._API_OPTIONAL_EVIDENCE_SLOTS.release()
             raise
-        if not completed.wait(timeout=self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS):
+        evidence_timeout = float(getattr(
+            self.config,
+            "stock_optional_evidence_timeout_seconds",
+            self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS,
+        ))
+        if not completed.wait(timeout=evidence_timeout):
             logger.warning(
                 "%s API 可选基本面与市场结构超过整体截止时间 %.0f 秒，策略分析立即继续",
                 code,
-                self._API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS,
+                evidence_timeout,
             )
             fundamental = result_holder.get("fundamental_context")
             if not isinstance(fundamental, dict):
@@ -1818,6 +1866,12 @@ class StockAnalysisPipeline:
                     )
                     if strategy_evidence is not None:
                         dashboard["strategy_data_evidence"] = strategy_evidence
+                        if not isinstance(dashboard.get("strategy_synthesis"), dict):
+                            strategy_synthesis = build_strategy_synthesis_from_manifest(
+                                strategy_evidence
+                            )
+                            if strategy_synthesis is not None:
+                                dashboard["strategy_synthesis"] = strategy_synthesis
                 analysis_context_pack_overview = reconcile_agent_analysis_context_overview(
                     analysis_context_pack_overview,
                     strategy_evidence,

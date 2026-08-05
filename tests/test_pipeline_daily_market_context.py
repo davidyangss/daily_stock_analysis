@@ -355,6 +355,21 @@ def test_non_api_optional_evidence_keeps_configured_budget() -> None:
     assert pipeline._fundamental_stage_budget_seconds() == 240.0
 
 
+def test_api_fundamental_budget_covers_each_configured_provider_once() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = SimpleNamespace(
+        fundamental_stage_timeout_seconds=30.0,
+        fundamental_fetch_timeout_seconds=8.0,
+        financial_source_priority="iwencai,tushare,akshare_em",
+        governance_source_priority="tushare,iwencai",
+        stock_optional_evidence_timeout_seconds=90.0,
+    )
+    pipeline.query_source = "api"
+
+    # Three unique configured providers plus the bounded valuation round.
+    assert pipeline._fundamental_stage_budget_seconds() == 32.0
+
+
 def test_pipeline_uses_market_phase_effective_date_for_daily_market_context() -> None:
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     phase_context = SimpleNamespace(

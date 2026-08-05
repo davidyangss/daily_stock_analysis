@@ -1604,6 +1604,39 @@ def test_reassess_success_preview_is_read_only_and_uses_opaque_metadata(client_a
     assert _decision_signal_count(db) == before
 
 
+def test_reassess_downgrades_buy_when_strategy_inputs_are_insufficient(client_and_db) -> None:
+    client, db = client_and_db
+    raw = _valid_reassess_raw()
+    raw["dashboard"]["strategy_data_evidence"] = {
+        "schema_version": "strategy-evidence-v1",
+        "status": "insufficient",
+        "verification_scope": "required_inputs",
+        "selected_strategies": [
+            {"skill_id": "box_oscillation", "skill_name": "箱体震荡"}
+        ],
+    }
+    record_id = _save_reassess_history(
+        db,
+        raw_result=raw,
+        context_snapshot=_valid_reassess_context(),
+    )
+
+    response = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "balanced", "persist": False},
+    )
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["preview"]
+    guardrail = preview["metadata"]["guardrail_result"]
+    assert preview["action"] == "watch"
+    assert preview["metadata"]["data_quality_level"] == "poor"
+    assert preview["metadata"]["strategy_input_status"] == "insufficient"
+    assert preview["metadata"]["strategy_verification_scope"] == "required_inputs"
+    assert guardrail["raw_action"] == "buy"
+    assert "insufficient_data_quality" in guardrail["violations"]
+
+
 def test_reassess_preview_prefers_stability_adjusted_score(client_and_db) -> None:
     client, db = client_and_db
     raw_result = _valid_reassess_raw(

@@ -83,6 +83,69 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         kwargs = mock_search.call_args[1]
         self.assertEqual(kwargs["days"], 3)
 
+    def test_eligible_local_stock_news_prevents_remote_request(self) -> None:
+        service, mock_search = self._create_service_with_mock_provider()
+        local_row = SimpleNamespace(
+            published_date=datetime.now(),
+            title="贵州茅台 600519 发布经营公告",
+            snippet="贵州茅台公告披露本期经营数据。",
+            url="https://example.com/600519-announcement",
+            source="example.com",
+        )
+        db = SimpleNamespace(get_recent_news=MagicMock(return_value=[local_row]))
+
+        with patch("src.storage.get_db", return_value=db):
+            response = service.search_stock_news("600519", "贵州茅台", max_results=5)
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.provider, "local_news_db")
+        self.assertEqual([item.title for item in response.results], [local_row.title])
+        db.get_recent_news.assert_called_once()
+        self.assertEqual(db.get_recent_news.call_args.args[0], "600519")
+        mock_search.assert_not_called()
+
+    def test_ineligible_local_news_continues_to_remote_provider(self) -> None:
+        invalid_rows = [
+            SimpleNamespace(
+                published_date=None,
+                title="贵州茅台 600519 新闻",
+                snippet="缺少发布时间。",
+                url="https://example.com/no-date",
+                source="example.com",
+            ),
+            SimpleNamespace(
+                published_date=datetime.now(),
+                title="贵州茅台 600519 新闻",
+                snippet="URL 不可验证。",
+                url="javascript:alert(1)",
+                source="example.com",
+            ),
+            SimpleNamespace(
+                published_date=datetime.now(),
+                title="白酒行业景气观察",
+                snippet="行业层面的宏观背景，不含目标公司。",
+                url="https://example.com/industry-only",
+                source="example.com",
+            ),
+        ]
+        for local_row in invalid_rows:
+            with self.subTest(title=local_row.title, url=local_row.url):
+                service, mock_search = self._create_service_with_mock_provider(
+                    response=_response([
+                        _result(
+                            "贵州茅台 600519 远端公告",
+                            datetime.now().date().isoformat(),
+                            snippet="贵州茅台披露最新公告。",
+                        )
+                    ])
+                )
+                db = SimpleNamespace(get_recent_news=MagicMock(return_value=[local_row]))
+                with patch("src.storage.get_db", return_value=db):
+                    response = service.search_stock_news("600519", "贵州茅台", max_results=5)
+
+                self.assertNotEqual(response.provider, "local_news_db")
+                mock_search.assert_called_once()
+
     def test_invalid_profile_falls_back_to_short(self) -> None:
         """Invalid profile should fallback to short (3 days)."""
         service, mock_search = self._create_service_with_mock_provider(

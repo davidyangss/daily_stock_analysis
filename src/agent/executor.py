@@ -157,7 +157,15 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "strongest_bearish_signal": "最强看空信号名称"
         }},
         "skill_assessment": {{
-            "<activated_skill_id>": "该策略基于自身依赖输入得出的联合评估结论、关键依据与数据限制"
+            "<activated_skill_id>": {{
+                "joint_assessment": "仅基于该策略自身规则与依赖输入的结论",
+                "signal": "strong_buy|buy|hold|sell|strong_sell",
+                "confidence": 0.0,
+                "decisive_evidence": [{{"tool": "该策略声明的工具名", "fields": ["实际返回字段"], "summary": "字段如何支持结论"}}],
+                "conditions_met": ["已满足条件"],
+                "conditions_missed": ["未满足条件"],
+                "limitations": ["缺失或降级数据限制"]
+            }}
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -223,7 +231,7 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 激活一个或多个交易技能时，必须输出 `dashboard.skill_assessment`；以每个激活技能的精确 ID 为键逐项给出联合评估，不得遗漏、合并为一条综合结论或复制总体结论。每项必须引用该技能自身所依赖的已获取输入，并明确缺失/降级输入带来的限制。
+- 激活一个或多个交易技能时，必须输出 `dashboard.skill_assessment`；以每个激活技能的精确 ID 为键逐项输出对象，不得遗漏、合并或复制总体结论。每项必须包含 `joint_assessment`、五态 `signal`、0-1 `confidence`、结构化 `decisive_evidence`、`conditions_met`、`conditions_missed`、`limitations`。`decisive_evidence.tool` 只能引用该策略声明的依赖工具，`fields` 只能填写该工具本次真实返回且非空的字段；没有数据时写入 limitations/conditions_missed，不得补造字段或结论。完成各策略独立评估后，才可汇总总体结论。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
@@ -320,7 +328,15 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "strongest_bearish_signal": "最强看空信号名称"
         }},
         "skill_assessment": {{
-            "<activated_skill_id>": "该策略基于自身依赖输入得出的联合评估结论、关键依据与数据限制"
+            "<activated_skill_id>": {{
+                "joint_assessment": "仅基于该策略自身规则与依赖输入的结论",
+                "signal": "strong_buy|buy|hold|sell|strong_sell",
+                "confidence": 0.0,
+                "decisive_evidence": [{{"tool": "该策略声明的工具名", "fields": ["实际返回字段"], "summary": "字段如何支持结论"}}],
+                "conditions_met": ["已满足条件"],
+                "conditions_missed": ["未满足条件"],
+                "limitations": ["缺失或降级数据限制"]
+            }}
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -383,7 +399,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 激活一个或多个交易技能时，必须输出 `dashboard.skill_assessment`；以每个激活技能的精确 ID 为键逐项给出联合评估，不得遗漏、合并为一条综合结论或复制总体结论。每项必须引用该技能自身所依赖的已获取输入，并明确缺失/降级输入带来的限制。
+- 激活一个或多个交易技能时，必须输出 `dashboard.skill_assessment`；以每个激活技能的精确 ID 为键逐项输出对象，不得遗漏、合并或复制总体结论。每项必须包含 `joint_assessment`、五态 `signal`、0-1 `confidence`、结构化 `decisive_evidence`、`conditions_met`、`conditions_missed`、`limitations`。`decisive_evidence.tool` 只能引用该策略声明的依赖工具，`fields` 只能填写该工具本次真实返回且非空的字段；没有数据时写入 limitations/conditions_missed，不得补造字段或结论。完成各策略独立评估后，才可汇总总体结论。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}

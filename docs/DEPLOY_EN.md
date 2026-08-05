@@ -215,6 +215,12 @@ journalctl -u stock-analyzer -f
 | `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
 | `SERPAPI_TIMEOUT_SECONDS` | `20` | Primary SerpAPI search request timeout in seconds (range `1-300`) |
+| `SERPAPI_HARD_DEADLINE_SECONDS` | `20` | Hard worker deadline when the SerpAPI SDK stalls (range `1-300`) |
+| `DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS` | `120` | Overall stock-analysis wait deadline for live daily market context |
+| `STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS` | `90` | Overall optional-evidence deadline for ordinary API stock analysis |
+| `AGENT_SKILL_AGENT_TIMEOUT_S` | `120` | Independent cap for one ordinary strategy Specialist; timeout degrades and the report continues |
+| `AGENT_STOCK_INFO_TIMEOUT_SECONDS` | `60` | Ordinary Agent stock-info total budget; Trader Analysis is unaffected |
+| `AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS` | `8` | Per-provider budget inside the ordinary Agent stock-info tool |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 

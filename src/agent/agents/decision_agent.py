@@ -47,6 +47,8 @@ Requirements:
 - Use Markdown when helpful
 - Keep the response practical and specific
 - Highlight the main signal, key reasoning, and major risks
+- Keep each selected strategy's opinion separate before discussing consensus
+- State missing or degraded inputs explicitly; never infer or invent unavailable data
 - Do NOT output JSON or code fences unless the user explicitly asks for them
 """
             if report_language == "en":
@@ -134,10 +136,14 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 
 When one or more trading skills are active, the nested ``dashboard`` object
 must include ``skill_assessment``. It must be an object keyed by every exact
-active skill ID. Each value must separately state that skill's joint assessment,
-the decisive evidence from the inputs required by that skill, and limitations
-caused by missing or degraded inputs. Do not omit an active skill, merge several
-skills into one assessment, or copy the overall conclusion as a substitute.
+active skill ID. Each value must be an object containing ``joint_assessment``,
+``signal``, ``confidence``, ``decisive_evidence``, ``conditions_met``,
+``conditions_missed``, and ``limitations``. Each ``decisive_evidence`` entry
+must name one tool declared by that strategy and list only non-empty fields
+actually returned by that tool. Missing data belongs in limitations and must
+never be invented. Evaluate strategies independently first, then synthesize the
+overall decision. Do not omit an active skill, merge several skills into one
+assessment, or copy the overall conclusion as a substitute.
 """
         if report_language == "en":
             return prompt + """

@@ -948,6 +948,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Agent 分析的最大等待时间。'],
     notes: ['超时不影响其他股票的分析流程。'],
   },
+  'settings.agent.AGENT_RUNTIME_TIMEOUTS': {
+    title: '策略 Agent 分层超时',
+    summary: '限制普通策略 Specialist 和 get_stock_info 的等待时间，不改变交易员分析独立工作流。',
+    usage: 'AGENT_SKILL_AGENT_TIMEOUT_S 限制单个策略专家；AGENT_STOCK_INFO_TIMEOUT_SECONDS 是基本信息工具总预算；AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS 是其中单来源预算。',
+    valueNotes: [
+      '策略专家默认 120 秒，超时后记录失败诊断并继续综合与决策。',
+      '基本信息工具默认总预算 60 秒、单来源预算 8 秒；已取得数据保留，缺失字段明确展示。',
+    ],
+    impact: ['影响普通策略分析的最坏等待时间和可选基本面覆盖率。'],
+    notes: ['不会改写共享 Provider 顺序，也不会向缺失字段填入推测值。'],
+  },
   'settings.agent.AGENT_SKILL_CONCURRENCY': {
     title: '策略专家并发数',
     summary: '控制 specialist 模式下最多同时运行多少个策略专家 Agent。',
@@ -2152,6 +2163,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects the maximum wait time for Agent analysis.'],
     notes: ['Timeout does not affect other stocks in the analysis pipeline.'],
+  },
+  'settings.agent.AGENT_RUNTIME_TIMEOUTS': {
+    title: 'Layered Strategy Agent Timeouts',
+    summary: 'Bounds ordinary strategy Specialists and get_stock_info without changing the independent Trader Analysis workflow.',
+    usage: 'AGENT_SKILL_AGENT_TIMEOUT_S caps one Specialist; AGENT_STOCK_INFO_TIMEOUT_SECONDS is the stock-info total budget; AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS is its per-provider slice.',
+    valueNotes: [
+      'The default Specialist cap is 120 seconds; timeout is recorded as diagnostics and synthesis continues.',
+      'Stock info defaults to a 60-second total and an 8-second provider slice; collected data is retained and missing fields remain explicit.',
+    ],
+    impact: ['Affects ordinary strategy worst-case latency and optional fundamental coverage.'],
+    notes: ['It does not reorder shared providers or fill missing fields with inferred values.'],
   },
   'settings.agent.AGENT_SKILL_CONCURRENCY': {
     title: 'Strategy Skill Concurrency',

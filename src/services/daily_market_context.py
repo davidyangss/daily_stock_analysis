@@ -92,7 +92,7 @@ class DailyMarketContextService:
     # Market context enriches a stock report but is not required to generate
     # it.  Bound the whole live-generation path (providers, search, LLM and
     # lock acquisition) so any one dependency cannot pin the stock pipeline.
-    _GENERATION_DEADLINE_SECONDS = 60.0
+    _GENERATION_DEADLINE_SECONDS = 120.0
     _GENERATION_SLOTS = threading.BoundedSemaphore(1)
 
     def __init__(
@@ -272,10 +272,16 @@ class DailyMarketContextService:
             name="daily-market-context-generation",
         )
         worker.start()
-        if not completed.wait(timeout=self._GENERATION_DEADLINE_SECONDS):
+        config = kwargs.get("config")
+        generation_timeout = float(getattr(
+            config,
+            "daily_market_context_timeout_seconds",
+            self._GENERATION_DEADLINE_SECONDS,
+        ))
+        if not completed.wait(timeout=generation_timeout):
             logger.warning(
                 "大盘复盘上下文生成超过整体截止时间 %.0f 秒，个股分析立即降级继续",
-                self._GENERATION_DEADLINE_SECONDS,
+                generation_timeout,
             )
             return None
 

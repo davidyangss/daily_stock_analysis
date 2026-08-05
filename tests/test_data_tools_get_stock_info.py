@@ -15,6 +15,8 @@ from src.agent.tools.data_tools import _handle_get_stock_info
 
 class _DummyManager:
     def __init__(self):
+        self.fundamental_budget = None
+        self.belong_kwargs = {}
         self._context = {
             "market": "cn",
             "status": "partial",
@@ -55,17 +57,23 @@ class _DummyManager:
         }
         self._belong_boards = [{"name": "白酒"}, {"name": "消费"}]
 
-    def get_fundamental_context(self, _stock_code: str):
+    def get_fundamental_context(self, _stock_code: str, budget_seconds=None):
+        self.fundamental_budget = budget_seconds
         return self._context
 
     def build_failed_fundamental_context(self, _stock_code: str, _reason: str):
         return {}
 
-    def get_belong_boards(self, _stock_code: str):
+    def get_belong_boards(self, _stock_code: str, **kwargs):
+        self.belong_kwargs = kwargs
         return self._belong_boards
 
-    def get_stock_name(self, _stock_code: str):
+    def get_stock_name(self, _stock_code: str, allow_realtime=True):
         return "贵州茅台"
+
+    @staticmethod
+    def _run_with_timeout(task, _timeout_seconds, _task_name):
+        return task(), None, 0
 
 
 class TestGetStockInfoContract(unittest.TestCase):
@@ -78,6 +86,15 @@ class TestGetStockInfoContract(unittest.TestCase):
         self.assertEqual(result["code"], "600519")
         self.assertEqual(result["pe_ratio"], 12.3)
         self.assertEqual(result["pb_ratio"], 2.1)
+        self.assertEqual(result["status"], "partial")
+        total_budget = result["timeout_budget"]["total_seconds"]
+        self.assertGreater(manager.fundamental_budget, 0)
+        self.assertLess(manager.fundamental_budget, total_budget)
+        self.assertLessEqual(manager.belong_kwargs["provider_timeout_seconds"], 8)
+        self.assertLessEqual(
+            manager.belong_kwargs["total_timeout_seconds"],
+            total_budget - manager.fundamental_budget,
+        )
 
         # Contract: boards is compatibility alias of belong_boards.
         self.assertEqual(result["belong_boards"], manager._belong_boards)
@@ -127,6 +144,26 @@ class TestGetStockInfoContract(unittest.TestCase):
         self.assertEqual(result["net_profit_yoy"], 18.2)
         self.assertEqual(result["roe"], 12.6)
         self.assertEqual(result["gross_margin"], 46.8)
+        self.assertEqual(result["missing_fields"], [])
+        self.assertEqual(result["status"], "available")
+
+    def test_get_stock_info_reports_missing_fields_without_inventing_values(self) -> None:
+        manager = _DummyManager()
+        manager._context["status"] = "failed"
+        manager._context["valuation"] = {"status": "failed", "data": {}}
+        manager._context["growth"] = {"status": "failed", "data": {}}
+        manager._context["boards"] = {"status": "failed", "data": {}}
+        manager._belong_boards = []
+        manager.get_realtime_quote = lambda _code: None
+
+        with patch("src.agent.tools.data_tools._get_fetcher_manager", return_value=manager):
+            result = _handle_get_stock_info("600519")
+
+        self.assertEqual(result["status"], "missing")
+        self.assertIsNone(result["pe_ratio"])
+        self.assertIsNone(result["revenue_yoy"])
+        self.assertIn("pe_ratio", result["missing_fields"])
+        self.assertTrue(result["data_limitations"])
 
 
 if __name__ == "__main__":

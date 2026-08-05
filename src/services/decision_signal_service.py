@@ -1051,6 +1051,23 @@ class DecisionSignalService:
                 type(exc).__name__,
             )
             return {"metadata_replaced_due_to_invalid_json": True}
+        # Python's JSON decoder may accept extremely deep arrays without
+        # raising RecursionError.  Do not carry such payloads into a metadata
+        # update: later sanitization/serialization is recursive and can fail
+        # or consume disproportionate resources.
+        stack = [(value, 0)]
+        while stack:
+            current, depth = stack.pop()
+            if depth > 100:
+                logger.warning(
+                    "Replacing over-deep decision signal metadata during invalidation: id=%s",
+                    row.id,
+                )
+                return {"metadata_replaced_due_to_invalid_json": True}
+            if isinstance(current, dict):
+                stack.extend((item, depth + 1) for item in current.values())
+            elif isinstance(current, (list, tuple)):
+                stack.extend((item, depth + 1) for item in current)
         if isinstance(value, dict):
             return dict(value)
         return {"metadata_replaced_due_to_non_object": True}

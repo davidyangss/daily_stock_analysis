@@ -20,13 +20,52 @@ from src.agent.evidence import (
     summarize_tool_result,
     merge_prefetched_evidence,
 )
-from src.agent.protocols import AgentOpinion
+from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
 from src.agent.skills.skill_agent import SkillAgent
 from src.notification import _append_strategy_data_evidence_block
 
 
 class TestToolEvidence(unittest.TestCase):
+    def test_complete_stock_info_metrics_override_broad_partial_context(self) -> None:
+        evidence = summarize_tool_result(
+            "get_stock_info",
+            {
+                "status": "partial",
+                "pe_ratio": 17.12,
+                "pb_ratio": 2.56,
+                "revenue_yoy": 34.46,
+                "net_profit_yoy": 0.89,
+                "roe": 1.84,
+                "gross_margin": 26.24,
+                "data_limitations": ["belong_boards unavailable"],
+            },
+            execution_success=True,
+        )
+
+        self.assertEqual(evidence["status"], "available")
+        self.assertFalse(evidence["partial"])
+        self.assertEqual(evidence["missing_fields"], [])
+
+    def test_incomplete_stock_info_metrics_remain_partial(self) -> None:
+        evidence = summarize_tool_result(
+            "get_stock_info",
+            {
+                "status": "partial",
+                "pe_ratio": 17.12,
+                "pb_ratio": 2.56,
+                "revenue_yoy": 34.46,
+                "net_profit_yoy": 0.89,
+                "roe": 1.84,
+                "gross_margin": None,
+            },
+            execution_success=True,
+        )
+
+        self.assertEqual(evidence["status"], "partial")
+        self.assertTrue(evidence["partial"])
+        self.assertEqual(evidence["missing_fields"], ["gross_margin"])
+
     def test_large_numeric_metrics_use_thousands_separators(self) -> None:
         evidence = summarize_tool_result(
             "get_daily_history",
@@ -184,12 +223,63 @@ class TestToolEvidence(unittest.TestCase):
         self.assertEqual(requirement["missing_tools"], [])
         self.assertEqual(requirement["limited_tools"], ["get_stock_info"])
         self.assertEqual(requirement["evidence"][0]["status"], "partial")
-        self.assertEqual(merged["strategy_evaluations"][0]["status"], "completed")
+        self.assertEqual(merged["strategy_evaluations"][0]["status"], "invalid")
         self.assertEqual(merged["strategy_evaluations"][0]["evidence_status"], "limited")
         self.assertEqual(merged["status"], "limited")
         self.assertEqual(
             merged["limitations"],
             ["expectation_repricing: required data degraded (get_stock_info)"],
+        )
+
+    def test_merge_does_not_use_another_strategy_same_tool_result(self) -> None:
+        missing = summarize_tool_result(
+            "get_realtime_quote",
+            {"status": "missing", "missing_reason": "required_tool_not_called"},
+            execution_success=True,
+        )
+        available = summarize_tool_result(
+            "get_realtime_quote",
+            {"price": 12.34, "source": "runtime"},
+            execution_success=True,
+        )
+        manifest = {
+            "schema_version": "strategy-evidence-v1",
+            "status": "insufficient",
+            "items": [dict(missing), dict(available)],
+            "strategy_requirements": [
+                {
+                    "skill_id": "strategy_a",
+                    "status": "insufficient",
+                    "missing_tools": ["get_realtime_quote"],
+                    "limited_tools": [],
+                    "evidence": [dict(missing)],
+                },
+                {
+                    "skill_id": "strategy_b",
+                    "status": "verified",
+                    "missing_tools": [],
+                    "limited_tools": [],
+                    "evidence": [dict(available)],
+                },
+            ],
+            "strategy_evaluations": [],
+            "limitations": [],
+        }
+
+        merged = merge_prefetched_evidence(manifest, [])
+        requirements = {
+            item["skill_id"]: item for item in merged["strategy_requirements"]
+        }
+
+        self.assertEqual(requirements["strategy_a"]["status"], "insufficient")
+        self.assertEqual(
+            requirements["strategy_a"]["evidence"][0]["status"],
+            "missing",
+        )
+        self.assertEqual(requirements["strategy_b"]["status"], "verified")
+        self.assertEqual(
+            requirements["strategy_b"]["evidence"][0]["status"],
+            "available",
         )
 
     def test_available_quote_keeps_source_and_key_values(self) -> None:
@@ -397,6 +487,32 @@ class TestSkillEvidenceContract(unittest.TestCase):
         self.assertEqual(opinion.raw_data["evidence_status"], "insufficient")
         self.assertEqual(opinion.raw_data["missing_required_tools"], ["search_stock_news"])
 
+    def test_uncalled_fundamental_tool_lists_each_required_metric(self) -> None:
+        agent = self._agent(["get_stock_info"])
+
+        opinion = agent.attach_execution_evidence(
+            AgentOpinion(agent_name="skill_test_skill", signal="hold", confidence=0.4),
+            [],
+        )
+
+        evidence = opinion.raw_data["required_tool_evidence"][0]
+        self.assertEqual(evidence["status"], "missing")
+        self.assertEqual(evidence["data_description"], "股票基础资料与基本面")
+        self.assertEqual(
+            [item["label"] for item in evidence["metric_details"]],
+            [
+                "市盈率（PE）",
+                "市净率（PB）",
+                "营收同比增长率",
+                "净利润同比增长率",
+                "净资产收益率（ROE）",
+                "毛利率",
+            ],
+        )
+        self.assertTrue(all(
+            item["status"] == "missing" for item in evidence["metric_details"]
+        ))
+
     def test_degraded_required_tool_keeps_vote_but_marks_limited(self) -> None:
         agent = self._agent(["get_daily_history"])
         opinion = agent.attach_execution_evidence(
@@ -422,8 +538,70 @@ class TestSkillEvidenceContract(unittest.TestCase):
         self.assertEqual(result.status, StrategyResultStatus.CONSENSUS)
         self.assertEqual(len(result.valid_skill_opinions), 1)
 
+    def test_prefetched_fundamentals_satisfy_specialist_without_second_call(self) -> None:
+        agent = self._agent(["get_stock_info", "search_stock_news"])
+        ctx = AgentContext(query="分析 600519", stock_code="600519")
+        ctx.set_data("fundamental_context", {
+            "status": "partial",
+            "source_chain": [{"provider": "iwencai", "result": "ok"}],
+            "valuation": {"status": "ok", "data": {"pe_ratio": 18.5}},
+            "growth": {"status": "partial", "data": {"revenue_yoy": None}},
+        })
+
+        prompt = agent.system_prompt(ctx)
+        opinion = agent.attach_execution_evidence(
+            AgentOpinion(
+                agent_name="skill_test_skill",
+                signal="hold",
+                confidence=0.5,
+            ),
+            [],
+            ctx=ctx,
+        )
+
+        self.assertIn("do not call them again: get_stock_info", prompt)
+        self.assertIn("Call each still-unresolved required tool once: search_stock_news", prompt)
+        evidence_by_tool = {
+            item["tool"]: item for item in opinion.raw_data["required_tool_evidence"]
+        }
+        self.assertTrue(evidence_by_tool["get_stock_info"]["prefetched"])
+        self.assertEqual(evidence_by_tool["get_stock_info"]["status"], "partial")
+        self.assertNotIn("get_stock_info", opinion.raw_data["missing_required_tools"])
+        self.assertIn("get_stock_info", opinion.raw_data["limited_required_tools"])
+        self.assertIn("search_stock_news", opinion.raw_data["missing_required_tools"])
+
 
 class TestStrategyEvidenceManifest(unittest.TestCase):
+    def test_consensus_opinion_is_not_projected_as_selected_strategy(self) -> None:
+        selected = [{"skill_id": "box_oscillation", "skill_name": "箱体震荡"}]
+        specialist = AgentOpinion(
+            agent_name="skill_box_oscillation",
+            signal="hold",
+            confidence=0.6,
+            reasoning="箱体仍待确认。",
+            raw_data={"evidence_status": "verified"},
+        )
+        consensus = AgentOpinion(
+            agent_name="skill_consensus",
+            signal="hold",
+            confidence=0.6,
+            reasoning="deterministic aggregate",
+            raw_data={"strategy_synthesis": {"final_signal": "hold"}},
+        )
+
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=[],
+            opinions=[specialist, consensus],
+            invalid_records=[],
+            selected_strategies=selected,
+        )
+
+        self.assertEqual(manifest["selected_strategies"], selected)
+        self.assertEqual(
+            [item["skill_id"] for item in manifest["strategy_evaluations"]],
+            ["box_oscillation"],
+        )
+
     def test_joint_strategy_assessments_expose_each_declared_input(self) -> None:
         tool_evidence = [
             {
@@ -432,7 +610,13 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
                 "sources": ["runtime"],
                 "cached": False,
                 "partial": status == "partial",
-                "key_values": {},
+                "key_values": {
+                    "get_daily_history": {"latest_close": 10.2},
+                    "analyze_trend": {"ma20": 9.8},
+                    "get_realtime_quote": {"price": 10.2},
+                    "search_stock_news": {"record_count": 3},
+                    "get_stock_info": {"pe_ratio": 18.0},
+                }[tool],
             }
             for tool, status in (
                 ("get_daily_history", "available"),
@@ -467,11 +651,43 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
             joint_strategy_assessments={
                 "box_oscillation": {
                     "joint_assessment": "箱体边界触碰次数不足。",
-                    "decisive_evidence": ["现价接近支撑。"],
-                    "limitations": "缺少完整触碰次数。",
+                    "signal": "hold",
+                    "confidence": 0.55,
+                    "decisive_evidence": [{
+                        "tool": "get_realtime_quote",
+                        "fields": ["price"],
+                        "summary": "现价接近支撑。",
+                    }],
+                    "conditions_met": ["现价接近支撑。"],
+                    "conditions_missed": ["触碰次数不足。"],
+                    "limitations": ["缺少完整触碰次数。"],
                 },
-                "emotion_cycle": "换手率处于正常区间。",
-                "expectation_repricing": "盈利预期仍在下修。",
+                "emotion_cycle": {
+                    "joint_assessment": "情绪强度一般。",
+                    "signal": "hold",
+                    "confidence": 0.5,
+                    "decisive_evidence": [{
+                        "tool": "search_stock_news",
+                        "fields": ["record_count"],
+                        "summary": "取得三条直接相关新闻。",
+                    }],
+                    "conditions_met": ["存在可核验新闻"],
+                    "conditions_missed": ["换手强度不足"],
+                    "limitations": [],
+                },
+                "expectation_repricing": {
+                    "joint_assessment": "盈利预期仍在下修。",
+                    "signal": "sell",
+                    "confidence": 0.62,
+                    "decisive_evidence": [{
+                        "tool": "get_stock_info",
+                        "fields": ["pe_ratio"],
+                        "summary": "估值字段仅部分可用。",
+                    }],
+                    "conditions_met": [],
+                    "conditions_missed": ["缺少完整盈利增速"],
+                    "limitations": ["基本面输入部分可用"],
+                },
             },
         )
 
@@ -482,8 +698,8 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         self.assertEqual(evaluations["box_oscillation"]["evaluation_mode"], "joint")
         self.assertEqual(evaluations["box_oscillation"]["reasoning"], "箱体边界触碰次数不足。")
         self.assertEqual(evaluations["box_oscillation"]["conditions_met"], ["现价接近支撑。"])
-        self.assertEqual(evaluations["box_oscillation"]["conditions_missed"], ["缺少完整触碰次数。"])
-        self.assertEqual(evaluations["emotion_cycle"]["reasoning"], "换手率处于正常区间。")
+        self.assertEqual(evaluations["box_oscillation"]["conditions_missed"], ["触碰次数不足。"])
+        self.assertEqual(evaluations["emotion_cycle"]["reasoning"], "情绪强度一般。")
         self.assertEqual(evaluations["expectation_repricing"]["evidence_status"], "limited")
 
         requirements = {
@@ -570,12 +786,15 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         rendered = format_strategy_evidence_markdown(manifest, "zh")
         self.assertIn("所选策略", rendered)
         self.assertIn("成长质量策略", rendered)
-        self.assertIn("策略判定结果", rendered)
-        self.assertIn("买入 / 82%", rendered)
-        self.assertIn("满足条件: 营收同比增长超过 20%", rendered)
+        self.assertIn("策略分析输出", rendered)
+        self.assertIn("| 已完成 | 买入 | 82% |", rendered)
+        self.assertIn("| 条件状态 | 判定条件 |", rendered)
+        self.assertIn("| 满足条件 | 营收同比增长超过 20% |", rendered)
         self.assertIn("营收和利润增速匹配成长质量条件", rendered)
+        self.assertIn("策略分析输入数据", rendered)
         self.assertIn("综合判定", rendered)
-        self.assertIn("get_stock_info", rendered)
+        self.assertIn("基本信息获取", rendered)
+        self.assertNotIn("`get_stock_info`", rendered)
 
     def test_selected_strategy_without_specialist_opinion_uses_overall_decision_only(self) -> None:
         manifest = build_strategy_evidence_manifest(
@@ -668,9 +887,14 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
         _append_strategy_data_evidence_block(lines, manifest, "zh")
         rendered = "\n".join(lines)
         self.assertIn("策略关键数据与来源", rendered)
-        self.assertIn("#### 数据获取概览", rendered)
+        self.assertIn("##### 策略分析输入数据", rendered)
         self.assertIn("searxng", rendered)
-        self.assertIn("required data unavailable", rendered)
+        self.assertIn(
+            "| breakout | 必需输入数据不可用 | 新闻搜索 | 公开新闻与舆情 | "
+            "无数据；searxng；no results |",
+            rendered,
+        )
+        self.assertNotIn("required data unavailable", rendered)
 
     def test_other_agent_call_cannot_mask_missing_strategy_dependency(self) -> None:
         manifest = build_strategy_evidence_manifest(
@@ -732,10 +956,10 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
             "limitations": [],
         }, "zh")
 
-        self.assertIn("##### K线形态识别 (`analyze_pattern`)", rendered)
-        self.assertIn("| 抓取失败 | 日线K线（开盘、最高、最低、收盘、成交量） |", rendered)
+        self.assertIn("#### 策略分析输入数据", rendered)
+        self.assertIn("| K线形态识别 | 抓取失败 | 日线K线（开盘、最高、最低、收盘、成交量） |", rendered)
         self.assertIn("[AkshareFetcher](https://www.akshare.xyz/)", rendered)
-        self.assertIn("failure=AkshareFetcher get_daily_data: empty result", rendered)
+        self.assertIn("AkshareFetcher get_daily_data: empty result", rendered)
 
     def test_markdown_renders_metric_details_as_hierarchical_table(self) -> None:
         rendered = format_strategy_evidence_markdown({
@@ -755,13 +979,91 @@ class TestStrategyEvidenceManifest(unittest.TestCase):
             "limitations": ["fundamentals partial"],
         }, "zh")
 
-        self.assertIn("#### 数据获取概览", rendered)
-        self.assertIn("##### 技术指标分析 (`analyze_trend`)", rendered)
-        self.assertIn("**关键指标**", rendered)
+        self.assertIn("#### 策略分析输入数据", rendered)
+        self.assertIn("| 技术指标分析 | 成功 |", rendered)
+        self.assertIn("**技术指标分析 · 策略分析输入数据**", rendered)
         self.assertIn("| 指标 | 状态 | 数值 | 含义 |", rendered)
         self.assertIn("| 分析价格 | 可用 | 371.10元 | 技术指标计算使用的价格 |", rendered)
         self.assertIn("| 营收同比增长率 | 缺失 | — | 营业收入相对上年同期的变化 |", rendered)
         self.assertIn("#### ⚠️ 数据限制", rendered)
+
+    def test_markdown_groups_inputs_by_strategy_and_localizes_diagnostics(self) -> None:
+        rendered = format_strategy_evidence_markdown({
+            "schema_version": "strategy-evidence-v1",
+            "status": "limited",
+            "selected_strategies": [
+                {"skill_id": "expectation_repricing", "skill_name": "expectation_repricing"},
+                {"skill_id": "concept_ranking", "skill_name": "concept_ranking"},
+            ],
+            "strategy_evaluations": [
+                {
+                    "skill_id": "expectation_repricing",
+                    "skill_name": "expectation_repricing",
+                    "status": "completed",
+                    "signal": "hold",
+                    "confidence": 0.5,
+                    "reasoning": "估值字段部分可用。",
+                    "conditions_met": [],
+                    "conditions_missed": [],
+                },
+                {
+                    "skill_id": "concept_ranking",
+                    "skill_name": "concept_ranking",
+                    "status": "completed",
+                    "signal": "hold",
+                    "confidence": 0.52,
+                    "reasoning": "概念排序待确认。",
+                    "conditions_met": [],
+                    "conditions_missed": [],
+                },
+            ],
+            "strategy_requirements": [
+                {
+                    "skill_id": "expectation_repricing",
+                    "status": "limited",
+                    "missing_tools": [],
+                    "limited_tools": ["get_stock_info"],
+                    "evidence": [{
+                        "tool": "get_stock_info",
+                        "status": "partial",
+                        "sources": ["iwencai"],
+                        "key_values": {"pe_ratio": 18.5},
+                    }],
+                },
+                {
+                    "skill_id": "concept_ranking",
+                    "status": "verified",
+                    "missing_tools": [],
+                    "limited_tools": [],
+                    "evidence": [{
+                        "tool": "get_stock_info",
+                        "status": "available",
+                        "sources": ["tushare"],
+                        "key_values": {"concept_ranking": 3},
+                    }],
+                },
+            ],
+            "items": [],
+            "limitations": [
+                "expectation_repricing: required data degraded (get_stock_info)",
+            ],
+        }, "zh")
+
+        self.assertEqual(rendered.count("##### 策略分析输出"), 2)
+        self.assertEqual(rendered.count("##### 策略分析输入数据"), 2)
+        self.assertIn("iwencai", rendered)
+        self.assertIn("tushare", rendered)
+        self.assertIn("| 策略 | 限制状态 | 关键数据工具 | 仍需补充的数据 | 当前数据 / 失败情况 |", rendered)
+        self.assertIn("| 预期重估 | 必需输入数据部分可用 | 基本信息获取 |", rendered)
+        self.assertIn(
+            "市净率（PB）、营收同比增长率、净利润同比增长率、"
+            "净资产收益率（ROE）、毛利率 | 部分数据；iwencai |",
+            rendered,
+        )
+        self.assertIn("概念板块排名", rendered)
+        self.assertNotIn("concept_ranking", rendered)
+        self.assertNotIn("expectation_repricing", rendered)
+        self.assertNotIn("required data degraded", rendered)
 
 
 if __name__ == "__main__":

@@ -161,13 +161,22 @@ class MarketAnalyzer:
     def _context_provider_budget(self) -> Dict[str, float]:
         if getattr(self, "trigger_source", "cli") != "daily_market_context":
             return {}
-        total_timeout = self._CONTEXT_STAGE_TIMEOUT_SECONDS
+        config = getattr(self, "config", None)
+        total_timeout = float(getattr(
+            config,
+            "market_context_stage_timeout_seconds",
+            self._CONTEXT_STAGE_TIMEOUT_SECONDS,
+        ))
         deadline = getattr(self, "_context_overview_deadline", None)
         if isinstance(deadline, (int, float)):
             total_timeout = min(total_timeout, max(0.0, deadline - time.monotonic()))
         return {
             "provider_timeout_seconds": min(
-                self._CONTEXT_PROVIDER_TIMEOUT_SECONDS,
+                float(getattr(
+                    config,
+                    "market_context_provider_timeout_seconds",
+                    self._CONTEXT_PROVIDER_TIMEOUT_SECONDS,
+                )),
                 total_timeout,
             ),
             "total_timeout_seconds": total_timeout,
@@ -454,8 +463,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         overview = MarketOverview(date=today)
         previous_deadline = getattr(self, "_context_overview_deadline", None)
         if self.trigger_source == "daily_market_context":
+            config = getattr(self, "config", None)
             self._context_overview_deadline = (
-                time.monotonic() + self._CONTEXT_OVERVIEW_TIMEOUT_SECONDS
+                time.monotonic() + float(getattr(
+                    config,
+                    "market_context_overview_timeout_seconds",
+                    self._CONTEXT_OVERVIEW_TIMEOUT_SECONDS,
+                ))
             )
 
         try:

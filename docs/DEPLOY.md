@@ -227,6 +227,12 @@ journalctl -u stock-analyzer -f
 | `AIHUBMIX_KEY` | - | AIHubMix 一 Key 多模型（推荐） |
 | `SERPAPI_API_KEYS` | - | SerpAPI 实时金融新闻搜索（推荐） |
 | `SERPAPI_TIMEOUT_SECONDS` | `20` | SerpAPI 主搜索请求超时秒数（范围 `1-300`） |
+| `SERPAPI_HARD_DEADLINE_SECONDS` | `20` | SerpAPI SDK 卡住时的 worker 硬截止秒数（范围 `1-300`） |
+| `DAILY_MARKET_CONTEXT_TIMEOUT_SECONDS` | `120` | 个股分析等待实时大盘上下文的总截止秒数 |
+| `STOCK_OPTIONAL_EVIDENCE_TIMEOUT_SECONDS` | `90` | API 普通个股可选证据的整体等待截止秒数 |
+| `AGENT_SKILL_AGENT_TIMEOUT_S` | `120` | 普通策略单个 Specialist 的独立上限；超时后降级继续报告 |
+| `AGENT_STOCK_INFO_TIMEOUT_SECONDS` | `60` | 普通 Agent 基本信息工具总预算，不影响交易员分析 |
+| `AGENT_STOCK_INFO_PROVIDER_TIMEOUT_SECONDS` | `8` | 普通 Agent 基本信息工具的单来源预算 |
 | `TAVILY_API_KEYS` | - | Tavily 新闻搜索（可选） |
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 

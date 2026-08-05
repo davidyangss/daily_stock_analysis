@@ -482,10 +482,15 @@ class TestReportRenderer(unittest.TestCase):
 
             self.assertIsNotNone(out)
             self.assertIn("策略关键数据与来源", out)
-            self.assertIn("#### 数据获取概览", out)
-            self.assertIn("##### `search_stock_news`", out)
-            self.assertIn("| 无数据 | N/A | searxng", out)
-            self.assertIn("reason=no results", out)
+            self.assertIn("##### 策略分析输出", out)
+            self.assertIn("##### 策略分析输入数据", out)
+            self.assertIn("| 新闻搜索 | 无数据 | 公开新闻与舆情 | 未记录 | searxng | no results |", out)
+            self.assertIn(
+                "| volume_breakout | 必需输入数据不可用 | 新闻搜索 | "
+                "公开新闻与舆情 | 无数据；searxng；no results |",
+                out,
+            )
+            self.assertNotIn("#### 数据获取概览", out)
 
     def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
         for platform in ("markdown", "wechat"):

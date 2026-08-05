@@ -84,11 +84,16 @@ def _persist_news_response(
 def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
     """Search latest news for a stock."""
     service = _get_search_service()
+    search = getattr(service, "search_stock_news", None)
 
-    if not service.is_available:
-        return {"error": "No search engine available (no API keys configured)"}
+    # SearchService may still have useful local evidence when no remote API
+    # key is configured, so ``is_available`` alone must not short-circuit this
+    # path.  Keep compatibility with test/extension doubles that expose only
+    # the legacy availability flag and no unified search entry point.
+    if not callable(search):
+        return {"error": "No local or remote search engine available"}
 
-    response = service.search_stock_news(stock_code, stock_name, max_results=5)
+    response = search(stock_code, stock_name, max_results=5)
 
     if not response.success:
         return {

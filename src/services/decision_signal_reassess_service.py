@@ -74,13 +74,26 @@ class DecisionSignalReassessService:
         raw_result = _parse_mapping(getattr(record, "raw_result", None))
         context_snapshot = _parse_mapping(getattr(record, "context_snapshot", None))
         candidate = _build_candidate(record, raw_result, context_snapshot)
+        source_data_quality = _first_present(
+            _nested_get(context_snapshot, ("analysis_context_pack_overview", "data_quality")),
+            _nested_get(context_snapshot, ("data_quality",)),
+            _nested_get(raw_result, ("analysis_context_pack_overview", "data_quality")),
+            _nested_get(raw_result, ("data_quality",)),
+        )
+        strategy_input_status = _nested_get(
+            raw_result,
+            ("dashboard", "strategy_data_evidence", "status"),
+        )
+        strategy_quality = {
+            "verified": "medium",
+            "limited": "low",
+            "insufficient": "poor",
+        }.get(str(strategy_input_status or "").strip().lower())
         data_quality_level = normalize_decision_signal_data_quality(
-            _first_present(
-                _nested_get(context_snapshot, ("analysis_context_pack_overview", "data_quality")),
-                _nested_get(context_snapshot, ("data_quality",)),
-                _nested_get(raw_result, ("analysis_context_pack_overview", "data_quality")),
-                _nested_get(raw_result, ("data_quality",)),
-            )
+            {
+                "data_quality": source_data_quality,
+                "strategy_evidence": strategy_quality,
+            }
         )
         policy = apply_decision_profile_policy(
             candidate,
@@ -98,6 +111,11 @@ class DecisionSignalReassessService:
             "data_quality_level": data_quality_level,
             "guardrail_result": policy.guardrail_result.as_dict(),
         }
+        if strategy_input_status:
+            metadata.update({
+                "strategy_input_status": strategy_input_status,
+                "strategy_verification_scope": "required_inputs",
+            })
         preview: dict[str, Any] = {
             "action": preview_candidate.action,
             "score": preview_candidate.score,

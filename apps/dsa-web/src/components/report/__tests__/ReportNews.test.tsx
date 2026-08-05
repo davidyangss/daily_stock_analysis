@@ -27,19 +27,30 @@ describe('ReportNews', () => {
     });
 
     const { container } = render(<ReportNews recordId={1} />);
+    const details = screen.getByTestId('report-news');
+    const summary = details.querySelector('summary');
 
     expect(await screen.findByText('茅台发布最新经营数据')).toBeInTheDocument();
+    expect(details).not.toHaveAttribute('open');
+    expect(summary).toHaveClass('sticky', 'top-14');
+    expect(screen.getByText('茅台发布最新经营数据')).not.toBeVisible();
     expect(screen.getByRole('link', { name: '跳转' })).toHaveAttribute('href', 'https://example.com/news');
     expect(screen.getByText('相关资讯/后续检索')).toBeVisible();
-    expect(screen.getByText('来源：报告页补充资讯；是否用于分析以输入数据块为准。')).toBeVisible();
     expect(container.querySelector('.home-panel-card')).toBeTruthy();
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
+
+    fireEvent.click(summary!);
+
+    expect(details).toHaveAttribute('open');
+    expect(screen.getByText('茅台发布最新经营数据')).toBeVisible();
+    expect(screen.getByText('来源：报告页补充资讯；是否用于分析以输入数据块为准。')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
 
     await waitFor(() => {
       expect(historyApi.getNews).toHaveBeenCalledTimes(2);
     });
+    expect(details).toHaveAttribute('open');
   });
 
   it('renders the empty state when no news exists', async () => {
