@@ -1926,7 +1926,12 @@ describe('HomePage', () => {
     fireEvent.click(trigger);
 
     expect(container.querySelector('.page-drawer-overlay')).toBeTruthy();
-    expect(container.querySelector('.dashboard-card')).toHaveClass('h-[100dvh]', 'min-h-0');
+    expect(container.querySelector('.dashboard-card')).toHaveClass(
+      'top-14',
+      'bottom-0',
+      'h-[calc(100dvh-3.5rem)]',
+      'min-h-0',
+    );
     expect(document.body.style.overflow).toBe('hidden');
 
     fireEvent.click(container.querySelector('.fixed.inset-0.z-40') as HTMLElement);

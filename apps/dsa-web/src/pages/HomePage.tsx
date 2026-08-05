@@ -1503,7 +1503,7 @@ const HomePage: React.FC = () => {
             <div className="fixed inset-0 z-40 overscroll-contain md:hidden" onClick={() => setSidebarOpen(false)}>
               <div className="page-drawer-overlay absolute inset-0" />
               <div
-                className="dashboard-card fixed inset-y-0 left-0 flex h-[100dvh] min-h-0 w-72 touch-pan-y flex-col overflow-hidden overscroll-contain !rounded-none !rounded-r-xl p-3 shadow-2xl"
+                className="dashboard-card fixed bottom-0 left-0 top-14 flex h-[calc(100dvh-3.5rem)] min-h-0 w-72 touch-pan-y flex-col overflow-hidden overscroll-contain !rounded-none !rounded-r-xl p-3 shadow-2xl"
                 onClick={(event) => event.stopPropagation()}
               >
                 {sidebarContent}
