@@ -445,7 +445,7 @@ const TraderAnalysisPage: React.FC = () => {
               <Download className="h-4 w-4" />下载 Markdown
             </a>
           </div>
-          <div className="-mx-2 my-4 border-y border-border bg-card/95 px-2 py-2 backdrop-blur md:sticky md:top-[7.25rem] md:z-20">
+          <div className="sticky top-[7.0625rem] z-20 -mx-2 my-4 border-y border-border bg-card/95 px-2 py-2 backdrop-blur">
             <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="分析报告模块">
               {run.reports.map((report) => {
                 const active = activeReport?.kind === report.kind;

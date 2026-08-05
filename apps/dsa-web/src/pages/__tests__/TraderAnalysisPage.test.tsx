@@ -185,7 +185,7 @@ describe('TraderAnalysisPage', () => {
     fireEvent.click(reportSummary);
     expect(reportDetails).toHaveAttribute('open');
 
-    expect(screen.getByRole('tablist').parentElement).toHaveClass('md:sticky', 'md:top-[7.25rem]');
+    expect(screen.getByRole('tablist').parentElement).toHaveClass('sticky', 'top-[7.0625rem]');
 
     for (const title of ['运行流', '完整分析报告', 'Debug 日志', 'LLM 交互消息']) {
       const details = screen.getByText(title).closest('details');
