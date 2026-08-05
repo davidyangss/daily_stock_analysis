@@ -12,6 +12,7 @@ import { normalizeReportLanguage } from '../../utils/reportLanguage';
 interface StrategyDataEvidenceProps {
   evidence?: StrategyDataEvidenceType | null;
   language?: ReportLanguage;
+  chatMode?: boolean;
 }
 
 const TEXT = {
@@ -490,6 +491,7 @@ const buildLimitationDetails = (
 export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
   evidence,
   language = 'zh',
+  chatMode = false,
 }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = TEXT[reportLanguage];
@@ -571,7 +573,19 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
                       <span className="text-muted-text">{text.confidence}: {formatConfidence(evaluation.confidence)}</span>
                     ) : null}
                   </div>
-                  <details className="group mt-3 overflow-visible">
+                  {chatMode ? (
+                    <div className="mt-3 border-t border-border/50 pt-2">
+                      {evaluation?.reasoning ? (
+                        <p className="leading-5 text-secondary-text">{text.reasoning}: {localizeDisplayText(evaluation.reasoning, reportLanguage)}</p>
+                      ) : null}
+                      <ConditionTable
+                        met={evaluation?.conditionsMet || []}
+                        missed={evaluation?.conditionsMissed || []}
+                        language={reportLanguage}
+                        text={text}
+                      />
+                    </div>
+                  ) : <details className="group mt-3 overflow-visible">
                     <summary className="sticky top-0 z-30 flex cursor-pointer list-none items-center justify-between gap-2 border-b border-border/50 bg-card/95 px-1 py-2 text-sm font-semibold text-foreground backdrop-blur">
                       <span>{text.outputTitle}</span>
                       <ChevronRight className="h-4 w-4 shrink-0 text-muted-text transition-transform group-open:rotate-90" aria-hidden="true" />
@@ -587,7 +601,7 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
                         text={text}
                       />
                     </div>
-                  </details>
+                  </details>}
                   <details className="group mt-3 overflow-visible">
                     <summary className="sticky top-0 z-30 flex cursor-pointer list-none items-center justify-between gap-2 border-b border-border/50 bg-card/95 px-1 py-2 text-sm font-semibold text-foreground backdrop-blur">
                       <span>{text.inputTitle}</span>

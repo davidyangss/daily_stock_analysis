@@ -25,6 +25,7 @@ can be a drop-in replacement via the factory.
 from __future__ import annotations
 
 import json
+import base64
 import inspect
 import logging
 import re
@@ -34,6 +35,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional
 
 from src.agent.chat_context import build_visible_chat_history
+from src.agent.chat_metadata import append_chat_model_marker
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
 from src.agent.disagreement import build_agent_disagreement_summary
 from src.agent.evidence import (
@@ -447,6 +449,9 @@ class AgentOrchestrator:
             parse_dashboard=False,
             progress_callback=progress_callback,
         )
+
+        if orch_result.success:
+            orch_result.content = append_chat_model_marker(orch_result.content, orch_result.model)
 
         # Persist assistant response
         if orch_result.success:
@@ -1308,7 +1313,7 @@ class AgentOrchestrator:
             return None, ""
 
         if chat_mode and isinstance(final_text, str) and final_text.strip():
-            return None, final_text.strip()
+            return None, self._append_chat_strategy_evidence(ctx, final_text.strip())
         if isinstance(final_raw, str) and final_raw.strip():
             return None, final_raw
         if isinstance(final_dashboard, dict):
@@ -1318,6 +1323,42 @@ class AgentOrchestrator:
         if ctx.opinions:
             return None, self._fallback_summary(ctx)
         return None, ""
+
+    def _append_chat_strategy_evidence(self, ctx: AgentContext, content: str) -> str:
+        """Append the deterministic per-strategy evidence block to Chat output.
+
+        Chat prose is model-authored and can omit conditions or missing inputs.
+        Build the same evidence projection used by dashboard reports so the
+        final API boundary always exposes every selected strategy.
+        """
+        selected = (
+            ctx.meta.get("selected_strategy_skills")
+            if isinstance(ctx.meta.get("selected_strategy_skills"), list)
+            else []
+        )
+        if not selected:
+            return content
+        manifest = build_strategy_evidence_manifest(
+            tool_evidence=(
+                ctx.meta.get("tool_evidence")
+                if isinstance(ctx.meta.get("tool_evidence"), list)
+                else []
+            ),
+            opinions=ctx.opinions,
+            invalid_records=(
+                ctx.meta.get("invalid_opinions")
+                if isinstance(ctx.meta.get("invalid_opinions"), list)
+                else []
+            ),
+            selected_strategies=selected,
+            selected_strategy_requirements=self._selected_strategy_requirements(selected),
+        )
+        if not manifest:
+            return content
+        encoded = base64.b64encode(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return f"{content}\n\n<!-- dsa-strategy-evidence:{encoded} -->"
 
     def _resolve_dashboard_payload(
         self,

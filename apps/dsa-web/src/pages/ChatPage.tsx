@@ -32,6 +32,8 @@ import { findMatchingStockCode, includesStockCode, normalizeStockCode } from '..
 import { useStockIndex } from '../hooks/useStockIndex';
 import type { StockIndexItem } from '../types/stockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { StrategyDataEvidence } from '../components/report';
+import { parseChatStrategyEvidence } from '../utils/chatStrategyEvidence';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
@@ -794,7 +796,7 @@ const ChatPage: React.FC = () => {
 
   const copyMessageToClipboard = async (msgId: string, content: string) => {
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(parseChatStrategyEvidence(content).visibleContent);
       setCopiedMessages((prev) => new Set(prev).add(msgId));
       const existingTimer = copyResetTimerRef.current[msgId];
       if (existingTimer !== undefined) {
@@ -816,7 +818,7 @@ const ChatPage: React.FC = () => {
   const downloadMessageAsMarkdown = useCallback((msg: Message) => {
     const skillLabel = getMessageSkillLabel(msg);
     const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${skillLabel ? ` · ${skillLabel}` : ''}`;
-    const content = [heading, '', msg.content].join('\n');
+    const content = [heading, '', parseChatStrategyEvidence(msg.content).visibleContent].join('\n');
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1318,6 +1320,7 @@ const ChatPage: React.FC = () => {
             ) : (
               messages.map((msg) => {
                 const skillLabel = getMessageSkillLabel(msg);
+                const parsedMessage = parseChatStrategyEvidence(msg.content);
                 return (
                 <div
                   key={msg.id}
@@ -1360,6 +1363,11 @@ const ChatPage: React.FC = () => {
                             {t(msg.backend === 'codex_app_server' ? 'chat.codexBackendBadge' : 'chat.defaultBackendBadge')}
                           </Badge>
                         ) : null}
+                        {parsedMessage.modelUsed ? (
+                          <Badge variant="history" size="sm" title={parsedMessage.modelUsed}>
+                            LLM · {parsedMessage.modelUsed}
+                          </Badge>
+                        ) : null}
                       </div>
                     )}
                     {msg.role === 'assistant' && renderThinkingBlock(msg)}
@@ -1389,9 +1397,14 @@ const ChatPage: React.FC = () => {
                         </div>
                         <div className="chat-prose pr-20 sm:pr-24">
                           <Markdown remarkPlugins={[remarkGfm]}>
-                            {msg.content}
+                            {parsedMessage.visibleContent}
                           </Markdown>
                         </div>
+                        {parsedMessage.evidence ? (
+                          <div className="mt-4">
+                            <StrategyDataEvidence evidence={parsedMessage.evidence} language="zh" chatMode />
+                          </div>
+                        ) : null}
                         {msg.stockCandidates?.length ? (
                           <div className="mt-3 flex flex-wrap gap-2" aria-label="股票候选">
                             {msg.stockCandidates.map((candidate) => {

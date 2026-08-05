@@ -171,6 +171,8 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
   const text = getReportText(reportLanguage);
   const marketPhaseLabel = getMarketPhaseSummaryLabel(meta.marketPhaseSummary, reportLanguage);
+  const modelUsed = (meta.modelUsed || '').trim();
+  const showModel = Boolean(modelUsed && !['unknown', 'error', 'none', 'null', 'n/a'].includes(modelUsed.toLowerCase()));
   const partialBarLabel = meta.marketPhaseSummary?.isPartialBar === true
     ? getPartialBarLabel(reportLanguage)
     : null;
@@ -276,6 +278,11 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                     <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
                       {text.recordId}: {meta.id}
                     </span>
+                  ) : null}
+                  {showModel ? (
+                    <Badge variant="history" className="max-w-full shrink-0 shadow-none" title={modelUsed}>
+                      {text.analysisModel}: {modelUsed}
+                    </Badge>
                   ) : null}
                   {marketPhaseLabel ? (
                     <Badge variant="info" className="shrink-0 gap-1.5 shadow-none" aria-label={marketPhaseLabel}>

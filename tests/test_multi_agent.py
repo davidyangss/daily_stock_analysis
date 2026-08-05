@@ -2160,6 +2160,47 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.content, "这是自然语言回复")
 
+    def test_execute_pipeline_chat_appends_deterministic_strategy_evidence(self):
+        import base64
+        import json
+        import re
+        orch = self._make_orchestrator()
+        ctx = AgentContext(query="请分析", stock_code="600519")
+        ctx.meta.update({
+            "response_mode": "chat",
+            "report_language": "zh",
+            "selected_strategy_skills": ["ma_golden_cross"],
+        })
+        ctx.add_opinion(AgentOpinion(
+            agent_name="skill_ma_golden_cross",
+            signal="hold",
+            confidence=0.6,
+            reasoning="短期均线尚未上穿长期均线。",
+            raw_data={
+                "evidence_status": "insufficient",
+                "missing_required_tools": ["analyze_trend"],
+                "limited_required_tools": [],
+                "required_tool_evidence": [],
+                "conditions_met": ["价格保持在长期均线上方"],
+                "conditions_missed": ["短期均线尚未形成金叉"],
+            },
+        ))
+        with patch.object(
+            orch,
+            "_selected_strategy_requirements",
+            return_value={"ma_golden_cross": ["analyze_trend"]},
+        ):
+            content = orch._append_chat_strategy_evidence(ctx, "模型综合结论")
+
+        self.assertIn("模型综合结论", content)
+        marker = re.search(r"<!-- dsa-strategy-evidence:([A-Za-z0-9+/=]+) -->", content)
+        self.assertIsNotNone(marker)
+        manifest = json.loads(base64.b64decode(marker.group(1)).decode("utf-8"))
+        evaluation = manifest["strategy_evaluations"][0]
+        self.assertEqual(evaluation["conditions_met"], ["价格保持在长期均线上方"])
+        self.assertEqual(evaluation["conditions_missed"], ["短期均线尚未形成金叉"])
+        self.assertEqual(manifest["strategy_requirements"][0]["status"], "insufficient")
+
     def test_strategy_agents_are_selected_after_technical_stage(self):
         orch = self._make_orchestrator()
         orch.mode = "specialist"

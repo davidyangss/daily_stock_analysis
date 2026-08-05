@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from src.agent.agent_backend import AgentBackend, AgentRunRequest
+from src.agent.chat_metadata import append_chat_model_marker
 from src.agent.conversation import conversation_manager
 from src.agent.executor import AgentResult, PreparedAgentChat, prepare_agent_chat
 from src.agent.provider_trace import persist_provider_trace_turns
@@ -153,6 +154,7 @@ class AgentChatExecutor:
         )
 
         if result.success:
+            result.content = append_chat_model_marker(result.content, result.model)
             assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
             if not self.backend.runtime_owns_loop:
                 persist_provider_trace_turns(
