@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 交易员分析页面复用首页股票代码/名称自动补全输入，支持搜索、选择标的或按回车后按所选日期立即发起分析
+- [改进] 首页与交易员分析的股票自动补全候选项聚焦沪深北 A 股，不展示其他市场标的
 - [修复] SerpAPI 新闻搜索支持 `SERPAPI_TIMEOUT_SECONDS` 与独立 `SERPAPI_HARD_DEADLINE_SECONDS` 配置（均默认 20 秒），并保留有界阻塞槽位，避免 SDK 未响应时长期占用分析任务线程
 - [修复] 个股分析生成每日大盘上下文时使用可配置的 48 秒行情预算和 120 秒完整上下文截止，并将剩余预算透传给指数、市场统计、板块和概念各自的 provider loop，超时后保留有效结果并继续策略报告
 - [修复] API 个股报告的可选基本面与市场结构共享可配置的 90 秒编排截止，基本面按配置 provider 数量和 8 秒单源预算预留逐源收敛轮次，所属板块与概念排行按剩余时间进入统一 provider loop且单来源默认最多等待 10 秒

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Ban, CheckCircle2, CircleDot, Download, ListTodo, Play, RefreshCw, ShieldAlert, Square } from 'lucide-react';
 import { ApiErrorAlert } from '../components/common';
 import { ReportMarkdownBody } from '../components/report/ReportMarkdownBody';
+import { StockAutocomplete } from '../components/StockAutocomplete';
 import { StepDetails } from '../components/trader-analysis/StepDetails';
 import { TraderRunFlowGraph } from '../components/trader-analysis/TraderRunFlowGraph';
 import { traderAnalysisApi } from '../api/traderAnalysis';
@@ -223,14 +224,14 @@ const TraderAnalysisPage: React.FC = () => {
     return run.reports.find((report) => report.kind === activeReportKind) ?? run.reports[0];
   }, [activeReportKind, run]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submitRun = async (requestedSymbol: string) => {
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       setTrace([]);
       setEvents([]);
-      const created = await traderAnalysisApi.createRun({ symbol, tradeDate });
+      const created = await traderAnalysisApi.createRun({ symbol: requestedSymbol, tradeDate });
       selectedRunIdRef.current = created.runId;
       setRun(created);
       setActiveReportKind(created.reports[0]?.kind ?? null);
@@ -245,6 +246,11 @@ const TraderAnalysisPage: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    void submitRun(symbol);
   };
 
   const refresh = async (runId: string) => {
@@ -288,8 +294,20 @@ const TraderAnalysisPage: React.FC = () => {
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1 text-sm text-secondary-text">
-              A 股代码
-              <input value={symbol} onChange={(event) => setSymbol(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-foreground" placeholder="600519" maxLength={24} />
+              A 股代码或名称
+              <StockAutocomplete
+                value={symbol}
+                onChange={setSymbol}
+                onSubmit={(stockCode) => {
+                  setSymbol(stockCode);
+                  void submitRun(stockCode);
+                }}
+                allowedMarkets={['CN', 'BSE']}
+                disabled={submitting}
+                placeholder="输入代码或名称（例如 600519 或 贵州茅台）"
+                ariaLabel="A 股代码或名称"
+                className="h-10 rounded-md border-border bg-background px-3 text-foreground"
+              />
             </label>
             <label className="flex flex-col gap-1 text-sm text-secondary-text">
               分析日期

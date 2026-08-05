@@ -3,11 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TraderAnalysisPage from '../TraderAnalysisPage';
 import type { TraderAnalysisRun } from '../../types/traderAnalysis';
 
-const { mockListRuns, mockGetRun, mockGetEvents, mockGetTrace, mockCancelRun } = vi.hoisted(() => ({
+const { mockListRuns, mockGetRun, mockGetEvents, mockGetTrace, mockCreateRun, mockCancelRun } = vi.hoisted(() => ({
   mockListRuns: vi.fn(),
   mockGetRun: vi.fn(),
   mockGetEvents: vi.fn(),
   mockGetTrace: vi.fn(),
+  mockCreateRun: vi.fn(),
   mockCancelRun: vi.fn(),
 }));
 
@@ -17,7 +18,7 @@ vi.mock('../../api/traderAnalysis', () => ({
     getRun: mockGetRun,
     getEvents: mockGetEvents,
     getTrace: mockGetTrace,
-    createRun: vi.fn(),
+    createRun: mockCreateRun,
     cancelRun: mockCancelRun,
   },
 }));
@@ -81,6 +82,7 @@ describe('TraderAnalysisPage', () => {
       payload: { input: { prompt: '分析' }, output: { text: '完成' } },
       createdAt: '2026-07-30T08:01:00Z',
     }]);
+    mockCreateRun.mockResolvedValue(makeRun('run-created', '300750', '2026-08-05'));
     mockCancelRun.mockImplementation(async (runId: string) => ({
       ...(runId === firstRun.runId ? firstRun : secondRun),
       taskStatus: 'cancelled',
@@ -88,11 +90,25 @@ describe('TraderAnalysisPage', () => {
     }));
   });
 
+  it('starts an analysis when the autocomplete input is submitted', async () => {
+    render(<TraderAnalysisPage />);
+
+    const symbolInput = await screen.findByLabelText('A 股代码或名称');
+    fireEvent.change(symbolInput, { target: { value: '300750' } });
+    fireEvent.keyDown(symbolInput, { key: 'Enter' });
+
+    await waitFor(() => expect(mockCreateRun).toHaveBeenCalledWith({
+      symbol: '300750',
+      tradeDate: expect.any(String),
+    }));
+  });
+
   it('syncs the analysis symbol and date when a task is selected', async () => {
     render(<TraderAnalysisPage />);
 
-    const symbolInput = await screen.findByLabelText('A 股代码');
+    const symbolInput = await screen.findByLabelText('A 股代码或名称');
     const dateInput = screen.getByLabelText('分析日期');
+    expect(symbolInput).toHaveAttribute('placeholder', '输入代码或名称（例如 600519 或 贵州茅台）');
     await waitFor(() => expect(symbolInput).toHaveValue(firstRun.symbol));
     expect(mockGetEvents).not.toHaveBeenCalled();
     expect(mockGetTrace).not.toHaveBeenCalled();

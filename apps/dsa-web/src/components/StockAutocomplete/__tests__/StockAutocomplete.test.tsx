@@ -33,6 +33,7 @@ let autocompleteHookImpl: () => {
   runtimeFallback: boolean;
   error: Error | null;
 };
+let autocompleteIndex: StockIndexItem[] = [];
 
 // Mock the hooks
 vi.mock('../../../hooks/useStockIndex', () => ({
@@ -40,7 +41,10 @@ vi.mock('../../../hooks/useStockIndex', () => ({
 }));
 
 vi.mock('../../../hooks/useAutocomplete', () => ({
-  useAutocomplete: () => autocompleteHookImpl(),
+  useAutocomplete: (index: StockIndexItem[]) => {
+    autocompleteIndex = index;
+    return autocompleteHookImpl();
+  },
 }));
 
 const mockIndex: StockIndexItem[] = [
@@ -153,6 +157,31 @@ describe('StockAutocomplete', () => {
 
     const input = screen.getByPlaceholderText(/输入股票代码或名称/);
     expect(input).toBeInTheDocument();
+  });
+
+  it('limits suggestions to the requested markets', () => {
+    stockIndexHookImpl = () => ({
+      index: [
+        ...mockIndex,
+        { ...hkSuggestion, assetType: 'stock', active: true },
+        { ...bseSuggestion, assetType: 'stock', active: true },
+      ],
+      loading: false,
+      fallback: false,
+      error: null,
+      loaded: true,
+    });
+
+    render(
+      <StockAutocomplete
+        value=""
+        onChange={mockOnChange}
+        onSubmit={mockOnSubmit}
+        allowedMarkets={['CN', 'BSE']}
+      />,
+    );
+
+    expect(autocompleteIndex.map((item) => item.market)).toEqual(['CN', 'BSE']);
   });
 
   it('renders a custom placeholder', () => {

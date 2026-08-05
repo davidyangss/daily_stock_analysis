@@ -5,7 +5,7 @@
  * Supports keyboard navigation, IME input method, graceful degradation
  */
 
-import { Component, useRef, useEffect, useState } from 'react';
+import { Component, useRef, useEffect, useMemo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -38,6 +38,8 @@ export interface StockAutocompleteProps {
   ariaLabel?: string;
   /** Additional CSS class name */
   className?: string;
+  /** Markets to include in autocomplete suggestions; all markets when omitted */
+  allowedMarkets?: Market[];
 }
 
 function FallbackInput({
@@ -110,8 +112,13 @@ function StockAutocompleteInner({
   placeholder = '输入股票代码或名称',
   ariaLabel,
   className,
+  allowedMarkets,
 }: StockAutocompleteProps) {
   const { index, loading, fallback } = useStockIndex();
+  const filteredIndex = useMemo(
+    () => allowedMarkets ? index.filter((item) => allowedMarkets.includes(item.market)) : index,
+    [allowedMarkets, index],
+  );
   const {
     // query,
     setQuery,
@@ -127,7 +134,7 @@ function StockAutocompleteInner({
     setIsComposing,
     runtimeFallback,
     error: autocompleteError,
-  } = useAutocomplete(index);
+  } = useAutocomplete(filteredIndex);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const prevValueRef = useRef(value);
