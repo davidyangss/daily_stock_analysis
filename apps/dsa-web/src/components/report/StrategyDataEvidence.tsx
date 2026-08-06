@@ -525,9 +525,17 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
 
   return (
     <Card variant="bordered" padding="md" className="home-panel-card !overflow-visible text-left">
-      <DashboardPanelHeader eyebrow={text.eyebrow} title={text.title} className="mb-3" />
+      <details data-testid="strategy-data-evidence" open={chatMode ? undefined : true} className="group/evidence">
+        {chatMode ? (
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <DashboardPanelHeader eyebrow={text.eyebrow} title={text.title} />
+            <ChevronRight className="h-5 w-5 shrink-0 text-muted-text transition-transform group-open/evidence:rotate-90" aria-hidden="true" />
+          </summary>
+        ) : (
+          <DashboardPanelHeader eyebrow={text.eyebrow} title={text.title} className="mb-3" />
+        )}
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className={chatMode ? 'mt-3 mb-3 flex flex-wrap items-center gap-2' : 'mb-3 flex flex-wrap items-center gap-2'}>
         <Badge variant={statusVariant(evidence.status)}>
           {text[evidence.status]}
         </Badge>
@@ -551,6 +559,11 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
             {strategyViews.map((strategyView) => {
               const { evaluation, requirement } = strategyView;
               const signal = evaluation?.signal || '';
+              const hasDecisionBasis = Boolean(
+                evaluation?.reasoning
+                || evaluation?.conditionsMet?.length
+                || evaluation?.conditionsMissed?.length,
+              );
               return (
                 <section key={strategyView.skillId} className="rounded-lg border border-border/60 bg-muted/10 p-3 text-xs">
                   <div className="flex flex-wrap items-center gap-2">
@@ -575,15 +588,25 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
                   </div>
                   {chatMode ? (
                     <div className="mt-3 border-t border-border/50 pt-2">
-                      {evaluation?.reasoning ? (
-                        <p className="leading-5 text-secondary-text">{text.reasoning}: {localizeDisplayText(evaluation.reasoning, reportLanguage)}</p>
+                      {hasDecisionBasis ? (
+                        <details className="group/reasoning mb-2">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1 font-medium text-foreground">
+                            <span>{text.reasoning}</span>
+                            <ChevronRight className="h-4 w-4 shrink-0 text-muted-text transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
+                          </summary>
+                          {evaluation?.reasoning ? (
+                            <p className="pb-1 pt-1 leading-5 text-secondary-text">
+                              {localizeDisplayText(evaluation.reasoning, reportLanguage)}
+                            </p>
+                          ) : null}
+                          <ConditionTable
+                            met={evaluation?.conditionsMet || []}
+                            missed={evaluation?.conditionsMissed || []}
+                            language={reportLanguage}
+                            text={text}
+                          />
+                        </details>
                       ) : null}
-                      <ConditionTable
-                        met={evaluation?.conditionsMet || []}
-                        missed={evaluation?.conditionsMissed || []}
-                        language={reportLanguage}
-                        text={text}
-                      />
                     </div>
                   ) : <details className="group mt-3 overflow-visible">
                     <summary className="sticky top-0 z-30 flex cursor-pointer list-none items-center justify-between gap-2 border-b border-border/50 bg-card/95 px-1 py-2 text-sm font-semibold text-foreground backdrop-blur">
@@ -638,7 +661,19 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
             <div className="mt-2 text-foreground">{text.advice}: {localizeDisplayText(overallDecision.operationAdvice, reportLanguage)}</div>
           ) : null}
           {overallDecision.reasoning ? (
-            <div className="mt-1 leading-5 text-secondary-text">{text.reasoning}: {localizeDisplayText(overallDecision.reasoning, reportLanguage)}</div>
+            chatMode ? (
+              <details className="group/reasoning mt-2">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 py-1 font-medium text-foreground">
+                  <span>{text.reasoning}</span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-text transition-transform group-open/reasoning:rotate-90" aria-hidden="true" />
+                </summary>
+                <div className="pb-1 pt-1 leading-5 text-secondary-text">
+                  {localizeDisplayText(overallDecision.reasoning, reportLanguage)}
+                </div>
+              </details>
+            ) : (
+              <div className="mt-1 leading-5 text-secondary-text">{text.reasoning}: {localizeDisplayText(overallDecision.reasoning, reportLanguage)}</div>
+            )
           ) : null}
         </div>
       ) : null}
@@ -678,6 +713,7 @@ export const StrategyDataEvidence: FC<StrategyDataEvidenceProps> = ({
           <EvidenceTable items={items} language={reportLanguage} text={text} rowPrefix="legacy" />
         </>
       ) : null}
+      </details>
     </Card>
   );
 };

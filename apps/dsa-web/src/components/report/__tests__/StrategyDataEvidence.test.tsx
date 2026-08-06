@@ -160,6 +160,60 @@ describe('StrategyDataEvidence', () => {
     expect(screen.getAllByText(/no results/)).toHaveLength(2);
   });
 
+  it('collapses strategy reasoning with its condition table and overall reasoning by default in chat mode', () => {
+    render(
+      <StrategyDataEvidence
+        evidence={{
+          schemaVersion: 'strategy-evidence-v1',
+          status: 'verified',
+          selectedStrategies: [{ skillId: 'bull_trend', skillName: '多头趋势策略' }],
+          strategyEvaluations: [{
+            skillId: 'bull_trend',
+            skillName: '多头趋势策略',
+            status: 'completed',
+            signal: 'buy',
+            reasoning: '均线维持多头排列。',
+            conditionsMet: ['收盘价高于长期均线'],
+            conditionsMissed: [],
+          }],
+          overallDecision: {
+            signal: 'buy',
+            operationAdvice: '等待回踩确认',
+            reasoning: '多项趋势证据相互印证。',
+          },
+          strategyRequirements: [],
+          limitations: [],
+          items: [],
+        }}
+        language="zh"
+        chatMode
+      />,
+    );
+
+    const evidenceDetails = screen.getByTestId('strategy-data-evidence');
+    expect(evidenceDetails).not.toHaveAttribute('open');
+    expect(screen.getByText('策略分析详情')).toBeVisible();
+    expect(screen.getByText('多头趋势策略')).not.toBeVisible();
+
+    fireEvent.click(evidenceDetails.querySelector(':scope > summary')!);
+    expect(evidenceDetails).toHaveAttribute('open');
+    expect(screen.getByText('多头趋势策略')).toBeVisible();
+
+    const reasoningDetails = screen.getAllByText('判定依据').map((title) => title.closest('details'));
+    expect(reasoningDetails).toHaveLength(2);
+    reasoningDetails.forEach((details) => expect(details).not.toHaveAttribute('open'));
+    expect(screen.getByText('均线维持多头排列。')).not.toBeVisible();
+    expect(screen.getByText('多项趋势证据相互印证。')).not.toBeVisible();
+    expect(screen.getByText('收盘价高于长期均线')).not.toBeVisible();
+    expect(screen.getByText(/操作建议: 等待回踩确认/)).toBeVisible();
+
+    fireEvent.click(reasoningDetails[0]!.querySelector('summary')!);
+    expect(reasoningDetails[0]).toHaveAttribute('open');
+    expect(screen.getByText('均线维持多头排列。')).toBeVisible();
+    expect(screen.getByText('收盘价高于长期均线')).toBeVisible();
+    expect(reasoningDetails[1]).not.toHaveAttribute('open');
+  });
+
   it('keeps each strategy input table separate and localizes strategy diagnostics', () => {
     const { container } = render(
       <StrategyDataEvidence
