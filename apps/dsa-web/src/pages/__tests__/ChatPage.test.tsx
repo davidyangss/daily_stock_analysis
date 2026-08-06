@@ -720,6 +720,28 @@ describe('ChatPage', () => {
     expect(mockFormatSessionAsMarkdown).not.toHaveBeenCalled();
   });
 
+  it('shows the persisted LLM for a historical assistant message without transient metadata', async () => {
+    mockStoreState.messages = [
+      {
+        id: 'assistant-history',
+        role: 'assistant',
+        content: '趋势偏强\n\n<!-- dsa-chat-model:b3BlbmFpL2dwdC10ZXN0 -->',
+      },
+    ];
+
+    render(
+      <MemoryRouter>
+        <UiLanguageProvider>
+          <ChatPage />
+        </UiLanguageProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('LLM · openai/gpt-test')).toBeInTheDocument();
+    expect(screen.getByText('趋势偏强')).toBeInTheDocument();
+    expect(screen.queryByText(/dsa-chat-model/)).not.toBeInTheDocument();
+  });
+
   it('renders assistant skill labels with shared badge semantics', async () => {
     mockStoreState.messages = [
       { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },

@@ -1340,7 +1340,7 @@ const ChatPage: React.FC = () => {
                       msg.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'
                     )}
                   >
-                    {msg.role === 'assistant' && (skillLabel || msg.backend) && (
+                    {msg.role === 'assistant' && (skillLabel || msg.backend || parsedMessage.modelUsed) && (
                       <div className="mb-2 flex flex-wrap gap-2">
                         {skillLabel ? <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`技能 ${skillLabel}`}>
                           <svg
