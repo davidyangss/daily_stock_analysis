@@ -432,6 +432,7 @@ def _append_provider_runs(
         if previous:
             previous_node_id, previous_run = previous
             edge_kind = _provider_transition_kind(previous_run, run)
+            transition_provider = run.get("fallback_from") or previous_run.get("fallback_to")
             _append_edge(
                 edges,
                 previous_node_id,
@@ -439,7 +440,7 @@ def _append_provider_runs(
                 edge_kind,
                 status,
                 label="降级" if edge_kind == "fallback" else "重试",
-                message=_safe_text(run.get("fallback_from") or run.get("fallback_to"), max_length=120),
+                message=_safe_text(transition_provider, max_length=120),
             )
         else:
             _append_edge(edges, "task_queue", node_id, "control", status, label="调用")

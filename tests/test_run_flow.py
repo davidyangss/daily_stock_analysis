@@ -832,6 +832,66 @@ class RunFlowTestCase(unittest.TestCase):
                 for event in snapshot.events
             )
         )
+
+    def test_market_stats_multi_provider_recovery_keeps_final_success(self) -> None:
+        context_snapshot = {
+            "diagnostics": {
+                "trace_id": "trace-market-stats",
+                "task_id": "task-market-stats",
+                "query_id": "query-market-stats",
+                "stock_code": "MARKET",
+                "provider_runs": [
+                    {
+                        "data_type": "market_stats",
+                        "provider": "tickflow",
+                        "operation": "get_market_stats",
+                        "success": False,
+                        "error_type": "failed",
+                        "fallback_to": "tushare",
+                        "created_at": "2026-10-11T17:13:08.638175",
+                    },
+                    {
+                        "data_type": "market_stats",
+                        "provider": "tushare",
+                        "operation": "get_market_stats",
+                        "success": False,
+                        "error_type": "empty",
+                        "fallback_to": "iwencai",
+                        "created_at": "2026-10-11T17:13:08.643700",
+                    },
+                    {
+                        "data_type": "market_stats",
+                        "provider": "iwencai",
+                        "operation": "get_market_stats",
+                        "success": True,
+                        "record_count": 1,
+                        "created_at": "2026-10-11T17:13:08.648447",
+                    },
+                ],
+            }
+        }
+
+        snapshot = build_history_run_flow_snapshot(_history_record(context_snapshot=context_snapshot))
+        nodes = {node.id: node for node in snapshot.nodes}
+        edges = {
+            (edge.from_node, edge.to_node): edge
+            for edge in snapshot.edges
+            if edge.kind == "fallback"
+        }
+
+        self.assertEqual(snapshot.status, "success")
+        self.assertEqual(nodes["provider_market_stats_tickflow_1"].status, "failed")
+        self.assertEqual(nodes["provider_market_stats_tushare_2"].status, "failed")
+        self.assertEqual(nodes["provider_market_stats_iwencai_3"].status, "success")
+        self.assertEqual(
+            edges[("provider_market_stats_tickflow_1", "provider_market_stats_tushare_2")].message,
+            "tushare",
+        )
+        self.assertEqual(
+            edges[("provider_market_stats_tushare_2", "provider_market_stats_iwencai_3")].message,
+            "iwencai",
+        )
+
     def test_news_search_provider_runs_map_to_run_flow_nodes(self) -> None:
         context_snapshot = {
             "diagnostics": {
