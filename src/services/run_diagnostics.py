@@ -1216,18 +1216,12 @@ def _provider_component(
         }
         details = {key: value for key, value in details.items() if value is not None}
         if failures:
-            return _component(
-                key,
-                label,
-                "degraded",
-                f"{label}{provider} 成功，前置数据源失败后已继续",
-                details,
-            )
+            details["failed_attempts"] = len(failures)
         return _component(
             key,
             label,
             "ok",
-            f"{label}{provider} 成功",
+            f"{label}{provider} 成功" + ("，前置失败已由完整结果收敛" if failures else ""),
             details,
         )
 

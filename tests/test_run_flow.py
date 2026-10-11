@@ -724,7 +724,7 @@ class RunFlowTestCase(unittest.TestCase):
         snapshot = build_history_run_flow_snapshot(_history_record(context_snapshot=context_snapshot))
         edge_payload = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
 
-        self.assertEqual(snapshot.status, "degraded")
+        self.assertEqual(snapshot.status, "success")
         self.assertGreaterEqual(snapshot.summary.failed_attempts, 1)
         self.assertEqual(snapshot.summary.fallback_count, 1)
         self.assertTrue(any(edge["kind"] == "fallback" for edge in edge_payload))
@@ -815,7 +815,7 @@ class RunFlowTestCase(unittest.TestCase):
         self.assertIn("provider_realtime_quote_tickflowfetcher_1", nodes)
         self.assertEqual(nodes["provider_realtime_quote_tickflowfetcher_1"].status, "failed")
         self.assertIn("provider_realtime_quote_aksharefetcher_2", nodes)
-        self.assertEqual(nodes["provider_realtime_quote_aksharefetcher_2"].status, "fallback")
+        self.assertEqual(nodes["provider_realtime_quote_aksharefetcher_2"].status, "success")
         self.assertTrue(
             any(
                 edge["from"] == "provider_realtime_quote_tickflowfetcher_1"

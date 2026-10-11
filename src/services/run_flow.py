@@ -1066,9 +1066,8 @@ def _group_provider_runs(provider_runs: List[Any]) -> Dict[str, List[Dict[str, A
 
 
 def _provider_run_status(run: Dict[str, Any], *, had_previous_failure: bool) -> str:
+    _ = had_previous_failure
     if run.get("success") is True:
-        if run.get("fallback_from") or had_previous_failure:
-            return "fallback"
         return "success"
     error_type = str(run.get("error_type") or "").lower()
     if "timeout" in error_type:
@@ -1104,7 +1103,23 @@ def _history_snapshot_status(
         for node in nodes.values()
     ):
         return "failed"
-    if any(status in {"failed", "timeout", "degraded", "fallback"} for status in statuses):
+    provider_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for node in nodes.values():
+        if node.get("kind") != "data_source" or not str(node.get("id") or "").startswith("provider_"):
+            continue
+        metadata = _as_mapping(node.get("metadata"))
+        provider_groups[_safe_key(metadata.get("data_type") or "provider")].append(node)
+    unrecovered_provider_failure = any(
+        not any(node.get("status") == "success" for node in group)
+        and any(node.get("status") in {"failed", "timeout"} for node in group)
+        for group in provider_groups.values()
+    )
+    non_provider_degradation = any(
+        node.get("kind") != "data_source"
+        and node.get("status") in {"degraded", "fallback"}
+        for node in nodes.values()
+    )
+    if unrecovered_provider_failure or non_provider_degradation:
         return "degraded"
     return "success"
 

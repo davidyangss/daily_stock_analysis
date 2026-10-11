@@ -239,7 +239,7 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
         self.assertEqual(summary["components"]["news"]["status"], "degraded")
         self.assertEqual(summary["components"]["news"]["details"]["record_count"], 0)
 
-    def test_summary_classifies_provider_fallback_as_degraded_and_copy_text_is_sanitized(self) -> None:
+    def test_summary_keeps_complete_provider_fallback_successful_and_copy_text_sanitized(self) -> None:
         summary = build_run_diagnostic_summary(
             context_snapshot={
                 "diagnostics": _diagnostic_snapshot(),
@@ -253,9 +253,9 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
             report_saved=True,
         )
 
-        self.assertEqual(summary["status"], "degraded")
-        self.assertEqual(summary["status_label"], "部分降级")
-        self.assertEqual(summary["components"]["realtime_quote"]["status"], "degraded")
+        self.assertEqual(summary["status"], "normal")
+        self.assertEqual(summary["status_label"], "正常")
+        self.assertEqual(summary["components"]["realtime_quote"]["status"], "ok")
         self.assertEqual(summary["components"]["daily_data"]["status"], "ok")
         self.assertEqual(summary["components"]["llm"]["status"], "ok")
         self.assertEqual(summary["components"]["notification"]["status"], "ok")
@@ -384,9 +384,8 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
         )
 
         news = summary["components"]["news"]
-        # The shared fixture contains a quote-provider fallback, so the run as
-        # a whole remains degraded even though news itself is successful.
-        self.assertEqual(summary["status"], "degraded")
+        # A recovered quote-provider attempt does not lower final data quality.
+        self.assertEqual(summary["status"], "normal")
         self.assertEqual(news["status"], "ok")
         self.assertEqual(news["details"]["provider"], "Anspire")
         self.assertEqual(news["details"]["record_count"], 5)
