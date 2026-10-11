@@ -810,6 +810,11 @@ def summarize_tool_result(
         evidence["record_count"] = record_count
     if isinstance(requested_records, int):
         evidence["requested_records"] = requested_records
+    if isinstance(mapping.get("requested_months"), int):
+        evidence["requested_months"] = mapping["requested_months"]
+    for field in ("window_start", "window_end"):
+        if mapping.get(field):
+            evidence[field] = _safe_text(mapping[field])
     if status not in {"available", "fallback", "stale", "partial", "estimated"}:
         errors = mapping.get("errors")
         errors_text = (
@@ -936,7 +941,8 @@ def _supplement_owned_evidence(
             if metric.get("status") == "missing"
         ]
     for key in (
-        "record_count", "requested_records", "as_of", "data_description",
+        "record_count", "requested_records", "requested_months", "window_start",
+        "window_end", "as_of", "data_description",
         "tool_display_name", "tool_description", "source_links",
     ):
         if result.get(key) in (None, "", [], {}) and prefetched.get(key) not in (None, "", [], {}):
@@ -1901,6 +1907,10 @@ def format_strategy_evidence_markdown(
                 coverage.append(f"records={item['record_count']}")
             if isinstance(item.get("requested_records"), int):
                 coverage.append(f"requested={item['requested_records']}")
+            if isinstance(item.get("requested_months"), int):
+                coverage.append(f"months={item['requested_months']}")
+            if item.get("window_start") and item.get("window_end"):
+                coverage.append(f"window={item['window_start']}..{item['window_end']}")
             if item.get("cached"):
                 coverage.append("cache")
             if item.get("partial"):

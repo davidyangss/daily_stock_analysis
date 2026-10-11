@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from src.agent.tools.data_tools import _handle_get_daily_history
+from src.agent.tools.data_tools import _handle_get_daily_history, _subtract_calendar_months
 from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
 
 
@@ -101,6 +101,32 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
         self.assertEqual(result["data"][0]["date"], str(target - timedelta(days=29)))
         self.assertEqual(result["data"][-1]["date"], str(target))
         manager.get_daily_data.assert_not_called()
+
+    def test_default_uses_exact_three_calendar_month_window(self) -> None:
+        target = date(2026, 4, 24)
+        db = _FakeDb({"600519": _rows("600519", target, 120)})
+        manager = SimpleNamespace(get_daily_data=MagicMock())
+
+        token = set_frozen_target_date(target)
+        try:
+            with patch("src.storage.get_db", return_value=db), \
+                 patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
+                result = _handle_get_daily_history("600519")
+        finally:
+            reset_frozen_target_date(token)
+
+        self.assertEqual(result["requested_months"], 3)
+        self.assertEqual(result["window_start"], "2026-01-24")
+        self.assertEqual(result["window_end"], "2026-04-24")
+        self.assertEqual(result["actual_records"], 91)
+        self.assertFalse(result["partial_cache"])
+        manager.get_daily_data.assert_not_called()
+
+    def test_calendar_month_subtraction_clamps_month_end(self) -> None:
+        self.assertEqual(
+            _subtract_calendar_months(date(2026, 5, 31), 3),
+            date(2026, 2, 28),
+        )
 
     def test_prefers_fuller_candidate_when_dates_tie(self) -> None:
         target = date(2026, 4, 24)

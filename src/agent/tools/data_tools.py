@@ -11,9 +11,12 @@ Tools:
 
 import logging
 import time
+from calendar import monthrange
 from datetime import date
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 from src.agent.tools.execution import check_tool_execution
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
@@ -49,6 +52,9 @@ _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
 _DAILY_HISTORY_DEFAULT_DAYS = 60
 _DAILY_HISTORY_MAX_DAYS = 365
+_DAILY_HISTORY_DEFAULT_MONTHS = 3
+_DAILY_HISTORY_MAX_MONTHS = 24
+_TRADING_DAYS_PER_MONTH_BUDGET = 23
 _STOCK_INFO_TIMEOUT_SECONDS_DEFAULT = 60.0
 _STOCK_INFO_PROVIDER_TIMEOUT_SECONDS_DEFAULT = 8.0
 
@@ -114,6 +120,49 @@ def _normalize_history_days(days: Any) -> Tuple[int, Dict[str, Any]]:
             }
         )
     return effective_days, metadata
+
+
+def _subtract_calendar_months(value: date, months: int) -> date:
+    """Return the same day-of-month *months* earlier, clamped if necessary."""
+    month_index = value.year * 12 + value.month - 1 - months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(value.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _normalize_history_months(months: Any) -> Tuple[int, Dict[str, Any]]:
+    """Normalize an LLM-provided calendar-month history window."""
+    requested_months = months
+    warning = None
+    try:
+        if isinstance(months, bool):
+            raise ValueError("bool is not a valid months value")
+        effective_months = int(months)
+    except (TypeError, ValueError):
+        effective_months = _DAILY_HISTORY_DEFAULT_MONTHS
+        warning = (
+            f"Invalid months value {requested_months!r}; "
+            f"using default {_DAILY_HISTORY_DEFAULT_MONTHS}."
+        )
+
+    if effective_months < 1:
+        effective_months = 1
+        warning = f"months must be >= 1; using {effective_months}."
+    elif effective_months > _DAILY_HISTORY_MAX_MONTHS:
+        effective_months = _DAILY_HISTORY_MAX_MONTHS
+        warning = f"months exceeds max {_DAILY_HISTORY_MAX_MONTHS}; truncated."
+
+    metadata: Dict[str, Any] = {}
+    if warning is not None:
+        metadata.update(
+            {
+                "warning": warning,
+                "requested_months": requested_months,
+                "effective_months": effective_months,
+            }
+        )
+    return effective_months, metadata
 
 
 def _history_code_candidates(stock_code: str) -> Tuple[List[str], str]:
@@ -318,9 +367,28 @@ get_realtime_quote_tool = ToolDefinition(
 # get_daily_history
 # ============================================================
 
-def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
-    """Get daily OHLCV history data."""
-    effective_days, metadata = _normalize_history_days(days)
+def _handle_get_daily_history(
+    stock_code: str,
+    days: Optional[int] = None,
+    months: int = _DAILY_HISTORY_DEFAULT_MONTHS,
+) -> dict:
+    """Get daily OHLCV history data by calendar window or legacy bar count."""
+    calendar_window = days is None
+    if calendar_window:
+        effective_months, metadata = _normalize_history_months(months)
+        # Fetch enough trading bars to cover the calendar window, then apply an
+        # exact date boundary below.  The small budget margin covers months with
+        # 21-23 sessions without turning "months" into a trading-day contract.
+        effective_days = effective_months * _TRADING_DAYS_PER_MONTH_BUDGET
+        from src.services.history_loader import get_frozen_target_date
+
+        window_end = get_frozen_target_date() or date.today()
+        window_start = _subtract_calendar_months(window_end, effective_months)
+    else:
+        effective_days, metadata = _normalize_history_days(days)
+        effective_months = None
+        window_start = None
+        window_end = None
 
     from src.services.history_loader import load_history_df
     df, source = load_history_df(stock_code, days=effective_days)
@@ -348,8 +416,21 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
                 exc,
             )
 
-    # Convert DataFrame to list of dicts (last N records)
-    records = df.tail(min(effective_days, len(df))).to_dict(orient="records")
+    if calendar_window:
+        dated_df = df.copy()
+        if "date" not in dated_df.columns:
+            return _append_history_metadata(
+                {"error": f"Historical data for {stock_code} has no date field"},
+                metadata,
+            )
+        parsed_dates = pd.to_datetime(dated_df["date"], errors="coerce").dt.date
+        dated_df = dated_df.loc[
+            parsed_dates.between(window_start, window_end, inclusive="both")
+        ]
+        records = dated_df.to_dict(orient="records")
+    else:
+        # Legacy compatibility: explicit ``days`` still means trading records.
+        records = df.tail(min(effective_days, len(df))).to_dict(orient="records")
     # Ensure date is string
     for r in records:
         if "date" in r:
@@ -359,23 +440,42 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     if source == "db_cache" and records:
         response_code = records[-1].get("code") or response_code
 
-    return _append_history_metadata({
+    response = {
         "code": response_code,
         "source": source,
         "cache_hit": source == "db_cache",
-        "requested_days": effective_days,
-        "effective_days": effective_days,
         "actual_records": len(records),
-        "partial_cache": source == "db_cache" and len(records) < effective_days,
         "total_records": len(records),
         "data": records,
-    }, metadata)
+    }
+    if calendar_window:
+        response.update(
+            {
+                "requested_months": effective_months,
+                "effective_months": effective_months,
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+                # A newly listed stock may legitimately have fewer records than
+                # the budget.  Fresh date-bounded data is not a partial fetch.
+                "partial_cache": False,
+            }
+        )
+    else:
+        response.update(
+            {
+                "requested_days": effective_days,
+                "effective_days": effective_days,
+                "partial_cache": source == "db_cache" and len(records) < effective_days,
+            }
+        )
+    return _append_history_metadata(response, metadata)
 
 
 get_daily_history_tool = ToolDefinition(
     name="get_daily_history",
     description="Get daily OHLCV (open, high, low, close, volume) historical data "
-                "with MA5/MA10/MA20 indicators. Returns the last N trading days.",
+                "with MA5/MA10/MA20 indicators. Defaults to the latest 3 calendar months; "
+                "the legacy days parameter requests an exact trading-record count.",
     parameters=[
         ToolParameter(
             name="stock_code",
@@ -385,9 +485,16 @@ get_daily_history_tool = ToolDefinition(
         ToolParameter(
             name="days",
             type="integer",
-            description="Number of trading days to fetch (default: 60)",
+            description="Optional legacy number of trading records. Omit to use months.",
             required=False,
-            default=60,
+            default=None,
+        ),
+        ToolParameter(
+            name="months",
+            type="integer",
+            description="Calendar-month span to fetch when days is omitted (default: 3)",
+            required=False,
+            default=3,
         ),
     ],
     handler=_handle_get_daily_history,

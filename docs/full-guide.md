@@ -1802,7 +1802,8 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 
 ## Agent 工具数据缓存与持久化
 
-- `get_daily_history` 会先尝试复用本地 `stock_daily` 日线缓存；缓存新鲜且至少覆盖首页默认的 30 条记录时，不再重复请求外部数据源。
+- `get_daily_history` 默认返回截至本轮冻结交易日的近 3 个自然月日线，并会先尝试复用本地 `stock_daily` 缓存；缓存新鲜且至少覆盖首页默认的 30 条记录时，不再重复请求外部数据源。新上市股票在该自然月窗口内少于 60 个交易日属于真实历史边界，不再仅因记录数不足被标记为 `partial`；调用方仍可显式传入 `days`，按兼容语义请求固定数量的交易日记录。
+- A 股筹码优先读取可用的成品筹码接口；Tushare `cyq_chips` 无权限或东财成品接口异常时，会依次尝试东财浏览器 K 线（如显式启用）、新浪和腾讯不复权日线，并依据换手率在本地估算。报告中的 `source` 会保留 `*_calculated` 来源，估算结果不等同于交易所或数据商直接提供的原始筹码分布；港股、美股及 ETF/指数当前不走这条 A 股估算链。
 - 当 Agent 请求的天数多于本地缓存记录数时，工具会返回实际可用记录，并通过 `partial_cache=true`、`requested_days`、`actual_records` 标明这是部分缓存命中。
 - 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
 - `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
