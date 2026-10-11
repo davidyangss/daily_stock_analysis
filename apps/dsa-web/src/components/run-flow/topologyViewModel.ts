@@ -104,18 +104,17 @@ const labelForDataType = (dataType: string, nodes: RunFlowNode[]): string => {
   return beforeProvider || dataType;
 };
 
-const groupStatus = (nodes: RunFlowNode[], edges: RunFlowEdge[]): RunFlowStatus => {
+const groupStatus = (nodes: RunFlowNode[]): RunFlowStatus => {
   const statuses = nodes.map((node) => node.status);
   if (statuses.length === 0) return 'unknown';
   if (statuses.includes('cancel_requested')) return 'cancel_requested';
   if (statuses.some((status) => status === 'running' || status === 'pending')) return 'running';
   if (statuses.every((status) => status === 'success')) return 'success';
   const hasSuccess = statuses.includes('success');
-  const hasFailedOrTimeout = statuses.some((status) => status === 'failed' || status === 'timeout');
-  const hasFallbackAttempt = statuses.includes('fallback');
-  const hasRecoveryTransition = edges.some((edge) => edge.kind === 'fallback' || edge.kind === 'retry');
-  if (hasSuccess && (hasFailedOrTimeout || hasFallbackAttempt) && hasRecoveryTransition) return 'fallback';
-  if (hasSuccess && statuses.some((status) => ['failed', 'timeout', 'degraded', 'fallback'].includes(status))) return 'degraded';
+  // Provider switching describes the retrieval path, not the final data quality.
+  // A successful attempt has already passed that capability's usability and
+  // completeness contract; earlier failures remain visible in attempt details.
+  if (hasSuccess) return 'success';
   return statuses.reduce<RunFlowStatus>((winner, status) => (
     statusRank(status) > statusRank(winner) ? status : winner
   ), 'unknown');
@@ -155,7 +154,7 @@ const buildProviderGroupNode = (
     lane: 'data_source',
     kind: 'data_source',
     label,
-    status: groupStatus(sortedAttempts, attemptEdges),
+    status: groupStatus(sortedAttempts),
     provider: providerChain,
     startedAt: minTime(sortedAttempts),
     endedAt: maxTime(sortedAttempts),
@@ -301,6 +300,7 @@ export const buildRunFlowTopologyModel = (
 
   const nodes = [...visibleNodes, ...providerGroupNodes];
   const visibleNodeIds = new Set(nodes.map((node) => node.id));
+  const providerGroupById = new Map(providerGroupNodes.map((node) => [node.id, node]));
   const edgeByKey = new Map<string, RunFlowEdge>();
 
   snapshot.edges.forEach((edge) => {
@@ -314,12 +314,16 @@ export const buildRunFlowTopologyModel = (
     if (from === to || !visibleNodeIds.has(from) || !visibleNodeIds.has(to)) return;
     const key = `${from}->${to}:${edge.kind}`;
     const existing = edgeByKey.get(key);
+    const targetGroup = providerGroupById.get(to);
+    const mappedStatus = targetGroup && !options.expandedGroupIds?.has(to)
+      ? targetGroup.status
+      : edge.status;
     const mappedEdge: RunFlowEdge = {
       ...edge,
       id: existing?.id || `topology_${edgeByKey.size + 1}_${from}_${to}_${edge.kind}`,
       from,
       to,
-      status: existing && statusRank(existing.status) > statusRank(edge.status) ? existing.status : edge.status,
+      status: existing && statusRank(existing.status) > statusRank(mappedStatus) ? existing.status : mappedStatus,
       label: existing?.label || edge.label,
       message: existing?.message || edge.message,
     };

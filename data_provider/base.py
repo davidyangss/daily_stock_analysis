@@ -3346,22 +3346,54 @@ class DataFetcherManager:
         from src.config import get_config
 
         config = get_config()
-        entries = self._resolve_configured_fetchers(
-            getattr(config, "market_stats_source_priority", "tickflow,tushare,efinance,akshare"),
-            token_map={
-                "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
-                "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
-            },
-            capability="market_stats",
-        )
-        providers = [
-            (
-                source,
-                fetcher.get_market_stats if fetcher is not None else None,
-                reason,
-            )
-            for source, fetcher, reason in entries
+        priorities = [
+            item.strip().lower()
+            for item in getattr(
+                config,
+                "market_stats_source_priority",
+                "tickflow,tushare,iwencai,eastmoney_mx,efinance,akshare",
+            ).split(",")
+            if item.strip()
         ]
+        fetchers = {fetcher.name: fetcher for fetcher in self._get_fetchers_snapshot()}
+        token_map = {
+            "tickflow": "TickFlowFetcher", "tushare": "TushareFetcher",
+            "efinance": "EfinanceFetcher", "akshare": "AkshareFetcher",
+        }
+        providers = []
+        used: set[str] = set()
+        for source in priorities:
+            if source == "iwencai":
+                adapter = self._get_iwencai_adapter()
+                providers.append((
+                    source,
+                    adapter.get_market_stats if adapter else None,
+                    "not_available" if adapter is None else None,
+                ))
+                continue
+            if source == "eastmoney_mx":
+                adapter = self._get_eastmoney_mx_adapter()
+                providers.append((
+                    source,
+                    adapter.get_market_stats if adapter else None,
+                    "not_available" if adapter is None else None,
+                ))
+                continue
+            fetcher_name = token_map.get(source)
+            if fetcher_name is None:
+                providers.append((source, None, "not_supported"))
+                continue
+            if fetcher_name in used:
+                providers.append((source, None, "duplicate_adapter"))
+                continue
+            fetcher = fetchers.get(fetcher_name)
+            if fetcher is None and fetcher_name == "TickFlowFetcher":
+                fetcher = self._get_tickflow_fetcher()
+            if fetcher is None or not self._is_fetcher_available(fetcher, "market_stats"):
+                providers.append((source, None, "not_available"))
+                continue
+            used.add(fetcher_name)
+            providers.append((source, fetcher.get_market_stats, None))
         result = self._run_atomic_provider_loop(
             capability="market_stats",
             providers=providers,
@@ -4694,7 +4726,7 @@ class DataFetcherManager:
                 for item in getattr(
                     config,
                     "sector_source_priority",
-                    "eastmoney,tushare,akshare,efinance",
+                    "iwencai,eastmoney_mx,eastmoney,tushare,akshare,efinance,local",
                 ).split(",")
                 if item.strip()
             ]
@@ -4721,6 +4753,26 @@ class DataFetcherManager:
                 return value
 
             for source in priorities:
+                if source == "iwencai":
+                    adapter = self._get_iwencai_adapter()
+                    calls.append(ProviderCall(
+                        source,
+                        (lambda call_timeout, current=adapter, token=source: call_rankings(
+                            current, token, call_timeout,
+                        )) if adapter else None,
+                        skip_reason="not_available" if adapter is None else None,
+                    ))
+                    continue
+                if source == "eastmoney_mx":
+                    adapter = self._get_eastmoney_mx_adapter()
+                    calls.append(ProviderCall(
+                        source,
+                        (lambda call_timeout, current=adapter, token=source: call_rankings(
+                            current, token, call_timeout,
+                        )) if adapter else None,
+                        skip_reason="not_available" if adapter is None else None,
+                    ))
+                    continue
                 fetcher_name = token_map.get(source)
                 if fetcher_name is None:
                     calls.append(ProviderCall(source, skip_reason="not_supported"))
@@ -4855,22 +4907,57 @@ class DataFetcherManager:
             from src.config import get_config
 
             config = get_config()
-            entries = self._resolve_configured_fetchers(
-                getattr(config, "concept_source_priority", "akshare"),
-                token_map={"akshare": "AkshareFetcher", "eastmoney": "AkshareFetcher"},
-                capability="concept_rankings",
-            )
+            priorities = [
+                item.strip().lower()
+                for item in getattr(
+                    config,
+                    "concept_source_priority",
+                    "iwencai,eastmoney_mx,akshare",
+                ).split(",")
+                if item.strip()
+            ]
+            fetchers = {fetcher.name: fetcher for fetcher in self._get_fetchers_snapshot()}
+            calls = []
+            used: set[str] = set()
+            for source in priorities:
+                if source == "iwencai":
+                    adapter = self._get_iwencai_adapter()
+                    calls.append((
+                        source,
+                        (lambda current=adapter: current.get_concept_rankings(normalized_n))
+                        if adapter else None,
+                        "not_available" if adapter is None else None,
+                    ))
+                    continue
+                if source == "eastmoney_mx":
+                    adapter = self._get_eastmoney_mx_adapter()
+                    calls.append((
+                        source,
+                        (lambda current=adapter: current.get_concept_rankings(normalized_n))
+                        if adapter else None,
+                        "not_available" if adapter is None else None,
+                    ))
+                    continue
+                fetcher_name = {"akshare": "AkshareFetcher", "eastmoney": "AkshareFetcher"}.get(source)
+                if fetcher_name is None:
+                    calls.append((source, None, "not_supported"))
+                    continue
+                if fetcher_name in used:
+                    calls.append((source, None, "duplicate_adapter"))
+                    continue
+                fetcher = fetchers.get(fetcher_name)
+                if fetcher is None or not self._is_fetcher_available(fetcher, "concept_rankings"):
+                    calls.append((source, None, "not_available"))
+                    continue
+                used.add(fetcher_name)
+                calls.append((
+                    source,
+                    lambda current=fetcher: current.get_concept_rankings(normalized_n),
+                    None,
+                ))
             data = self._run_atomic_provider_loop(
                 capability="concept_rankings",
-                providers=[
-                    (
-                        source,
-                        (lambda current=fetcher: current.get_concept_rankings(normalized_n))
-                        if fetcher is not None else None,
-                        reason,
-                    )
-                    for source, fetcher, reason in entries
-                ],
+                providers=calls,
                 is_usable=lambda value: (
                     isinstance(value, tuple) and len(value) >= 2 and bool(value[0] or value[1])
                 ),

@@ -550,6 +550,35 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertEqual(top[0]["name"], "地产")
         self.assertEqual(bottom[0]["name"], "煤炭")
 
+    def test_sector_rankings_use_iwencai_adapter_before_fetchers(self) -> None:
+        akshare = _DummyFetcher("AkshareFetcher", priority=1, rankings=(
+            [{"name": "东财行业", "change_pct": 1.0}],
+            [{"name": "东财行业", "change_pct": -1.0}],
+        ))
+        manager = DataFetcherManager(fetchers=[akshare])
+        iwencai = MagicMock()
+        iwencai.get_sector_rankings.return_value = (
+            [{"name": "问财领涨", "change_pct": 3.0}],
+            [{"name": "问财领跌", "change_pct": -2.0}],
+        )
+        cfg = SimpleNamespace(
+            sector_source_priority="iwencai,eastmoney",
+            provider_loop_timeout_seconds=1.0,
+            provider_loop_total_timeout_seconds=3.0,
+            data_provider_max_attempts=1,
+            data_provider_retry_base_delay_seconds=0.0,
+            data_provider_retry_max_delay_seconds=0.0,
+            provider_timeout_overrides={},
+        )
+        with patch("src.config.get_config", return_value=cfg), patch.object(
+            manager, "_get_iwencai_adapter", return_value=iwencai,
+        ):
+            top, bottom = manager.get_sector_rankings(1)
+
+        self.assertEqual(top[0]["name"], "问财领涨")
+        self.assertEqual(bottom[0]["name"], "问财领跌")
+        iwencai.get_sector_rankings.assert_called_once_with(1)
+
     def test_fundamental_context_aggregates_blocks(self) -> None:
         manager = DataFetcherManager(fetchers=[])
         cfg = SimpleNamespace(

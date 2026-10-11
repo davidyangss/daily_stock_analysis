@@ -128,7 +128,7 @@ const baseSnapshot: RunFlowSnapshot = {
 };
 
 describe('buildRunFlowTopologyModel', () => {
-  it('collapses provider attempts into data-source topology groups', () => {
+  it('keeps a complete recovered provider result successful after fallback', () => {
     const model = buildRunFlowTopologyModel(baseSnapshot);
 
     expect(model.nodes.map((node) => node.id)).not.toContain('provider_news_search_tavily_1');
@@ -137,7 +137,7 @@ describe('buildRunFlowTopologyModel', () => {
     const newsGroup = model.nodes.find((node) => node.id === 'topology_data_news_search');
     expect(newsGroup).toMatchObject({
       label: '新闻舆情',
-      status: 'fallback',
+      status: 'success',
       provider: 'Tavily -> SearXNG',
       attempts: 2,
       recordCount: 6,
@@ -149,6 +149,11 @@ describe('buildRunFlowTopologyModel', () => {
       success_count: 1,
       failed_count: 1,
       fallback_count: 1,
+    });
+    expect(model.edges.find((edge) => (
+      edge.from === 'task_queue' && edge.to === 'topology_data_news_search'
+    ))).toMatchObject({
+      status: 'success',
     });
   });
 
@@ -247,7 +252,7 @@ describe('buildRunFlowTopologyModel', () => {
     expect(model.events.find((event) => event.id === 'evt-normalized-block')?.nodeId).toBe('context_pack');
   });
 
-  it('groups TickFlow realtime fallback attempts without provider-specific UI branches', () => {
+  it('groups TickFlow attempts while keeping the complete fallback result successful', () => {
     const tickFlowSnapshot: RunFlowSnapshot = {
       ...baseSnapshot,
       nodes: [
@@ -298,7 +303,7 @@ describe('buildRunFlowTopologyModel', () => {
 
     expect(quoteGroup).toMatchObject({
       label: '实时行情',
-      status: 'fallback',
+      status: 'success',
       provider: 'TickFlowFetcher -> AkshareFetcher',
       attempts: 2,
       recordCount: 1,
@@ -354,7 +359,7 @@ describe('buildRunFlowTopologyModel', () => {
     });
   });
 
-  it('marks mixed success and failure without recovery transitions as degraded', () => {
+  it('keeps a complete success authoritative even without an explicit recovery transition', () => {
     const degradedSnapshot: RunFlowSnapshot = {
       ...baseSnapshot,
       edges: baseSnapshot.edges.map((edge) => (
@@ -368,7 +373,7 @@ describe('buildRunFlowTopologyModel', () => {
     const newsGroup = model.nodes.find((node) => node.id === 'topology_data_news_search');
 
     expect(newsGroup).toMatchObject({
-      status: 'degraded',
+      status: 'success',
       attempts: 2,
     });
     expect(newsGroup?.metadata).toMatchObject({

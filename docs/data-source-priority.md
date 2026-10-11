@@ -102,14 +102,15 @@ SerpAPI 的 socket/SDK 请求预算由 `SERPAPI_TIMEOUT_SECONDS=20` 控制，卡
 | 财务 | `FINANCIAL_SOURCE_PRIORITY` | `tushare,iwencai,akshare_em,longbridge,yfinance` |
 | 股东治理 | `GOVERNANCE_SOURCE_PRIORITY` | `iwencai,tushare,akshare_em` |
 | 公司事件 | `EVENT_SOURCE_PRIORITY` | `iwencai_announcement,iwencai_event,eastmoney,news` |
-| 行业板块 | `SECTOR_SOURCE_PRIORITY` | `iwencai,eastmoney,tushare,akshare,efinance,local` |
+| 行业板块 | `SECTOR_SOURCE_PRIORITY` | `iwencai,eastmoney_mx,eastmoney,tushare,akshare,efinance,local` |
 | 新闻 | `NEWS_SOURCE_PRIORITY` | `iwencai_news,search_aggregators,web_search` |
 | 公告 | `ANNOUNCEMENT_SOURCE_PRIORITY` | `iwencai_announcement,eastmoney,web_search` |
 | 研报 | `RESEARCH_SOURCE_PRIORITY` | `iwencai_report,iwencai_insresearch,broker_website,news` |
 | 宏观 | `MACRO_SOURCE_PRIORITY` | `iwencai,tushare,financial_media` |
 | 筹码 | `CHIP_SOURCE_PRIORITY` | `akshare_em,iwencai,local_estimate` |
 | 主要指数 | `INDEX_SOURCE_PRIORITY` | `tushare,tickflow,efinance,akshare,yfinance` |
-| 市场涨跌统计 | `MARKET_STATS_SOURCE_PRIORITY` | `tickflow,tushare,efinance,akshare` |
+| 市场涨跌统计 | `MARKET_STATS_SOURCE_PRIORITY` | `tickflow,tushare,iwencai,eastmoney_mx,efinance,akshare` |
+| 概念板块排行 | `CONCEPT_SOURCE_PRIORITY` | `iwencai,eastmoney_mx,akshare` |
 | 默认单 provider 预算 | `PROVIDER_LOOP_TIMEOUT_SECONDS` | `60` |
 | provider 独立预算 | `PROVIDER_TIMEOUT_OVERRIDES` | 空（例：`iwencai=60,tushare=60`） |
 | 单 provider 总调用次数（含首次） | `DATA_PROVIDER_MAX_ATTEMPTS` | `3` |
@@ -147,10 +148,12 @@ SerpAPI 的 socket/SDK 请求预算由 `SERPAPI_TIMEOUT_SECONDS=20` 控制，卡
 - 日期后缀列只能映射到明确的 `as_of`，不能把当前查询结果直接用于历史回测。
 - 主力资金属于供应商口径，问财与东方财富数据只能降级替换，不能被当作同一口径进行跨源累计。
 - 问财关闭或失败时不得阻断分析主流程。
+- 市场涨跌统计只接受聚合查询同时返回上涨、下跌、平盘、涨停、跌停家数与两市成交额；不得用受返回条数限制的个股样本推算全市场。
+- 概念排行至少需要覆盖请求数量两端的概念名称与涨跌幅；返回不足时视为不可用并继续 fallback，避免把截断结果同时当作领涨与领跌排行。
 
 ## 妙想数据契约和边界
 
-- 当前接入 `mx-data` 的实时行情与个股主力资金两项只读能力；只采信证券代码匹配的结果。
+- 当前接入 `mx-data` 的实时行情、个股主力资金、市场涨跌统计与概念排行只读能力；证券级查询只采信代码匹配的结果。
 - 实时行情只读取 `dataTypeEnum=HQ` 的当前行情表，明确排除同一响应中的历史 `DATA_BROWSER` 表。
 - 主力资金若返回逐交易日序列，5 日/10 日窗口仅在对应交易日数量完整时按同一东财口径求和；数据不足不填充。
 - API Key 仅从服务端环境变量读取，不写日志、不返回前端；鉴权失败、额度耗尽、超时、空数据均继续降级。
@@ -168,3 +171,4 @@ REALTIME_SOURCE_PRIORITY=tencent,akshare_sina,efinance,akshare_em
 ```
 
 其他能力可分别覆盖对应的 `*_SOURCE_PRIORITY`，无需修改代码。
+妙想的市场涨跌统计与概念排行遵循和问财相同的完整性门槛；自然语言查询返回部分字段或不足量排行时 fail-open 到后续来源。

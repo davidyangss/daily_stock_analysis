@@ -1162,15 +1162,15 @@ class Config:
     financial_source_priority: str = "tushare,iwencai,akshare_em,longbridge,yfinance"
     governance_source_priority: str = "iwencai,tushare,akshare_em"
     event_source_priority: str = "iwencai_announcement,iwencai_event,eastmoney,news"
-    sector_source_priority: str = "iwencai,eastmoney,tushare,akshare,efinance,local"
+    sector_source_priority: str = "iwencai,eastmoney_mx,eastmoney,tushare,akshare,efinance,local"
     news_source_priority: str = "iwencai_news,search_aggregators,web_search"
     announcement_source_priority: str = "iwencai_announcement,eastmoney,web_search"
     research_source_priority: str = "iwencai_report,iwencai_insresearch,broker_website,news"
     macro_source_priority: str = "iwencai,tushare,financial_media"
     chip_source_priority: str = "akshare_em,iwencai,local_estimate"
     index_source_priority: str = "tushare,tickflow,efinance,akshare,yfinance"
-    market_stats_source_priority: str = "tickflow,tushare,efinance,akshare"
-    concept_source_priority: str = "akshare"
+    market_stats_source_priority: str = "tickflow,tushare,iwencai,eastmoney_mx,efinance,akshare"
+    concept_source_priority: str = "iwencai,eastmoney_mx,akshare"
     hot_stock_source_priority: str = "akshare"
     limit_up_source_priority: str = "akshare"
     # Ordered provider-loop budgets shared by non-fundamental capabilities.
@@ -2274,15 +2274,15 @@ class Config:
             financial_source_priority=os.getenv('FINANCIAL_SOURCE_PRIORITY', 'tushare,iwencai,akshare_em,longbridge,yfinance'),
             governance_source_priority=os.getenv('GOVERNANCE_SOURCE_PRIORITY', 'iwencai,tushare,akshare_em'),
             event_source_priority=os.getenv('EVENT_SOURCE_PRIORITY', 'iwencai_announcement,iwencai_event,eastmoney,news'),
-            sector_source_priority=os.getenv('SECTOR_SOURCE_PRIORITY', 'iwencai,eastmoney,tushare,akshare,efinance,local'),
+            sector_source_priority=os.getenv('SECTOR_SOURCE_PRIORITY', 'iwencai,eastmoney_mx,eastmoney,tushare,akshare,efinance,local'),
             news_source_priority=os.getenv('NEWS_SOURCE_PRIORITY', 'iwencai_news,search_aggregators,web_search'),
             announcement_source_priority=os.getenv('ANNOUNCEMENT_SOURCE_PRIORITY', 'iwencai_announcement,eastmoney,web_search'),
             research_source_priority=os.getenv('RESEARCH_SOURCE_PRIORITY', 'iwencai_report,iwencai_insresearch,broker_website,news'),
             macro_source_priority=os.getenv('MACRO_SOURCE_PRIORITY', 'iwencai,tushare,financial_media'),
             chip_source_priority=os.getenv('CHIP_SOURCE_PRIORITY', 'akshare_em,iwencai,local_estimate'),
             index_source_priority=os.getenv('INDEX_SOURCE_PRIORITY', 'tushare,tickflow,efinance,akshare,yfinance'),
-            market_stats_source_priority=os.getenv('MARKET_STATS_SOURCE_PRIORITY', 'tickflow,tushare,efinance,akshare'),
-            concept_source_priority=os.getenv('CONCEPT_SOURCE_PRIORITY', 'akshare'),
+            market_stats_source_priority=os.getenv('MARKET_STATS_SOURCE_PRIORITY', 'tickflow,tushare,iwencai,eastmoney_mx,efinance,akshare'),
+            concept_source_priority=os.getenv('CONCEPT_SOURCE_PRIORITY', 'iwencai,eastmoney_mx,akshare'),
             hot_stock_source_priority=os.getenv('HOT_STOCK_SOURCE_PRIORITY', 'akshare'),
             limit_up_source_priority=os.getenv('LIMIT_UP_SOURCE_PRIORITY', 'akshare'),
             provider_loop_timeout_seconds=parse_env_float(

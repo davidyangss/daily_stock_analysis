@@ -51,6 +51,22 @@ class _DummyTickFlowFetcher:
         self.closed = True
 
 
+class _DummyStructuredAdapter:
+    def __init__(self, *, stats=None, concepts=None):
+        self.stats = stats
+        self.concepts = concepts
+        self.stats_calls = 0
+        self.concept_calls = 0
+
+    def get_market_stats(self):
+        self.stats_calls += 1
+        return self.stats
+
+    def get_concept_rankings(self, n=5):
+        self.concept_calls += 1
+        return self.concepts
+
+
 class TestTickFlowMarketReviewFallback(unittest.TestCase):
     def setUp(self):
         # Provider order is part of this unit's contract.  Keep host .env
@@ -167,6 +183,61 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         self.assertEqual(data["up_count"], 2)
         self.assertEqual(fallback.stats_calls, 1)
+
+    @patch("src.config.get_config")
+    def test_market_stats_uses_iwencai_before_legacy_full_market_sources(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            market_stats_source_priority="iwencai,eastmoney_mx,akshare",
+            provider_loop_timeout_seconds=1.0,
+            provider_loop_total_timeout_seconds=2.0,
+            provider_timeout_overrides={},
+            data_provider_max_attempts=1,
+            data_provider_retry_base_delay_seconds=0.0,
+            data_provider_retry_max_delay_seconds=0.0,
+        )
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        fallback = _DummyFetcher("AkshareFetcher", stats={"up_count": 1})
+        iwencai = _DummyStructuredAdapter(stats={
+            "up_count": 3200, "down_count": 1800, "flat_count": 100,
+            "limit_up_count": 70, "limit_down_count": 8, "total_amount": 19000.0,
+        })
+        mx = _DummyStructuredAdapter(stats={"up_count": 999})
+        manager._fetchers = [fallback]
+        manager._get_iwencai_adapter = lambda: iwencai
+        manager._get_eastmoney_mx_adapter = lambda: mx
+
+        data = DataFetcherManager.get_market_stats(manager)
+
+        self.assertEqual(data["up_count"], 3200)
+        self.assertEqual(iwencai.stats_calls, 1)
+        self.assertEqual(mx.stats_calls, 0)
+        self.assertEqual(fallback.stats_calls, 0)
+
+    @patch("src.config.get_config")
+    def test_concept_rankings_fall_back_from_iwencai_to_miaoxiang(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            concept_source_priority="iwencai,eastmoney_mx,akshare",
+            provider_loop_timeout_seconds=1.0,
+            provider_loop_total_timeout_seconds=2.0,
+            provider_timeout_overrides={},
+            data_provider_max_attempts=1,
+            data_provider_retry_base_delay_seconds=0.0,
+            data_provider_retry_max_delay_seconds=0.0,
+        )
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        iwencai = _DummyStructuredAdapter(concepts=None)
+        expected = ([{"name": "机器人", "change_pct": 3.0}], [{"name": "白酒", "change_pct": -2.0}])
+        mx = _DummyStructuredAdapter(concepts=expected)
+        manager._fetchers = []
+        manager._get_iwencai_adapter = lambda: iwencai
+        manager._get_eastmoney_mx_adapter = lambda: mx
+        DataFetcherManager.clear_concept_rankings_cache_for_tests()
+
+        result = DataFetcherManager.get_concept_rankings(manager, 1)
+
+        self.assertEqual(result, expected)
+        self.assertEqual(iwencai.concept_calls, 1)
+        self.assertEqual(mx.concept_calls, 1)
 
     def test_manager_close_releases_tickflow_fetcher(self):
         manager = DataFetcherManager.__new__(DataFetcherManager)

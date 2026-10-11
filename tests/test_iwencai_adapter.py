@@ -66,6 +66,109 @@ def test_capital_flow_maps_each_window_without_cross_window_fallback() -> None:
     ]
 
 
+def test_market_stats_requires_and_normalizes_complete_split_snapshot() -> None:
+    adapter = IwencaiAdapter("secret")
+    payloads = [
+        {"datas": [{"上涨家数[20260731]": 3210}]},
+        {"datas": [{"涨跌幅满足条件数量[20260731]": 1800}]},
+        {"datas": [{"平盘家数[20260731]": 120}]},
+        {"datas": [{"涨停家数[20260731]": 75}]},
+        {"datas": [{"跌停满足条件数量[20260731]": 8}]},
+        {"datas": [{"成交额[20260731]": "1.92万亿"}]},
+    ]
+    with patch.object(adapter, "query", side_effect=payloads) as query:
+        result = adapter.get_market_stats()
+
+    assert result == {
+        "up_count": 3210, "down_count": 1800, "flat_count": 120,
+        "limit_up_count": 75, "limit_down_count": 8, "total_amount": 19200.0,
+    }
+    assert query.call_count == 6
+    assert all(call.kwargs == {"skill_id": "hithink-market-query", "limit": 3} for call in query.call_args_list)
+
+
+def test_market_stats_rejects_partial_split_snapshot() -> None:
+    adapter = IwencaiAdapter("secret")
+    with patch.object(adapter, "query", return_value={"datas": [{"上涨家数": 3000}]}):
+        assert adapter.get_market_stats() is None
+
+
+def test_market_stats_rejects_mixed_trading_dates() -> None:
+    adapter = IwencaiAdapter("secret")
+    payloads = [
+        {"datas": [{"上涨家数[20260731]": 3210}]},
+        {"datas": [{"下跌家数[20260731]": 1800}]},
+        {"datas": [{"平盘家数[20260731]": 120}]},
+        {"datas": [{"涨停家数[20260731]": 75}]},
+        {"datas": [{"跌停家数[20260731]": 8}]},
+        {"datas": [{"成交额[20260730]": "1.92万亿"}]},
+    ]
+    with patch.object(adapter, "query", side_effect=payloads):
+        assert adapter.get_market_stats() is None
+
+
+def test_concept_rankings_require_both_ends_and_sort_results() -> None:
+    adapter = IwencaiAdapter("secret")
+    top_rows = [{"概念名称": "概念A", "涨跌幅": 1.2}, {"概念名称": "概念B", "涨跌幅": 3.1}]
+    bottom_rows = [{"概念名称": "概念C", "涨跌幅": -0.5}, {"概念名称": "概念D", "涨跌幅": -2.4}]
+    with patch.object(
+        adapter,
+        "query",
+        side_effect=[{"datas": top_rows}, {"datas": bottom_rows}],
+    ):
+        top, bottom = adapter.get_concept_rankings(2)
+
+    assert [row["change_pct"] for row in top] == [3.1, 1.2]
+    assert [row["change_pct"] for row in bottom] == [-2.4, -0.5]
+
+
+def test_concept_rankings_reject_truncated_side() -> None:
+    adapter = IwencaiAdapter("secret")
+    with patch.object(
+        adapter,
+        "query",
+        side_effect=[
+            {"datas": [{"概念名称": "概念A", "涨跌幅": 3.1}]},
+            {"datas": [{"概念名称": "概念B", "涨跌幅": -2.4}]},
+        ],
+    ):
+        assert adapter.get_concept_rankings(2) is None
+
+
+def test_sector_rankings_normalize_real_index_columns() -> None:
+    adapter = IwencaiAdapter("secret")
+    top_rows = [
+        {"指数简称": "种子生产", "最新涨跌幅:前复权": 7.78},
+        {"指数简称": "影视院线", "涨跌幅[20261009]": 7.23},
+    ]
+    bottom_rows = [
+        {"指数简称": "元件", "最新涨跌幅:前复权": -3.63},
+        {"指数简称": "镍", "涨跌幅[20261009]": -5.43},
+    ]
+    with patch.object(
+        adapter,
+        "query",
+        side_effect=[{"datas": top_rows}, {"datas": bottom_rows}],
+    ):
+        top, bottom = adapter.get_sector_rankings(2)
+
+    assert [row["name"] for row in top] == ["种子生产", "影视院线"]
+    assert [row["name"] for row in bottom] == ["镍", "元件"]
+
+
+def test_sector_rankings_reject_truncated_side() -> None:
+    adapter = IwencaiAdapter("secret")
+    with patch.object(
+        adapter,
+        "query",
+        side_effect=[
+            {"datas": [{"指数简称": "种子生产", "涨跌幅": 7.78}]},
+            {"datas": [{"指数简称": "镍", "涨跌幅": -5.43}]},
+        ],
+    ):
+        assert adapter.get_sector_rankings(2) is None
+
+
 def test_capital_flow_maps_real_query2data_date_range_columns() -> None:
     adapter = IwencaiAdapter("secret")
     payload = {

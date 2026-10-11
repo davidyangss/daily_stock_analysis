@@ -15,7 +15,7 @@ import secrets
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .realtime_types import RealtimeSource, UnifiedRealtimeQuote
 
@@ -414,6 +414,152 @@ class IwencaiAdapter:
             return None
         name = _text(_pick(row, ("股票简称", "证券简称", "名称")))
         return name or None
+
+    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+        """Return a complete A-share breadth snapshot from split queries.
+
+        The gateway silently drops several fields from a combined request and
+        may choose a different universe for it.  Independent queries reliably
+        use the provider's full-A-share universe, so accept the snapshot only
+        when all six metrics are present and refer to the same trading date.
+        """
+        specs = (
+            ("up_count", "今日A股上涨家数", ("上涨家数", "上涨股票家数")),
+            (
+                "down_count",
+                "今日A股下跌家数",
+                ("下跌家数", "下跌股票家数", "涨跌幅满足条件数量"),
+            ),
+            ("flat_count", "今日A股平盘家数", ("平盘家数", "平盘股票家数")),
+            ("limit_up_count", "今日A股涨停家数", ("涨停家数", "涨停股票家数")),
+            (
+                "limit_down_count",
+                "今日A股跌停家数",
+                ("跌停家数", "跌停股票家数", "跌停满足条件数量"),
+            ),
+        )
+        values: Dict[str, float] = {}
+        metric_dates: List[str] = []
+        for key, query_text, aliases in specs:
+            result = self.query(
+                query_text,
+                skill_id="hithink-market-query",
+                limit=3,
+            )
+            combined = self._combine_rows(result)
+            value = _number(_pick(combined, aliases))
+            if value is None:
+                return None
+            values[key] = value
+            if metric_date := _dated_metric_date(combined, aliases):
+                metric_dates.append(metric_date)
+
+        turnover_result = self.query(
+            "今日沪深两市成交额",
+            skill_id="hithink-market-query",
+            limit=3,
+        )
+        turnover_row = self._combine_rows(turnover_result)
+        amount = self._market_turnover_yi(turnover_row)
+        if amount is None:
+            return None
+        if turnover_date := _dated_metric_date(
+            turnover_row, ("沪深两市成交额", "两市成交额", "A股成交额", "成交额")
+        ):
+            metric_dates.append(turnover_date)
+        if len(set(metric_dates)) > 1:
+            logger.warning("iWencai market stats contain mixed trading dates: %s", sorted(set(metric_dates)))
+            return None
+        return {key: int(value) for key, value in values.items()} | {"total_amount": amount}
+
+    @staticmethod
+    def _combine_rows(result: Mapping[str, Any]) -> Dict[str, Any]:
+        combined: Dict[str, Any] = {}
+        for row in result.get("datas", []):
+            if isinstance(row, Mapping):
+                combined.update(row)
+        return combined
+
+    @staticmethod
+    def _market_turnover_yi(row: Mapping[str, Any]) -> Optional[float]:
+        aliases = tuple(
+            _column_key(item) for item in ("沪深两市成交额", "两市成交额", "A股成交额", "成交额")
+        )
+        for key, raw in row.items():
+            normalized = _column_key(key)
+            if not any(alias == normalized or alias in normalized for alias in aliases):
+                continue
+            value = _number(raw)
+            if value is None:
+                continue
+            raw_text = str(raw)
+            has_explicit_value_unit = any(unit in raw_text for unit in ("万", "亿"))
+            return value if "亿" in str(key) and not has_explicit_value_unit else value / 1e8
+        return None
+
+    def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """Return provider-ranked concept-board leaders and laggards."""
+        limit = max(1, int(n))
+        top = self._parse_concept_rankings(self.query(
+            f"今日A股概念板块涨幅前{limit}名 概念名称 涨跌幅",
+            skill_id="hithink-market-query",
+            limit=limit,
+        ))
+        bottom = self._parse_concept_rankings(self.query(
+            f"今日A股概念板块跌幅前{limit}名 概念名称 涨跌幅",
+            skill_id="hithink-market-query",
+            limit=limit,
+        ))
+        if len(top) < limit or len(bottom) < limit:
+            return None
+        return (
+            sorted(top, key=lambda item: item["change_pct"], reverse=True)[:limit],
+            sorted(bottom, key=lambda item: item["change_pct"])[:limit],
+        )
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """Return provider-ranked A-share industry leaders and laggards."""
+        limit = max(1, int(n))
+        top = self._parse_sector_rankings(self.query(
+            f"今日A股行业板块涨幅前{limit}名 行业名称 涨跌幅",
+            skill_id="hithink-market-query",
+            limit=limit,
+        ))
+        bottom = self._parse_sector_rankings(self.query(
+            f"今日A股行业板块跌幅前{limit}名 行业名称 涨跌幅",
+            skill_id="hithink-market-query",
+            limit=limit,
+        ))
+        if len(top) < limit or len(bottom) < limit:
+            return None
+        return (
+            sorted(top, key=lambda item: item["change_pct"], reverse=True)[:limit],
+            sorted(bottom, key=lambda item: item["change_pct"])[:limit],
+        )
+
+    @staticmethod
+    def _parse_sector_rankings(result: Mapping[str, Any]) -> List[Dict]:
+        rankings: Dict[str, float] = {}
+        for row in result.get("datas", []):
+            if not isinstance(row, Mapping):
+                continue
+            name = _pick(row, ("行业名称", "行业板块名称", "板块名称", "指数简称"))
+            change_pct = _number(_pick(row, ("涨跌幅", "板块涨跌幅", "最新涨跌幅")))
+            if name not in (None, "") and change_pct is not None:
+                rankings[str(name).strip()] = float(change_pct)
+        return [{"name": name, "change_pct": value} for name, value in rankings.items()]
+
+    @staticmethod
+    def _parse_concept_rankings(result: Mapping[str, Any]) -> List[Dict]:
+        rankings: Dict[str, float] = {}
+        for row in result.get("datas", []):
+            if not isinstance(row, Mapping):
+                continue
+            name = _pick(row, ("概念名称", "概念板块名称", "板块名称", "指数简称"))
+            change_pct = _number(_pick(row, ("涨跌幅", "板块涨跌幅")))
+            if name not in (None, "") and change_pct is not None:
+                rankings[str(name).strip()] = float(change_pct)
+        return [{"name": name, "change_pct": value} for name, value in rankings.items()]
 
     def get_capital_flow(self, stock_code: str) -> Dict[str, Any]:
         query = f"{stock_code} 当日主力净流入 近5日主力累计净流入 近10日主力累计净流入"
