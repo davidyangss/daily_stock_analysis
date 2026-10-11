@@ -174,7 +174,7 @@ class TestTickFlowManagerRouting(unittest.TestCase):
         with patch.dict(os.environ, {"TICKFLOW_API_KEY": "tk-test"}, clear=True):
             self.assertEqual(
                 Config._resolve_realtime_source_priority(),
-                "tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em",
+                "tickflow,tencent,iwencai,tushare,eastmoney_mx,akshare_sina,efinance,akshare_em",
             )
 
     def test_mx_success_does_not_use_browser_as_field_supplement(self):

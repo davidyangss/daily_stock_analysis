@@ -3311,7 +3311,7 @@ class DataFetcherManager:
             # that understand the requested region.
             token_map.pop("tickflow")
         entries = self._resolve_configured_fetchers(
-            getattr(config, "index_source_priority", "tickflow,tushare,efinance,akshare,yfinance"),
+            getattr(config, "index_source_priority", "tushare,tickflow,efinance,akshare,yfinance"),
             token_map=token_map,
             capability="main_indices",
         )
@@ -4388,7 +4388,7 @@ class DataFetcherManager:
             for item in getattr(
                 config,
                 "capital_flow_source_priority",
-                "iwencai,eastmoney_browser,akshare_em,efinance",
+                "iwencai,eastmoney_mx,akshare_em,efinance",
             ).split(",")
             if item.strip()
         ]

@@ -123,7 +123,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertIsNone(config.tickflow_api_key)
         self.assertEqual(
             config.realtime_source_priority,
-            "tickflow,tencent,iwencai,tushare,eastmoney_mx,eastmoney_browser,akshare_sina,efinance,akshare_em",
+            "tickflow,tencent,iwencai,tushare,eastmoney_mx,akshare_sina,efinance,akshare_em",
         )
         self.assertFalse(config.iwencai_enabled)
         self.assertEqual(config.iwencai_api_key, "")
@@ -131,7 +131,11 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.eastmoney_mx_api_key, "")
         self.assertEqual(
             config.capital_flow_source_priority,
-            "iwencai,eastmoney_mx,eastmoney_browser,akshare_em,efinance",
+            "iwencai,eastmoney_mx,akshare_em,efinance",
+        )
+        self.assertEqual(
+            config.index_source_priority,
+            "tushare,tickflow,efinance,akshare,yfinance",
         )
 
     @patch("src.config.setup_env")
