@@ -1181,9 +1181,24 @@ class StockAnalysisPipeline:
             )
         fundamental_budget = self._fundamental_stage_budget_seconds()
         if deadline is not None:
+            remaining_seconds = max(0.0, deadline - time.monotonic())
+            # Do not let the fundamental provider loop consume the entire API
+            # evidence deadline.  It needs a small unwind window to return its
+            # already-merged partial payload to ``result_holder``; otherwise
+            # the outer deadline replaces useful fields with an all-failed
+            # context even though earlier providers succeeded.
+            provider_timeout = max(
+                0.0,
+                float(getattr(
+                    self.config,
+                    "stock_optional_provider_timeout_seconds",
+                    self._API_OPTIONAL_PROVIDER_TIMEOUT_SECONDS,
+                )),
+            )
+            unwind_reserve = min(provider_timeout, remaining_seconds * 0.1)
             fundamental_budget = min(
                 fundamental_budget,
-                max(0.0, deadline - time.monotonic()),
+                max(0.0, remaining_seconds - unwind_reserve),
             )
         try:
             fundamental_context = self.fetcher_manager.get_fundamental_context(
@@ -1268,6 +1283,10 @@ class StockAnalysisPipeline:
                 code,
                 "api optional evidence worker pool exhausted",
             )
+            failed = self._backfill_fundamental_valuation_from_realtime(
+                failed,
+                realtime_quote,
+            )
             return failed, None, True
 
         completed = threading.Event()
@@ -1315,6 +1334,10 @@ class StockAnalysisPipeline:
                     code,
                     "api optional evidence deadline exceeded",
                 )
+            fundamental = self._backfill_fundamental_valuation_from_realtime(
+                fundamental,
+                realtime_quote,
+            )
             return fundamental, None, True
 
         error = error_holder.get("error")
@@ -1324,6 +1347,10 @@ class StockAnalysisPipeline:
                 code,
                 str(error),
             )
+            fundamental = self._backfill_fundamental_valuation_from_realtime(
+                fundamental,
+                realtime_quote,
+            )
             return fundamental, None, False
 
         fundamental = result_holder.get("fundamental_context")
@@ -1332,6 +1359,10 @@ class StockAnalysisPipeline:
                 code,
                 "invalid optional evidence context",
             )
+        fundamental = self._backfill_fundamental_valuation_from_realtime(
+            fundamental,
+            realtime_quote,
+        )
         structure = result_holder.get("market_structure_context")
         return fundamental, structure if isinstance(structure, dict) else None, False
 

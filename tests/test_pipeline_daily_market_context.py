@@ -347,6 +347,60 @@ def test_api_optional_evidence_shares_deadline_with_provider_work() -> None:
     build_market_structure.assert_not_called()
 
 
+def test_api_optional_evidence_deadline_preserves_realtime_valuation() -> None:
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = SimpleNamespace(fundamental_stage_timeout_seconds=240.0)
+    pipeline.query_source = "api"
+    pipeline.fetcher_manager = MagicMock()
+    pipeline.fetcher_manager.build_failed_fundamental_context.return_value = {
+        "status": "failed",
+        "source_chain": [],
+        "coverage": {"valuation": "failed"},
+        "valuation": {"status": "failed", "data": {}},
+    }
+    release_fundamental = threading.Event()
+    pipeline.fetcher_manager.get_fundamental_context.side_effect = (
+        lambda *_args, **_kwargs: release_fundamental.wait(timeout=1)
+    )
+    quote = SimpleNamespace(
+        pe_ratio=28.98,
+        pb_ratio=6.13,
+        total_mv=229_819_000_000.0,
+        circ_mv=218_963_000_000.0,
+    )
+
+    with patch.object(
+        pipeline,
+        "_API_OPTIONAL_EVIDENCE_DEADLINE_SECONDS",
+        0.02,
+    ), patch.object(
+        pipeline,
+        "_API_OPTIONAL_EVIDENCE_SLOTS",
+        threading.BoundedSemaphore(1),
+    ):
+        fundamental, structure, timed_out = pipeline._load_optional_evidence_context(
+            code="603986",
+            stock_name="兆易创新",
+            market="cn",
+            realtime_quote=quote,
+            trade_date=date(2026, 10, 9),
+            market_phase_summary=None,
+        )
+        release_fundamental.set()
+        time.sleep(0.05)
+
+    assert timed_out is True
+    assert structure is None
+    assert fundamental["valuation"]["status"] == "ok"
+    assert fundamental["coverage"]["valuation"] == "ok"
+    assert fundamental["valuation"]["data"] == {
+        "pe_ratio": 28.98,
+        "pb_ratio": 6.13,
+        "total_mv": 229_819_000_000.0,
+        "circ_mv": 218_963_000_000.0,
+    }
+
+
 def test_non_api_optional_evidence_keeps_configured_budget() -> None:
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
     pipeline.config = SimpleNamespace(fundamental_stage_timeout_seconds=240.0)
